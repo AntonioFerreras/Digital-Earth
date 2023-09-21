@@ -1,9 +1,5 @@
 # <a name="title">Earth Viewer</a>
 
-<p align="center">
-<img src="demo.jpg" width="75%"></img>
-</p>
-
 A renderer that generates highly realistic images of the Earth from outer space. 
 
 Rendering is done with Path Tracing in participating media. 
