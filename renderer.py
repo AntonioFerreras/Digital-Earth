@@ -1,6 +1,6 @@
 import taichi as ti
 from atmos import *
-from math_utils import (eps, inf, out_dir)
+from math_utils import (eps, inf, out_dir, rsi)
 
 MAX_RAY_DEPTH = 4
 use_directional_light = True
@@ -36,11 +36,11 @@ class Renderer:
 
         self.atmos = Atmos()
 
-        # Textures
-        self.albedo = ti.Vector.field(3, dtype=ti.u8, shape=(10800, 5400))
+        # Load Textures
+        self.albedo_img = ti.Vector.field(3, dtype=ti.u8, shape=(10800, 5400))
 
         load_image = ti.tools.imread('textures/earth_color_10K.png')
-        self.albedo.from_numpy(load_image)
+        self.albedo_img.from_numpy(load_image)
 
     @ti.kernel
     def set_camera_pos(self, x: ti.f32, y: ti.f32, z: ti.f32):
@@ -69,6 +69,14 @@ class Renderer:
         dv = du.cross(d).normalized()
         d = (d + fu * du + fv * dv).normalized()
         return d
+    
+    @ti.func
+    def sample_albedo_texture(self, pos):
+        uv = sphere_UV_map(pos.normalized())
+        coord = UV_to_index_stochastic(uv, 
+                                       ti.Vector([self.albedo_img.shape[0], 
+                                                  self.albedo_img.shape[1]]))
+        return self.albedo_img[coord.x, coord.y].xyz/255.0
 
     @ti.kernel
     def render(self):
@@ -76,13 +84,18 @@ class Renderer:
         for u, v in self.color_buffer:
             d = self.get_cast_dir(u, v)
             pos = self.camera_pos[None]
-            t = 0.0
 
             contrib = ti.Vector([0.0, 0.0, 0.0])
             throughput = ti.Vector([1.0, 1.0, 1.0])
+            earth_intersection = rsi(pos, d, self.atmos.planet_r)
 
+            
+            if earth_intersection.x > 0.0:
+                earth_hit_point = pos + d*earth_intersection.x
+                self.color_buffer[u, v] += self.sample_albedo_texture(earth_hit_point)
+            else:
+                self.color_buffer[u, v] += ti.Vector([0.0, 0.0, 0.0])
 
-            self.color_buffer[u, v] += ti.Vector([1.0, 0.0, 0.0])
 
     @ti.kernel
     def _render_to_image(self, samples: ti.i32):

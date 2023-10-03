@@ -24,8 +24,20 @@ def rsi(pos, dir, r):
     discr   = b*b - pos.dot(pos) + r*r
     discr     = ti.sqrt(discr)
 
-    return ti.select(discr < 0.0, ti.Vector([-1.0, -1.0]), ti.Vector([-b, -b]) + vec2(-discr, discr))
+    return ti.select(discr < 0.0, ti.Vector([-1.0, -1.0]), ti.Vector([-b, -b]) + ti.Vector([-discr, discr]))
 
+@ti.func
+def sphere_UV_map(n):
+    return ti.Vector([ (ti.atan2(n.z, -n.x) / np.pi + 1.) / 2.,
+                       (ti.asin(n.y) / np.pi + 0.5) ])
+
+@ti.func
+def UV_to_index(uv, res):
+    return ti.cast(uv * res, ti.i32)
+
+@ti.func
+def UV_to_index_stochastic(uv, res):
+    return ti.cast(uv * res + ti.random()*2.0 - 1.0, ti.i32)
 
 def np_normalize(v):
     # https://stackoverflow.com/a/51512965/12003165

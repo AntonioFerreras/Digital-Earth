@@ -48,7 +48,7 @@ class Atmos:
 
         self.mie_g = 0.75
 
-        self.planet_r = 6378137
+        self.planet_r = 6378137.
         self.atmos_height  = 110e3
 
         # Cloud constants

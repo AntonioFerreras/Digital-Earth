@@ -9,7 +9,7 @@ import __main__
 
 
 SCREEN_RES = (1920, 1080)
-TARGET_FPS = 60
+TARGET_FPS = 120
 UP_DIR = (0, 1, 0)
 HELP_MSG = '''
 ====================================================
@@ -22,8 +22,8 @@ Camera:
 class Camera:
     def __init__(self, window, up):
         self._window = window
-        self._camera_pos = np.array((0.4, 0.5, 2.0))
         self._lookat_pos = np.array((0.0, 0.0, 0.0))
+        self._camera_pos = np.array((-25000000., 0.0, 25000000.))
         self._up = np_normalize(np.array(up))
         self._last_mouse_pos = None
 
@@ -83,8 +83,14 @@ class Camera:
         if not pressed:
             return False
         dir *= 0.05
-        self._lookat_pos += dir
-        self._camera_pos += dir
+
+        speed = 0.08 * np.sqrt(self._camera_pos[0]*self._camera_pos[0] + 
+                               self._camera_pos[1]*self._camera_pos[1] + 
+                               self._camera_pos[2]*self._camera_pos[2])
+        if win.is_pressed(ti.ui.SHIFT):
+            speed *= 3.0
+        self._lookat_pos += dir*speed
+        self._camera_pos += dir*speed
         return True
 
     @property
@@ -117,7 +123,6 @@ class Scene:
         self.renderer = Renderer(image_res=SCREEN_RES,
                                  up=UP_DIR,
                                  exposure=exposure)
-
         self.renderer.set_camera_pos(*self.camera.position)
         if not os.path.exists('screenshot'):
             os.makedirs('screenshot')
