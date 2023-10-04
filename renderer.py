@@ -1,5 +1,6 @@
 import taichi as ti
 from atmos import *
+import numpy as np
 from math_utils import *
 
 MAX_RAY_DEPTH = 4
@@ -31,7 +32,6 @@ class Renderer:
         self.fov = ti.field(dtype=ti.f32, shape=())
 
         self.light_direction = ti.Vector.field(3, dtype=ti.f32, shape=())
-
         self.exposure = exposure
 
         self.camera_pos = ti.Vector.field(3, dtype=ti.f32, shape=())
@@ -46,6 +46,8 @@ class Renderer:
 
         self.atmos = Atmos()
 
+        self.land_height = 8000.0
+
         # Load Textures
         self.albedo_tex = ti.Texture(ti.Format.rgba8, ALBEDO_TEX_RES)
         self.albedo_buff = ti.Vector.field(3, dtype=ti.u8, shape=ALBEDO_TEX_RES)
@@ -54,21 +56,21 @@ class Renderer:
 
         self.topography_tex = ti.Texture(ti.Format.r8, TOPOGRAPHY_TEX_RES)
         self.topography_buff = ti.field(dtype=ti.u8, shape=TOPOGRAPHY_TEX_RES)
-        load_image = ti.tools.imread(TOPOGRAPHY_TEX_FILE)
-        self.topography_buff.from_numpy(load_image[:, :, 0])
+        load_image = ti.tools.imread(TOPOGRAPHY_TEX_FILE)[:, :, 0]
+        self.topography_buff.from_numpy(load_image)
 
-    def make_textures(self):
-        self.make_albedo_texture(self.albedo_tex)
-        self.make_topography_texture(self.topography_tex)
+    def copy_textures(self):
+        self.copy_albedo_texture(self.albedo_tex)
+        self.copy_topography_texture(self.topography_tex)
 
     @ti.kernel
-    def make_albedo_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.rgba8, lod=0)):
+    def copy_albedo_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.rgba8, lod=0)):
         for i, j in ti.ndrange(ALBEDO_TEX_RES[0], ALBEDO_TEX_RES[1]):
             val = ti.cast(self.albedo_buff[i, j], ti.f32) / 255.0
             tex.store(ti.Vector([i, j]), ti.Vector([val.x, val.y, val.z, 0.0]))
 
     @ti.kernel
-    def make_topography_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.r8, lod=0)):
+    def copy_topography_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.r8, lod=0)):
         for i, j in ti.ndrange(TOPOGRAPHY_TEX_RES[0], TOPOGRAPHY_TEX_RES[1]):
             val = ti.cast(self.topography_buff[i, j], ti.f32) / 255.0
             tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
@@ -101,10 +103,15 @@ class Renderer:
         d = (d + fu * du + fv * dv).normalized()
         return d
     
-    
+    @ti.func
+    def land_sdf(self, heightmap: ti.template(), pos, r):
+        # bump-mapped sphere SDF for a sphere centered at origin
+        return pos.length() - r - self.land_height*sample_sphere_texture(heightmap, pos).x
 
     @ti.kernel
     def render(self, albedo_sampler: ti.types.texture(num_dimensions=2)):
+        self.light_direction[None] = vec3(0.5, 0.5, 0.5).normalized()
+
         ti.loop_config(block_dim=256)
         for u, v in self.color_buffer:
             d = self.get_cast_dir(u, v)
@@ -116,11 +123,14 @@ class Renderer:
 
             
             if earth_intersection.x > 0.0:
-                earth_hit_point = pos + d*earth_intersection.x
-                self.color_buffer[u, v] += sample_sphere_texture(albedo_sampler, earth_hit_point).rgb
-            else:
-                self.color_buffer[u, v] += ti.Vector([0.0, 0.0, 0.0])
+                land_pos = pos + d*earth_intersection.x
+                land_normal = land_pos.normalized()
+                albedo = sample_sphere_texture(albedo_sampler, land_pos).rgb
 
+                contrib += albedo * saturate(land_normal.dot(self.light_direction[None])) / np.pi
+            else:
+                contrib += ti.Vector([0.0, 0.0, 0.0])
+            self.color_buffer[u, v] += contrib
 
     @ti.kernel
     def _render_to_image(self, samples: ti.i32):

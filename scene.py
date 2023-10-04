@@ -126,7 +126,7 @@ class Scene:
         self.renderer.set_camera_pos(*self.camera.position)
         if not os.path.exists('screenshot'):
             os.makedirs('screenshot')
-        self.renderer.make_textures()
+        self.renderer.copy_textures()
 
     def start(self):
         canvas = self.window.get_canvas()

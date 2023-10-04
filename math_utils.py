@@ -47,6 +47,10 @@ def sample_sphere_texture(sampler: ti.template(), pos):
         #                                           self.albedo_buff.shape[1]]))
     return sampler.sample_lod(uv, 0.0)# self.albedo_buff[coord.x, coord.y].xyz/255.0
 
+@ti.func
+def saturate(x):
+    return ti.math.clamp(x, 0.0, 1.0)
+
 def np_normalize(v):
     # https://stackoverflow.com/a/51512965/12003165
     return v / np.sqrt(np.sum(v**2))
