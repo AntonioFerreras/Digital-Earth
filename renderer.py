@@ -4,7 +4,7 @@ import numpy as np
 from math_utils import *
 
 MAX_RAY_DEPTH = 4
-USE_LOW_QUAL_TEXTURES = True
+USE_LOW_QUAL_TEXTURES = False
 TEX_RES_4K = (3840, 1920)
 TEX_RES_10K = (10800, 5400)
 ALBEDO_4K = 'textures/earth_color_4K.png'
@@ -46,7 +46,7 @@ class Renderer:
 
         self.atmos = Atmos()
 
-        self.land_height = 8000.0
+        self.land_height_scale = 20000.0
 
         # Load Textures
         self.albedo_tex = ti.Texture(ti.Format.rgba8, ALBEDO_TEX_RES)
@@ -102,15 +102,62 @@ class Renderer:
         dv = du.cross(d).normalized()
         d = (d + fu * du + fv * dv).normalized()
         return d
+
+    @ti.func
+    def land_sdf(self, heightmap: ti.template(), pos):
+        # bump-mapped sphere SDF for a sphere centered at origin
+        return length(pos) - self.atmos.planet_r - \
+                              self.land_height_scale*sample_sphere_texture(heightmap, pos).x
     
     @ti.func
-    def land_sdf(self, heightmap: ti.template(), pos, r):
-        # bump-mapped sphere SDF for a sphere centered at origin
-        return pos.length() - r - self.land_height*sample_sphere_texture(heightmap, pos).x
+    def land_normal(self, heightmap: ti.template(), pos):
+        d = self.land_sdf(heightmap, pos)
 
+        e = ti.Vector([0.5*2.0*np.pi*self.atmos.planet_r/TOPOGRAPHY_TEX_RES[0], 0.0])
+
+        n = d - vec3(self.land_sdf(heightmap, pos - e.xyy),
+                     self.land_sdf(heightmap, pos - e.yxy),
+                     self.land_sdf(heightmap, pos - e.yyx))
+        return n.normalized()
+    
+    @ti.func
+    def intersect_land(self, heightmap: ti.template(), pos, dir):
+        ray_dist = 0.
+        max_ray_dist = self.atmos.planet_r*10.0
+    
+        for i in range(0, 150):
+            ro = pos + dir * ray_dist
+
+            dist = self.land_sdf(heightmap, ro)
+            ray_dist += dist
+            
+            if ray_dist > max_ray_dist or abs(dist) < ray_dist*0.0001:
+                break
+        
+        return ray_dist if ray_dist < max_ray_dist else -1.0
+
+    @ti.func
+    def shadow_intersect_land(self, heightmap: ti.template(), pos, dir):
+        ray_dist = 0.
+        max_ray_dist = self.atmos.planet_r*10.0
+        visibility = 1.0
+        for i in range(0, 150):
+            ro = pos + dir * ray_dist
+
+            dist = self.land_sdf(heightmap, ro)
+            ray_dist += dist
+            if abs(dist) < ray_dist*0.0001:
+                visibility = 0.0
+                break
+            if ray_dist > max_ray_dist:
+                break
+        
+        return visibility
+    
     @ti.kernel
-    def render(self, albedo_sampler: ti.types.texture(num_dimensions=2)):
-        self.light_direction[None] = vec3(0.5, 0.5, 0.5).normalized()
+    def render(self, albedo_sampler: ti.types.texture(num_dimensions=2),
+                     height_sampler: ti.types.texture(num_dimensions=2)):
+        self.light_direction[None] = vec3(-0.5, 0.5, -0.5).normalized()
 
         ti.loop_config(block_dim=256)
         for u, v in self.color_buffer:
@@ -119,15 +166,26 @@ class Renderer:
 
             contrib = ti.Vector([0.0, 0.0, 0.0])
             throughput = ti.Vector([1.0, 1.0, 1.0])
-            earth_intersection = rsi(pos, d, self.atmos.planet_r)
+            earth_intersection = self.intersect_land(height_sampler, pos, d)
 
             
-            if earth_intersection.x > 0.0:
-                land_pos = pos + d*earth_intersection.x
-                land_normal = land_pos.normalized()
+
+            
+            if earth_intersection > 0.0:
+                land_pos = pos + d*earth_intersection
+                sphere_normal = land_pos.normalized()
+                land_normal = self.land_normal(height_sampler, land_pos)
                 albedo = sample_sphere_texture(albedo_sampler, land_pos).rgb
 
-                contrib += albedo * saturate(land_normal.dot(self.light_direction[None])) / np.pi
+                shadow_pos = land_pos + land_normal*self.atmos.planet_r*0.0001
+                # visibility = self.shadow_intersect_land(height_sampler, shadow_pos, self.light_direction[None])
+
+                # shadow_sphere_intersection = rsi(shadow_pos, self.light_direction[None], self.atmos.planet_r).x
+                # shadow = shadow_sphere_intersection < 0.0
+
+                earth_land_shadow = saturate(4.0*land_pos.normalized().dot(self.light_direction[None]))
+
+                contrib += albedo * earth_land_shadow * saturate(land_normal.dot(self.light_direction[None]))
             else:
                 contrib += ti.Vector([0.0, 0.0, 0.0])
             self.color_buffer[u, v] += contrib
@@ -152,7 +210,7 @@ class Renderer:
         self.color_buffer.fill(0)
 
     def accumulate(self):
-        self.render(self.albedo_tex)
+        self.render(self.albedo_tex, self.topography_tex)
         self.current_spp += 1
 
     def fetch_image(self):
