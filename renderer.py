@@ -2,15 +2,19 @@ import taichi as ti
 from atmos import *
 import numpy as np
 from math_utils import *
+from functions import *
 
 MAX_RAY_DEPTH = 4
 USE_LOW_QUAL_TEXTURES = False
 TEX_RES_4K = (3840, 1920)
 TEX_RES_10K = (10800, 5400)
+CIE_LUT_RES = (441, 2)
 ALBEDO_4K = 'textures/earth_color_4K.png'
 ALBEDO_10K = 'textures/earth_color_10K.png'
 TOPOGRAPHY_4K = 'textures/topography_4k.png'
 TOPOGRAPHY_10K = 'textures/topography_10k.png'
+CIE_LUT_FILE = 'textures/LUT/CIE.dat'
+SRGB2SPEC_LUT_FILE = 'textures/LUT/srgb2spec.dat'
 
 ALBEDO_TEX_FILE = ALBEDO_4K if USE_LOW_QUAL_TEXTURES else ALBEDO_10K
 ALBEDO_TEX_RES = TEX_RES_4K if USE_LOW_QUAL_TEXTURES else TEX_RES_10K
@@ -46,7 +50,7 @@ class Renderer:
 
         self.atmos = Atmos()
 
-        self.land_height_scale = 20000.0
+        self.land_height_scale = 12000.0
 
         # Load Textures
         self.albedo_tex = ti.Texture(ti.Format.rgba8, ALBEDO_TEX_RES)
@@ -59,9 +63,33 @@ class Renderer:
         load_image = ti.tools.imread(TOPOGRAPHY_TEX_FILE)[:, :, 0]
         self.topography_buff.from_numpy(load_image)
 
+        # LUTS
+        self.CIE_LUT_tex = ti.Texture(ti.Format.rgba16f, CIE_LUT_RES)
+        self.CIE_LUT_buff = ti.Vector.field(3, dtype=ti.f32, shape=CIE_LUT_RES)
+        with open(CIE_LUT_FILE, 'rb') as file:
+            load_data = np.fromfile(file, dtype=np.float32, count=CIE_LUT_RES[0]*CIE_LUT_RES[1]*3)
+        data_array = np.zeros(shape=(CIE_LUT_RES[0], CIE_LUT_RES[1], 3), dtype=np.float32) # load_data.reshape((CIE_LUT_RES[0], CIE_LUT_RES[1], 3))
+        for x in range (0, CIE_LUT_RES[0]):
+            for y in range (0, CIE_LUT_RES[1]):
+                data_array[x, y, 0] = load_data[(x + y*CIE_LUT_RES[0])*3]
+                data_array[x, y, 1] = load_data[(x + y*CIE_LUT_RES[0])*3 + 1]
+                data_array[x, y, 2] = load_data[(x + y*CIE_LUT_RES[0])*3 + 2]
+        self.CIE_LUT_buff.from_numpy(data_array)
+
+        self.srgb_to_spectrum_buff = ti.Vector.field(3, dtype=ti.f16, shape=(300))
+        with open(SRGB2SPEC_LUT_FILE, 'rb') as file:
+            load_data = np.fromfile(file, dtype=np.float16, count=300*3)
+        data_array = np.zeros(shape=(300, 3), dtype=np.float16)
+        for x in range (0, 300):
+            data_array[x, 0] = load_data[x*3]
+            data_array[x, 1] = load_data[x*3 + 1]
+            data_array[x, 2] = load_data[x*3 + 2]
+        self.srgb_to_spectrum_buff.from_numpy(data_array)
+
     def copy_textures(self):
         self.copy_albedo_texture(self.albedo_tex)
         self.copy_topography_texture(self.topography_tex)
+        self.copy_CIE_LUT_texture(self.CIE_LUT_tex)
 
     @ti.kernel
     def copy_albedo_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.rgba8, lod=0)):
@@ -74,6 +102,12 @@ class Renderer:
         for i, j in ti.ndrange(TOPOGRAPHY_TEX_RES[0], TOPOGRAPHY_TEX_RES[1]):
             val = ti.cast(self.topography_buff[i, j], ti.f32) / 255.0
             tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
+
+    @ti.kernel
+    def copy_CIE_LUT_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.rgba16f, lod=0)):
+        for i, j in ti.ndrange(CIE_LUT_RES[0], CIE_LUT_RES[1]):
+            val = ti.cast(self.CIE_LUT_buff[i, j], ti.f32)
+            tex.store(ti.Vector([i, j]), ti.Vector([val.x, val.y, val.z, 0.0]))
 
     @ti.kernel
     def set_camera_pos(self, x: ti.f32, y: ti.f32, z: ti.f32):
@@ -136,31 +170,18 @@ class Renderer:
         
         return ray_dist if ray_dist < max_ray_dist else -1.0
 
-    @ti.func
-    def shadow_intersect_land(self, heightmap: ti.template(), pos, dir):
-        ray_dist = 0.
-        max_ray_dist = self.atmos.planet_r*10.0
-        visibility = 1.0
-        for i in range(0, 150):
-            ro = pos + dir * ray_dist
 
-            dist = self.land_sdf(heightmap, ro)
-            ray_dist += dist
-            if abs(dist) < ray_dist*0.0001:
-                visibility = 0.0
-                break
-            if ray_dist > max_ray_dist:
-                break
-        
-        return visibility
-    
     @ti.kernel
     def render(self, albedo_sampler: ti.types.texture(num_dimensions=2),
-                     height_sampler: ti.types.texture(num_dimensions=2)):
+                     height_sampler: ti.types.texture(num_dimensions=2),
+                     cie_lut_sampler: ti.types.texture(num_dimensions=2)):
         self.light_direction[None] = vec3(-0.5, 0.5, -0.5).normalized()
 
         ti.loop_config(block_dim=256)
         for u, v in self.color_buffer:
+            
+            wavelength, response, wavelength_pdf = spectrum_sample(cie_lut_sampler)
+
             d = self.get_cast_dir(u, v)
             pos = self.camera_pos[None]
 
@@ -168,26 +189,27 @@ class Renderer:
             throughput = ti.Vector([1.0, 1.0, 1.0])
             earth_intersection = self.intersect_land(height_sampler, pos, d)
 
-            
 
             
             if earth_intersection > 0.0:
                 land_pos = pos + d*earth_intersection
                 sphere_normal = land_pos.normalized()
                 land_normal = self.land_normal(height_sampler, land_pos)
-                albedo = sample_sphere_texture(albedo_sampler, land_pos).rgb
+                albedo_srgb = (sample_sphere_texture(albedo_sampler, land_pos).rgb)
+                albedo = srgb_to_spectrum(self.srgb_to_spectrum_buff, albedo_srgb, wavelength)
 
-                shadow_pos = land_pos + land_normal*self.atmos.planet_r*0.0001
-                # visibility = self.shadow_intersect_land(height_sampler, shadow_pos, self.light_direction[None])
+                # Shadow
+                shadow_pos = land_pos * (1.0 + 0.0001*ti.random())
+                earth_land_shadow = self.intersect_land(height_sampler, shadow_pos, self.light_direction[None]) < 0.0
 
-                # shadow_sphere_intersection = rsi(shadow_pos, self.light_direction[None], self.atmos.planet_r).x
-                # shadow = shadow_sphere_intersection < 0.0
+                # Ground lighting
+                power = albedo * earth_land_shadow * saturate(land_normal.dot(self.light_direction[None]))
 
-                earth_land_shadow = saturate(4.0*land_pos.normalized().dot(self.light_direction[None]))
+                xyz = power * response
+                contrib += xyzToRGBMatrix_D65 @ xyz 
 
-                contrib += albedo * earth_land_shadow * saturate(land_normal.dot(self.light_direction[None]))
-            else:
-                contrib += ti.Vector([0.0, 0.0, 0.0])
+
+
             self.color_buffer[u, v] += contrib
 
     @ti.kernel
@@ -200,17 +222,18 @@ class Renderer:
                 (u - self.vignette_center[0])**2 +
                 (v - self.vignette_center[1])**2) - self.vignette_radius), 0)
 
-            for c in ti.static(range(3)):
-                self._rendered_image[i, j][c] = ti.sqrt(
-                    self.color_buffer[i, j][c] * darken * self.exposure /
-                    samples)
+            linear = self.color_buffer[i, j]/samples * darken * self.exposure
+            output = srgb_transfer(linear)
+
+
+            self._rendered_image[i, j] = output
 
     def reset_framebuffer(self):
         self.current_spp = 0
         self.color_buffer.fill(0)
 
     def accumulate(self):
-        self.render(self.albedo_tex, self.topography_tex)
+        self.render(self.albedo_tex, self.topography_tex, self.CIE_LUT_tex)
         self.current_spp += 1
 
     def fetch_image(self):
