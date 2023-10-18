@@ -9,7 +9,7 @@ import __main__
 
 
 SCREEN_RES = (1920, 1080)
-TARGET_FPS = 120
+TARGET_FPS = 30
 UP_DIR = (0, 1, 0)
 HELP_MSG = '''
 ====================================================

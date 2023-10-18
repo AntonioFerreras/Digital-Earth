@@ -180,7 +180,7 @@ class Renderer:
         ti.loop_config(block_dim=256)
         for u, v in self.color_buffer:
             
-            wavelength, response, wavelength_pdf = spectrum_sample(cie_lut_sampler)
+            wavelength, response, wavelength_rcp_pdf = spectrum_sample(cie_lut_sampler, CIE_LUT_RES[0])
 
             d = self.get_cast_dir(u, v)
             pos = self.camera_pos[None]
@@ -203,12 +203,11 @@ class Renderer:
                 earth_land_shadow = self.intersect_land(height_sampler, shadow_pos, self.light_direction[None]) < 0.0
 
                 # Ground lighting
-                power = albedo * earth_land_shadow * saturate(land_normal.dot(self.light_direction[None]))
+                sun_power = plancks(5778.0, wavelength)
+                power =  albedo * earth_land_shadow * sun_power * saturate(land_normal.dot(self.light_direction[None]))
 
-                xyz = power * response
+                xyz = power * response * wavelength_rcp_pdf
                 contrib += xyzToRGBMatrix_D65 @ xyz 
-
-
 
             self.color_buffer[u, v] += contrib
 
@@ -221,8 +220,8 @@ class Renderer:
             darken = 1.0 - self.vignette_strength * max((ti.sqrt(
                 (u - self.vignette_center[0])**2 +
                 (v - self.vignette_center[1])**2) - self.vignette_radius), 0)
-
-            linear = self.color_buffer[i, j]/samples * darken * self.exposure
+            exposure = 0.0001
+            linear = self.color_buffer[i, j]/samples * darken * self.exposure * exposure
             output = srgb_transfer(linear)
 
 
