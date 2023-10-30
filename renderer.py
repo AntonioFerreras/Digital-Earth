@@ -5,7 +5,7 @@ from math_utils import *
 from functions import *
 
 MAX_RAY_DEPTH = 4
-USE_LOW_QUAL_TEXTURES = False
+USE_LOW_QUAL_TEXTURES = True
 TEX_RES_4K = (3840, 1920)
 TEX_RES_10K = (10800, 5400)
 CIE_LUT_RES = (441, 2)
@@ -203,8 +203,11 @@ class Renderer:
                 earth_land_shadow = self.intersect_land(height_sampler, shadow_pos, self.light_direction[None]) < 0.0
 
                 # Ground lighting
-                sun_power = plancks(5778.0, wavelength)
-                power =  albedo * earth_land_shadow * sun_power * saturate(land_normal.dot(self.light_direction[None]))
+                sunRadius        = 6.95e8
+                sunDistance      = 1.49e11
+                sunAngularRadius = sunRadius / sunDistance
+                sun_irradiance = plancks(5778.0, wavelength) * cone_angle_to_solid_angle(sunAngularRadius)
+                power =  albedo * earth_land_shadow * sun_irradiance * saturate(land_normal.dot(self.light_direction[None]))
 
                 xyz = power * response * wavelength_rcp_pdf
                 contrib += xyzToRGBMatrix_D65 @ xyz 
@@ -220,7 +223,7 @@ class Renderer:
             darken = 1.0 - self.vignette_strength * max((ti.sqrt(
                 (u - self.vignette_center[0])**2 +
                 (v - self.vignette_center[1])**2) - self.vignette_radius), 0)
-            exposure = 0.0001
+            exposure = 1
             linear = self.color_buffer[i, j]/samples * darken * self.exposure * exposure
             output = srgb_transfer(linear)
 
