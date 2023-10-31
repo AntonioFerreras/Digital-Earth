@@ -6,6 +6,10 @@ eps = 1e-4
 inf = 1e10
 
 @ti.func
+def sqr(x):
+    return x*x
+
+@ti.func
 def cone_angle_to_solid_angle(x):
     return np.pi*2*(1.0 - ti.cos(x))
 
