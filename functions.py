@@ -86,16 +86,7 @@ def srgb_transfer_inverse(color):
     return linearRGB
 
 ## DIRECTION SAMPLING
-@ti.func
-def sample_cosine_weighted_hemisphere(n):
-    # Shirley, et al, 2019. Sampling Transformation Zoo. Chapter 16, Ray Tracing Gems, p240
-    u = ti.Vector([ti.random(), ti.random()])
-    a = 1.0 - 2.0 * u[0]
-    b = ti.sqrt(1.0 - a * a)
-    a *= 1.0 - 1e-5
-    b *= 1.0 - 1e-5 # Grazing angle precision fix
-    phi = 2.0 * np.pi * u[1]
-    return ti.Vector([n.x + b * ti.cos(phi), n.y + b * ti.sin(phi), n.z + a]).normalized()
+
 
 @ti.func
 def make_orthonormal_basis(n):

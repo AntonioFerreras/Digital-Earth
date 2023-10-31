@@ -3,16 +3,20 @@ from atmos import *
 import numpy as np
 from math_utils import *
 from functions import *
+import brdf
 
 MAX_RAY_DEPTH = 4
 USE_LOW_QUAL_TEXTURES = True
 TEX_RES_4K = (3840, 1920)
+TEX_RES_8K = (8100, 4050)
 TEX_RES_10K = (10800, 5400)
 CIE_LUT_RES = (441, 2)
 ALBEDO_4K = 'textures/earth_color_4K.png'
 ALBEDO_10K = 'textures/earth_color_10K.png'
 TOPOGRAPHY_4K = 'textures/topography_4k.png'
 TOPOGRAPHY_10K = 'textures/topography_10k.png'
+OCEAN_4K = 'textures/earth_landocean_4K.png'
+OCEAN_8K = 'textures/earth_landocean_8K.png'
 CIE_LUT_FILE = 'textures/LUT/CIE.dat'
 SRGB2SPEC_LUT_FILE = 'textures/LUT/srgb2spec.dat'
 
@@ -20,6 +24,8 @@ ALBEDO_TEX_FILE = ALBEDO_4K if USE_LOW_QUAL_TEXTURES else ALBEDO_10K
 ALBEDO_TEX_RES = TEX_RES_4K if USE_LOW_QUAL_TEXTURES else TEX_RES_10K
 TOPOGRAPHY_TEX_FILE = TOPOGRAPHY_4K if USE_LOW_QUAL_TEXTURES else TOPOGRAPHY_10K
 TOPOGRAPHY_TEX_RES = ALBEDO_TEX_RES
+OCEAN_TEX_FILE = OCEAN_4K if USE_LOW_QUAL_TEXTURES else OCEAN_8K
+OCEAN_TEX_RES = TEX_RES_4K if USE_LOW_QUAL_TEXTURES else TEX_RES_8K
 
 @ti.data_oriented
 class Renderer:
@@ -66,6 +72,11 @@ class Renderer:
         load_image = ti.tools.imread(TOPOGRAPHY_TEX_FILE)[:, :, 0]
         self.topography_buff.from_numpy(load_image)
 
+        self.ocean_tex = ti.Texture(ti.Format.r8, OCEAN_TEX_RES)
+        self.ocean_buff = ti.field(dtype=ti.u8, shape=OCEAN_TEX_RES)
+        load_image = ti.tools.imread(OCEAN_TEX_FILE)[:, :, 0]
+        self.ocean_buff.from_numpy(load_image)
+
         # LUTS
         self.CIE_LUT_tex = ti.Texture(ti.Format.rgba16f, CIE_LUT_RES)
         self.CIE_LUT_buff = ti.Vector.field(3, dtype=ti.f32, shape=CIE_LUT_RES)
@@ -92,6 +103,7 @@ class Renderer:
     def copy_textures(self):
         self.copy_albedo_texture(self.albedo_tex)
         self.copy_topography_texture(self.topography_tex)
+        self.copy_ocean_texture(self.ocean_tex)
         self.copy_CIE_LUT_texture(self.CIE_LUT_tex)
 
     @ti.kernel
@@ -104,6 +116,12 @@ class Renderer:
     def copy_topography_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.r8, lod=0)):
         for i, j in ti.ndrange(TOPOGRAPHY_TEX_RES[0], TOPOGRAPHY_TEX_RES[1]):
             val = ti.cast(self.topography_buff[i, j], ti.f32) / 255.0
+            tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
+
+    @ti.kernel
+    def copy_ocean_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.r8, lod=0)):
+        for i, j in ti.ndrange(OCEAN_TEX_RES[0], OCEAN_TEX_RES[1]):
+            val = ti.cast(self.ocean_buff[i, j], ti.f32) / 255.0
             tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
 
     @ti.kernel
@@ -177,6 +195,7 @@ class Renderer:
     @ti.kernel
     def render(self, albedo_sampler: ti.types.texture(num_dimensions=2),
                      height_sampler: ti.types.texture(num_dimensions=2),
+                     ocean_sampler: ti.types.texture(num_dimensions=2),
                      cie_lut_sampler: ti.types.texture(num_dimensions=2)):
         self.light_direction[None] = vec3(-0.5, 0.5, -0.5).normalized()
 
@@ -196,8 +215,10 @@ class Renderer:
             
             if earth_intersection > 0.0:
                 land_pos = pos + d*earth_intersection
+                view_dir = (self.camera_pos[None] - land_pos).normalized()
                 sphere_normal = land_pos.normalized()
                 land_normal = self.land_normal(height_sampler, land_pos)
+                ocean = (sample_sphere_texture(ocean_sampler, land_pos).r)
                 albedo_srgb = (sample_sphere_texture(albedo_sampler, land_pos).rgb)
                 albedo = srgb_to_spectrum(self.srgb_to_spectrum_buff, albedo_srgb, wavelength)
 
@@ -213,7 +234,9 @@ class Renderer:
 
                 # Ground lighting
                 sun_irradiance = plancks(5778.0, wavelength) * cone_angle_to_solid_angle(sunAngularRadius)
-                power =  albedo * earth_land_shadow * sun_irradiance * saturate(land_normal.dot(light_dir))
+                roughness = mix(0.4, 0.15, ocean)
+                brdf = brdf.earth_brdf(albedo, roughness, 0.02, view_dir, land_normal, light_dir)
+                power =  earth_land_shadow * sun_irradiance * brdf
 
                 xyz = power * response * wavelength_rcp_pdf
                 contrib += xyzToRGBMatrix_D65 @ xyz 
@@ -241,7 +264,7 @@ class Renderer:
         self.color_buffer.fill(0)
 
     def accumulate(self):
-        self.render(self.albedo_tex, self.topography_tex, self.CIE_LUT_tex)
+        self.render(self.albedo_tex, self.topography_tex, self.ocean_tex, self.CIE_LUT_tex)
         self.current_spp += 1
 
     def fetch_image(self):
