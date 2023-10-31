@@ -118,7 +118,7 @@ class Scene:
         print(HELP_MSG)
         self.window = ti.ui.Window("Taichi Voxel Renderer",
                                    SCREEN_RES,
-                                   vsync=True)
+                                   vsync=False)
         self.camera = Camera(self.window, up=UP_DIR)
         self.renderer = Renderer(image_res=SCREEN_RES,
                                  up=UP_DIR,
@@ -156,9 +156,9 @@ class Scene:
                 print(f"Screenshot has been saved to {fname}")
             canvas.set_image(img)
             elapsed_time = time.time() - t
-            if elapsed_time * TARGET_FPS > 1:
-                spp = int(spp / (elapsed_time * TARGET_FPS) - 1)
-                spp = max(spp, 1)
-            else:
-                spp += 1
+            # if elapsed_time * TARGET_FPS > 1:
+            #     spp = int(spp / (elapsed_time * TARGET_FPS) - 1)
+            #     spp = max(spp, 1)
+            # else:
+            #     spp += 1
             self.window.show()

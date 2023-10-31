@@ -42,7 +42,10 @@ class Renderer:
         self.look_at = ti.Vector.field(3, dtype=ti.f32, shape=())
         self.up = ti.Vector.field(3, dtype=ti.f32, shape=())
 
-        ti.root.dense(ti.ij, image_res).place(self.color_buffer)
+        # By interleaving with 16x8 blocks,
+        # each thread block will process 16x8 pixels in a batch instead of a 32 pixel row in a batch
+        # Thus we pay less divergence penalty on hard paths
+        ti.root.dense(ti.ij, (image_res[0] // 16, image_res[1] // 8)).dense(ti.ij, (16, 8)).place(self.color_buffer)
 
         self._rendered_image = ti.Vector.field(3, float, image_res)
         self.set_up(*up)
@@ -199,15 +202,18 @@ class Renderer:
                 albedo = srgb_to_spectrum(self.srgb_to_spectrum_buff, albedo_srgb, wavelength)
 
                 # Shadow
-                shadow_pos = land_pos * (1.0 + 0.0001*ti.random())
-                earth_land_shadow = self.intersect_land(height_sampler, shadow_pos, self.light_direction[None]) < 0.0
-
-                # Ground lighting
                 sunRadius        = 6.95e8
                 sunDistance      = 1.49e11
                 sunAngularRadius = sunRadius / sunDistance
+                sunCosAngle      = ti.cos(sunAngularRadius)
+
+                shadow_pos = land_pos * (1.0 + 0.0001*ti.random())
+                light_dir = sample_cone_oriented(sunCosAngle, self.light_direction[None])
+                earth_land_shadow = self.intersect_land(height_sampler, shadow_pos, light_dir) < 0.0
+
+                # Ground lighting
                 sun_irradiance = plancks(5778.0, wavelength) * cone_angle_to_solid_angle(sunAngularRadius)
-                power =  albedo * earth_land_shadow * sun_irradiance * saturate(land_normal.dot(self.light_direction[None]))
+                power =  albedo * earth_land_shadow * sun_irradiance * saturate(land_normal.dot(light_dir))
 
                 xyz = power * response * wavelength_rcp_pdf
                 contrib += xyzToRGBMatrix_D65 @ xyz 
