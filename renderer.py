@@ -6,7 +6,7 @@ from functions import *
 import brdf
 
 MAX_RAY_DEPTH = 4
-USE_LOW_QUAL_TEXTURES = False
+USE_LOW_QUAL_TEXTURES = True
 TEX_RES_4K = (3840, 1920)
 TEX_RES_8K = (8100, 4050)
 TEX_RES_10K = (10800, 5400)
@@ -55,7 +55,7 @@ class Renderer:
 
         self._rendered_image = ti.Vector.field(3, float, image_res)
         self.set_up(*up)
-        self.set_fov(np.radians(20.)*0.5)
+        self.set_fov(np.radians(30.)*0.5)
 
         self.atmos = Atmos()
 
@@ -219,7 +219,9 @@ class Renderer:
                 sphere_normal = land_pos.normalized()
                 land_normal = self.land_normal(height_sampler, land_pos)
                 ocean = (sample_sphere_texture(ocean_sampler, land_pos).r)
-                albedo_srgb = (sample_sphere_texture(albedo_sampler, land_pos).rgb)
+                land_albedo_srgb = (sample_sphere_texture(albedo_sampler, land_pos).rgb)
+                ocean_albedo_srgb = mix(lum3(land_albedo_srgb), land_albedo_srgb, 0.3)
+                albedo_srgb = mix(land_albedo_srgb, ocean_albedo_srgb, ocean)
                 albedo = srgb_to_spectrum(self.srgb_to_spectrum_buff, albedo_srgb, wavelength)
 
                 # Shadow

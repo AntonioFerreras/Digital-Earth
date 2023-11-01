@@ -85,6 +85,15 @@ def srgb_transfer_inverse(color):
     linearRGB = mix(linearRGBHi, linearRGBLo, step(color, vec3(0.04045, 0.04045, 0.04045)))
     return linearRGB
 
+@ti.func
+def lum(x):
+    return x.dot(vec3(0.2126729,  0.7151522,  0.0721750))
+
+@ti.func
+def lum3(x):
+    y = lum(x)
+    return vec3(y, y, y)
+
 ## DIRECTION SAMPLING
 
 

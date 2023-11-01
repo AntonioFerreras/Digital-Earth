@@ -78,7 +78,7 @@ class Atmos:
                                                          # could modify the coefficients to model the small increase 
                                                          # in ozone at the very bottom that happens due to pollution
 
-        return d * 4.
+        return d
 
     @ti.func
     def get_density(self, h):
