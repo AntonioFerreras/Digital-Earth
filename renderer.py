@@ -6,7 +6,7 @@ from functions import *
 import brdf
 
 MAX_RAY_DEPTH = 4
-USE_LOW_QUAL_TEXTURES = True
+USE_LOW_QUAL_TEXTURES = False
 TEX_RES_4K = (3840, 1920)
 TEX_RES_8K = (8100, 4050)
 TEX_RES_10K = (10800, 5400)
@@ -55,7 +55,7 @@ class Renderer:
 
         self._rendered_image = ti.Vector.field(3, float, image_res)
         self.set_up(*up)
-        self.set_fov(0.23)
+        self.set_fov(np.radians(20.)*0.5)
 
         self.atmos = Atmos()
 
@@ -234,8 +234,7 @@ class Renderer:
 
                 # Ground lighting
                 sun_irradiance = plancks(5778.0, wavelength) * cone_angle_to_solid_angle(sunAngularRadius)
-                roughness = mix(0.4, 0.15, ocean)
-                brdf = brdf.earth_brdf(albedo, roughness, 0.02, view_dir, land_normal, light_dir)
+                brdf = brdf.earth_brdf(albedo, ocean, view_dir, land_normal, light_dir)
                 power =  earth_land_shadow * sun_irradiance * brdf
 
                 xyz = power * response * wavelength_rcp_pdf

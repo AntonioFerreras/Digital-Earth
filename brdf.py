@@ -81,7 +81,55 @@ def sample_ggx_vndf(V_tangent, rand, alpha):
     return vec3(hemisphere.xy * alpha, hemisphere.z).normalized()
 
 @ti.func
-def disney_specular(roughness, F_0, \
+def beckmann_isotropic_ndf(n_dot_h, alpha):
+    cosTheta2 = n_dot_h*n_dot_h
+    alpha2 = alpha*alpha
+    exponent = (1.0-cosTheta2)/(alpha2*cosTheta2)
+    denom = np.pi * alpha2 * cosTheta2 * cosTheta2
+    return exp(-exponent) / denom 
+
+@ti.func
+def beckmann_isotropic_lambda(n_dot_v, alpha):
+    result = 0.0
+    cosTheta2 = n_dot_v*n_dot_v
+    sinTheta2 = 1.0-cosTheta2
+    tanTheta2 = sinTheta2 / cosTheta2
+
+    nu = 1.0 / ti.sqrt( alpha * ti.sqrt(tanTheta2) )
+    if(nu < 1.6):
+        result = (1.0 - 1.259*nu + 0.396*nu*nu) / (3.535*nu + 2.181*nu*nu)
+
+    return result
+
+@ti.func
+def beckmann_isotropic_visibility(n_dot_v, n_dot_l, alpha):
+    lambda_wo = beckmann_isotropic_lambda(n_dot_v, alpha)
+    lambda_wi = beckmann_isotropic_lambda(n_dot_l, alpha)
+    denom = (1.0 + lambda_wo + lambda_wi)*n_dot_l*n_dot_v*4.0
+    result = 1.0 / denom 
+    if isinf(result) or isnan(result) or result < 0.0:
+        result = 1.0
+    
+    return result
+
+@ti.func
+def beckmann_specular(roughness, F_0, \
+                        n_dot_l, n_dot_v, \
+                        l_dot_h, n_dot_h):
+
+    alpha = roughness
+    alpha *= alpha * 2.0
+    D = beckmann_isotropic_ndf(n_dot_h, alpha)
+    V = beckmann_isotropic_visibility(n_dot_v, n_dot_l, alpha)
+    F = sclick_fresnel(l_dot_h, F_0)
+
+    brdf = D*V*F
+    # if isinf(brdf) or isnan(brdf) or brdf < 0.0:
+    #     brdf = 0.0
+    return brdf
+
+@ti.func
+def GGX_smith_specular(roughness, F_0, \
                         n_dot_l, n_dot_v, \
                         l_dot_h, n_dot_h):
         
@@ -94,15 +142,26 @@ def disney_specular(roughness, F_0, \
     return D * G* F / ti.max(4.0 * n_dot_l * n_dot_v, 1e-5)
 
 @ti.func
-def earth_brdf(albedo, roughness, F_0, v, n, l):
+def earth_brdf(albedo, oceanness, v, n, l):
+
+    h = (v+l).normalized()
+    # n = mix(n, h, -0.4)
+
     n_dot_l = saturate(n.dot(l))
     n_dot_v = saturate(n.dot(v))
 
-    h = (v+l).normalized()
     l_dot_h = saturate(l.dot(h))
     n_dot_h = saturate(n.dot(h))
 
-    diffuse = disney_diffuse(roughness, n_dot_l, n_dot_v, l_dot_h)
-    specular = disney_specular(roughness, F_0, n_dot_l, n_dot_v, l_dot_h, n_dot_h)
+    land_roughness = 0.5
+    ocean_roughness = 0.23
+    land_F_0 = 0.04
+    ocean_F_0 = 0.02
 
-    return albedo*diffuse*n_dot_l + specular
+    diffuse = disney_diffuse(land_roughness, n_dot_l, n_dot_v, l_dot_h)
+    land_specular = GGX_smith_specular(land_roughness, land_F_0, n_dot_l, n_dot_v, l_dot_h, n_dot_h)
+    ocean_specular = beckmann_specular(ocean_roughness, ocean_F_0, n_dot_l, n_dot_v, l_dot_h, n_dot_h)
+
+    brdf = albedo*diffuse + mix(land_specular, ocean_specular, oceanness)
+
+    return brdf * n_dot_l
