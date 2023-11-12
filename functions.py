@@ -125,3 +125,14 @@ def sample_cone(cos_theta_max):
 def sample_cone_oriented(cos_theta_max, n):
     mat_dir = make_tangent_space(n) @ sample_cone(cos_theta_max)
     return ti.Vector([mat_dir[0], mat_dir[1], mat_dir[2]])
+
+@ti.func
+def sample_hemisphere_cosine_weighted(n):
+    # Shirley, et al, 2019. Sampling Transformation Zoo. Chapter 16, Ray Tracing Gems, p240
+    u = ti.Vector([ti.random(), ti.random()])
+    a = 1.0 - 2.0 * u[0]
+    b = ti.sqrt(1.0 - a * a)
+    a *= 1.0 - 1e-5
+    b *= 1.0 - 1e-5 # Grazing angle precision fix
+    phi = 2.0 * np.pi * u[1]
+    return ti.Vector([n.x + b * ti.cos(phi), n.y + b * ti.sin(phi), n.z + a]).normalized()

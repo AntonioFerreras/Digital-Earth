@@ -3,10 +3,10 @@ from atmos import *
 import numpy as np
 from math_utils import *
 from functions import *
-import brdf
+import brdf as material
 
 MAX_RAY_DEPTH = 4
-USE_LOW_QUAL_TEXTURES = True
+USE_LOW_QUAL_TEXTURES = False
 TEX_RES_4K = (3840, 1920)
 TEX_RES_8K = (8100, 4050)
 TEX_RES_10K = (10800, 5400)
@@ -191,7 +191,6 @@ class Renderer:
         
         return ray_dist if ray_dist < max_ray_dist else -1.0
 
-
     @ti.kernel
     def render(self, albedo_sampler: ti.types.texture(num_dimensions=2),
                      height_sampler: ti.types.texture(num_dimensions=2),
@@ -201,48 +200,76 @@ class Renderer:
 
         ti.loop_config(block_dim=256)
         for u, v in self.color_buffer:
+
+            # Sun parameters
+            sunRadius        = 6.95e8
+            sunDistance      = 1.4959e11
+            sunAngularRadius = sunRadius / sunDistance
+            sunCosAngle      = ti.cos(sunAngularRadius)
             
+            # Sample wavelength
             wavelength, response, wavelength_rcp_pdf = spectrum_sample(cie_lut_sampler, CIE_LUT_RES[0])
 
-            d = self.get_cast_dir(u, v)
-            pos = self.camera_pos[None]
+            # Sample primary ray direction
+            ray_dir = self.get_cast_dir(u, v)
+            ray_pos = self.camera_pos[None]
 
-            contrib = ti.Vector([0.0, 0.0, 0.0])
-            throughput = ti.Vector([1.0, 1.0, 1.0])
-            earth_intersection = self.intersect_land(height_sampler, pos, d)
-
+            # Start path tracing
+            in_scattering = 0.0
+            throughput = 1.0
 
             
-            if earth_intersection > 0.0:
-                land_pos = pos + d*earth_intersection
-                view_dir = (self.camera_pos[None] - land_pos).normalized()
-                sphere_normal = land_pos.normalized()
-                land_normal = self.land_normal(height_sampler, land_pos)
-                ocean = (sample_sphere_texture(ocean_sampler, land_pos).r)
-                land_albedo_srgb = (sample_sphere_texture(albedo_sampler, land_pos).rgb)
-                ocean_albedo_srgb = mix(lum3(land_albedo_srgb), land_albedo_srgb, 0.3)
-                albedo_srgb = mix(land_albedo_srgb, ocean_albedo_srgb, ocean)
-                albedo = srgb_to_spectrum(self.srgb_to_spectrum_buff, albedo_srgb, wavelength)
+            for scatter_count in range(0, 5):
+                # Intersect ray with surfaces
+                earth_intersection = self.intersect_land(height_sampler, ray_pos, ray_dir)
 
-                # Shadow
-                sunRadius        = 6.95e8
-                sunDistance      = 1.49e11
-                sunAngularRadius = sunRadius / sunDistance
-                sunCosAngle      = ti.cos(sunAngularRadius)
 
-                shadow_pos = land_pos * (1.0 + 0.0001*ti.random())
-                light_dir = sample_cone_oriented(sunCosAngle, self.light_direction[None])
-                earth_land_shadow = self.intersect_land(height_sampler, shadow_pos, light_dir) < 0.0
+                
+                if earth_intersection > 0.0:
+                    # Surface interaction
 
-                # Ground lighting
-                sun_irradiance = plancks(5778.0, wavelength) * cone_angle_to_solid_angle(sunAngularRadius)
-                brdf = brdf.earth_brdf(albedo, ocean, view_dir, land_normal, light_dir)
-                power =  earth_land_shadow * sun_irradiance * brdf
+                    land_pos = ray_pos + ray_dir*earth_intersection
+                    sphere_normal = land_pos.normalized()
+                    land_normal = self.land_normal(height_sampler, land_pos)
+                    ocean = (sample_sphere_texture(ocean_sampler, land_pos).r)
+                    land_albedo_srgb = (sample_sphere_texture(albedo_sampler, land_pos).rgb)
+                    ocean_albedo_srgb = mix(lum3(land_albedo_srgb), land_albedo_srgb, 0.3)
+                    albedo_srgb = mix(land_albedo_srgb, ocean_albedo_srgb, ocean)
+                    albedo = srgb_to_spectrum(self.srgb_to_spectrum_buff, albedo_srgb, wavelength)
 
-                xyz = power * response * wavelength_rcp_pdf
-                contrib += xyzToRGBMatrix_D65 @ xyz 
+                    # Sample sun light
+                    offset_pos = land_pos * (1.0 + 0.0001*self.land_height_scale/12000.0)
+                    light_dir = sample_cone_oriented(sunCosAngle, self.light_direction[None])
+                    earth_land_shadow = self.intersect_land(height_sampler, offset_pos, light_dir) < 0.0
 
-            self.color_buffer[u, v] += contrib
+                    # Ground lighting
+                    sun_irradiance = plancks(5778.0, wavelength) * cone_angle_to_solid_angle(sunAngularRadius)
+                    brdf, n_dot_l = material.earth_brdf(albedo, ocean, -ray_dir, land_normal, light_dir)
+                    in_scattering += earth_land_shadow * sun_irradiance * brdf * n_dot_l
+
+                    # Sample scattered ray direction
+                    view_dir = -ray_dir
+                    ray_dir = sample_hemisphere_cosine_weighted(land_normal)
+                    ray_pos = offset_pos
+                    brdf, n_dot_l = material.earth_brdf(albedo, ocean, view_dir, land_normal, ray_dir)
+                    throughput *= brdf * np.pi
+
+                else:
+                    break
+                
+                
+                # Russian roulette path termination
+                if scatter_count > 3:
+                    termination_p = max(0.05, 1.0 - throughput)
+                    if ti.random() < termination_p:
+                        break
+                    
+                    throughput /= 1.0 - termination_p
+
+            # Convert spectrum sample to sRGB and accumulate
+            xyz = in_scattering * response * wavelength_rcp_pdf
+            self.color_buffer[u, v] += xyzToRGBMatrix_D65 @ xyz 
+
 
     @ti.kernel
     def _render_to_image(self, samples: ti.i32):

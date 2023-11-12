@@ -14,18 +14,6 @@ def cone_angle_to_solid_angle(x):
     return np.pi*2*(1.0 - ti.cos(x))
 
 @ti.func
-def out_dir(n):
-    u = ti.Vector([1.0, 0.0, 0.0])
-    if ti.abs(n[1]) < 1 - 1e-3:
-        u = n.cross(ti.Vector([0.0, 1.0, 0.0])).normalized()
-    v = n.cross(u)
-    phi = 2 * math.pi * ti.random(ti.f32)
-    r = ti.random(ti.f32)
-    ay = ti.sqrt(r)
-    ax = ti.sqrt(1 - r)
-    return ax * (ti.cos(phi) * u + ti.sin(phi) * v) + ay * n
-
-@ti.func
 def rsi(pos, dir, r):
     b     = pos.dot(dir)
     discr   = b*b - pos.dot(pos) + r*r

@@ -86,7 +86,7 @@ def beckmann_isotropic_ndf(n_dot_h, alpha):
     alpha2 = alpha*alpha
     exponent = (1.0-cosTheta2)/(alpha2*cosTheta2)
     denom = np.pi * alpha2 * cosTheta2 * cosTheta2
-    return exp(-exponent) / denom 
+    return exp(-exponent) / max(denom, 1e-5)
 
 @ti.func
 def beckmann_isotropic_lambda(n_dot_v, alpha):
@@ -98,17 +98,22 @@ def beckmann_isotropic_lambda(n_dot_v, alpha):
     nu = 1.0 / ti.sqrt( alpha * ti.sqrt(tanTheta2) )
     if(nu < 1.6):
         result = (1.0 - 1.259*nu + 0.396*nu*nu) / (3.535*nu + 2.181*nu*nu)
-
+    if isinf(result) or isnan(result) or result < 0.0:
+        result = 0.0
     return result
+
+# V-Cavity Masking-shadowing function
+def G2_VCavity(n_dot_l, n_dot_v, n_dot_h, v_dot_h):
+    return min(1.0, min(2.0 * n_dot_v * n_dot_h / v_dot_h, 2.0 * n_dot_l * n_dot_h / v_dot_h))
 
 @ti.func
 def beckmann_isotropic_visibility(n_dot_v, n_dot_l, alpha):
     lambda_wo = beckmann_isotropic_lambda(n_dot_v, alpha)
     lambda_wi = beckmann_isotropic_lambda(n_dot_l, alpha)
     denom = (1.0 + lambda_wo + lambda_wi)*n_dot_l*n_dot_v*4.0
-    result = 1.0 / denom 
+    result = 1.0 / denom
     if isinf(result) or isnan(result) or result < 0.0:
-        result = 1.0
+        result = 0.0
     
     return result
 
@@ -120,7 +125,7 @@ def beckmann_specular(roughness, F_0, \
     alpha = roughness
     alpha *= alpha * 2.0
     D = beckmann_isotropic_ndf(n_dot_h, alpha)
-    V = beckmann_isotropic_visibility(n_dot_v, n_dot_l, alpha)
+    V = G2_VCavity(n_dot_l, n_dot_v, n_dot_h, l_dot_h) # beckmann_isotropic_visibility(n_dot_v, n_dot_l, alpha)
     F = sclick_fresnel(l_dot_h, F_0)
 
     brdf = D*V*F
@@ -145,7 +150,6 @@ def GGX_smith_specular(roughness, F_0, \
 def earth_brdf(albedo, oceanness, v, n, l):
 
     h = (v+l).normalized()
-    # n = mix(n, h, -0.4)
 
     n_dot_l = saturate(n.dot(l))
     n_dot_v = saturate(n.dot(v))
@@ -164,4 +168,4 @@ def earth_brdf(albedo, oceanness, v, n, l):
 
     brdf = albedo*diffuse + mix(land_specular, ocean_specular, oceanness)
 
-    return brdf * n_dot_l
+    return brdf, n_dot_l
