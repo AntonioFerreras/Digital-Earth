@@ -1,5 +1,5 @@
 import taichi as ti
-from atmos import *
+import atmos
 import numpy as np
 from math_utils import *
 from functions import *
@@ -56,8 +56,6 @@ class Renderer:
         self._rendered_image = ti.Vector.field(3, float, image_res)
         self.set_up(*up)
         self.set_fov(np.radians(30.)*0.5)
-
-        self.atmos = Atmos()
 
         self.land_height_scale = 12000.0
 
@@ -161,14 +159,14 @@ class Renderer:
     @ti.func
     def land_sdf(self, heightmap: ti.template(), pos):
         # bump-mapped sphere SDF for a sphere centered at origin
-        return length(pos) - self.atmos.planet_r - \
+        return length(pos) - atmos.planet_r - \
                               self.land_height_scale*sample_sphere_texture(heightmap, pos).x
     
     @ti.func
     def land_normal(self, heightmap: ti.template(), pos):
         d = self.land_sdf(heightmap, pos)
 
-        e = ti.Vector([0.5*2.0*np.pi*self.atmos.planet_r/TOPOGRAPHY_TEX_RES[0], 0.0])
+        e = ti.Vector([0.5*2.0*np.pi*atmos.planet_r/TOPOGRAPHY_TEX_RES[0], 0.0])
 
         n = d - vec3(self.land_sdf(heightmap, pos - e.xyy),
                      self.land_sdf(heightmap, pos - e.yxy),
@@ -178,7 +176,7 @@ class Renderer:
     @ti.func
     def intersect_land(self, heightmap: ti.template(), pos, dir):
         ray_dist = 0.
-        max_ray_dist = self.atmos.planet_r*10.0
+        max_ray_dist = atmos.planet_r*10.0
     
         for i in range(0, 150):
             ro = pos + dir * ray_dist

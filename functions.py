@@ -136,3 +136,9 @@ def sample_hemisphere_cosine_weighted(n):
     b *= 1.0 - 1e-5 # Grazing angle precision fix
     phi = 2.0 * np.pi * u[1]
     return ti.Vector([n.x + b * ti.cos(phi), n.y + b * ti.sin(phi), n.z + a]).normalized()
+
+@ti.func
+def sample_sphere(rand):
+    rand.x *= np.pi * 2.0; rand.y = rand.y * 2.0 - 1.0
+    ground = vec2(sin(rand.x), cos(rand.x)) * sqrt(1.0 - rand.y * rand.y)
+    return vec3(ground.x, ground.y, rand.y).normalized()
