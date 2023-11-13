@@ -113,12 +113,12 @@ class Camera:
 
 
 class EarthViewer:
-    def __init__(self, voxel_edges=0.06, exposure=3):
-        ti.init(arch=ti.vulkan)
+    def __init__(self, exposure=3):
+        ti.init(arch=ti.vulkan, offline_cache=True)
         print(HELP_MSG)
         self.window = ti.ui.Window("Taichi Voxel Renderer",
                                    SCREEN_RES,
-                                   vsync=False)
+                                   vsync=True)
         self.camera = Camera(self.window, up=UP_DIR)
         self.renderer = Renderer(image_res=SCREEN_RES,
                                  up=UP_DIR,
