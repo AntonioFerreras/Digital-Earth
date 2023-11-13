@@ -1,19 +1,31 @@
 import taichi as ti
-from atmos import *
+from taichi.math import *
 import numpy as np
-from math_utils import *
+from lib.math_utils import *
 
-# DIFFUSE BRDF & SAMPLING
 @ti.func
-def sample_cosine_weighted_hemisphere(n):
-    # Shirley, et al, 2019. Sampling Transformation Zoo. Chapter 16, Ray Tracing Gems, p240
-    u = ti.Vector([ti.random(), ti.random()])
-    a = 1.0 - 2.0 * u[0]
-    b = ti.sqrt(1.0 - a * a)
-    a *= 1.0 - 1e-5
-    b *= 1.0 - 1e-5 # Grazing angle precision fix
-    phi = 2.0 * np.pi * u[1]
-    return ti.Vector([n.x + b * ti.cos(phi), n.y + b * ti.sin(phi), n.z + a]).normalized()
+def earth_brdf(albedo, oceanness, v, n, l):
+
+    h = (v+l).normalized()
+
+    n_dot_l = saturate(n.dot(l))
+    n_dot_v = saturate(n.dot(v))
+
+    l_dot_h = saturate(l.dot(h))
+    n_dot_h = saturate(n.dot(h))
+
+    land_roughness = 0.5
+    ocean_roughness = 0.23
+    land_F_0 = 0.04
+    ocean_F_0 = 0.02
+
+    diffuse = disney_diffuse(land_roughness, n_dot_l, n_dot_v, l_dot_h)
+    land_specular = GGX_smith_specular(land_roughness, land_F_0, n_dot_l, n_dot_v, l_dot_h, n_dot_h)
+    ocean_specular = beckmann_specular(ocean_roughness, ocean_F_0, n_dot_l, n_dot_v, l_dot_h, n_dot_h)
+
+    brdf = albedo*diffuse + mix(land_specular, ocean_specular, oceanness)
+
+    return brdf, n_dot_l
 
 @ti.func
 def disney_diffuse(roughness, n_dot_l, n_dot_v, l_dot_h):
@@ -29,7 +41,35 @@ def disney_diffuse(roughness, n_dot_l, n_dot_v, l_dot_h):
 
     return f_d
 
-# Specular
+@ti.func
+def beckmann_specular(roughness, F_0, \
+                        n_dot_l, n_dot_v, \
+                        l_dot_h, n_dot_h):
+
+    alpha = roughness
+    alpha *= alpha * 2.0
+    D = beckmann_isotropic_ndf(n_dot_h, alpha)
+    V = G2_VCavity(n_dot_l, n_dot_v, n_dot_h, l_dot_h) # beckmann_isotropic_visibility(n_dot_v, n_dot_l, alpha)
+    F = sclick_fresnel(l_dot_h, F_0)
+
+    brdf = D*V*F
+    # if isinf(brdf) or isnan(brdf) or brdf < 0.0:
+    #     brdf = 0.0
+    return brdf
+
+@ti.func
+def GGX_smith_specular(roughness, F_0, \
+                        n_dot_l, n_dot_v, \
+                        l_dot_h, n_dot_h):
+        
+
+    alpha2 = roughness*roughness
+    D = GGX_D(n_dot_h, alpha2)
+    G = G2_smith(n_dot_l, n_dot_v, alpha2)
+    F = sclick_fresnel(l_dot_h, F_0)
+
+    return D * G* F / ti.max(4.0 * n_dot_l * n_dot_v, 1e-5)
+
 @ti.func
 def GGX_D(n_dot_h, alpha2):
     den = (alpha2 - 1.0) * n_dot_h * n_dot_h + 1.0
@@ -117,55 +157,5 @@ def beckmann_isotropic_visibility(n_dot_v, n_dot_l, alpha):
     
     return result
 
-@ti.func
-def beckmann_specular(roughness, F_0, \
-                        n_dot_l, n_dot_v, \
-                        l_dot_h, n_dot_h):
 
-    alpha = roughness
-    alpha *= alpha * 2.0
-    D = beckmann_isotropic_ndf(n_dot_h, alpha)
-    V = G2_VCavity(n_dot_l, n_dot_v, n_dot_h, l_dot_h) # beckmann_isotropic_visibility(n_dot_v, n_dot_l, alpha)
-    F = sclick_fresnel(l_dot_h, F_0)
 
-    brdf = D*V*F
-    # if isinf(brdf) or isnan(brdf) or brdf < 0.0:
-    #     brdf = 0.0
-    return brdf
-
-@ti.func
-def GGX_smith_specular(roughness, F_0, \
-                        n_dot_l, n_dot_v, \
-                        l_dot_h, n_dot_h):
-        
-
-    alpha2 = roughness*roughness
-    D = GGX_D(n_dot_h, alpha2)
-    G = G2_smith(n_dot_l, n_dot_v, alpha2)
-    F = sclick_fresnel(l_dot_h, F_0)
-
-    return D * G* F / ti.max(4.0 * n_dot_l * n_dot_v, 1e-5)
-
-@ti.func
-def earth_brdf(albedo, oceanness, v, n, l):
-
-    h = (v+l).normalized()
-
-    n_dot_l = saturate(n.dot(l))
-    n_dot_v = saturate(n.dot(v))
-
-    l_dot_h = saturate(l.dot(h))
-    n_dot_h = saturate(n.dot(h))
-
-    land_roughness = 0.5
-    ocean_roughness = 0.23
-    land_F_0 = 0.04
-    ocean_F_0 = 0.02
-
-    diffuse = disney_diffuse(land_roughness, n_dot_l, n_dot_v, l_dot_h)
-    land_specular = GGX_smith_specular(land_roughness, land_F_0, n_dot_l, n_dot_v, l_dot_h, n_dot_h)
-    ocean_specular = beckmann_specular(ocean_roughness, ocean_F_0, n_dot_l, n_dot_v, l_dot_h, n_dot_h)
-
-    brdf = albedo*diffuse + mix(land_specular, ocean_specular, oceanness)
-
-    return brdf, n_dot_l

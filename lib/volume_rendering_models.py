@@ -2,7 +2,7 @@ import math
 import taichi as ti
 from taichi.math import *
 import numpy as np
-from math_utils import *
+from lib.math_utils import *
 
 # Atmos Constants
 air_num_density       = 2.5035422e25

@@ -4,7 +4,7 @@ from datetime import datetime
 import numpy as np
 import taichi as ti
 from renderer import Renderer
-from math_utils import np_normalize, np_rotate_matrix
+from lib.math_utils import np_normalize, np_rotate_matrix
 import __main__
 
 
@@ -112,7 +112,7 @@ class Camera:
         return np.cross(self._up, tgtdir)
 
 
-class Scene:
+class EarthViewer:
     def __init__(self, voxel_edges=0.06, exposure=3):
         ti.init(arch=ti.vulkan)
         print(HELP_MSG)

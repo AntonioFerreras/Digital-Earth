@@ -1,7 +1,5 @@
-from scene import Scene
-import taichi as ti
-from taichi.math import *
+from earth_viewer import EarthViewer
 
-scene = Scene(exposure=1)
+scene = EarthViewer(exposure=1)
 
 scene.start()

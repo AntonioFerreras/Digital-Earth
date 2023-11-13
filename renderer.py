@@ -1,31 +1,14 @@
 import taichi as ti
-import atmos
+import lib.volume_rendering_models as volume
 import numpy as np
-from math_utils import *
-from functions import *
-import brdf as material
+from lib.math_utils import *
+from lib.sampling import *
+from lib.colour import *
+from lib.textures import *
+from lib.parameters import PathParameters, SceneParameters
+import pathtracer as pt
 
-MAX_RAY_DEPTH = 4
-USE_LOW_QUAL_TEXTURES = False
-TEX_RES_4K = (3840, 1920)
-TEX_RES_8K = (8100, 4050)
-TEX_RES_10K = (10800, 5400)
-CIE_LUT_RES = (441, 2)
-ALBEDO_4K = 'textures/earth_color_4K.png'
-ALBEDO_10K = 'textures/earth_color_10K.png'
-TOPOGRAPHY_4K = 'textures/topography_4k.png'
-TOPOGRAPHY_10K = 'textures/topography_10k.png'
-OCEAN_4K = 'textures/earth_landocean_4K.png'
-OCEAN_8K = 'textures/earth_landocean_8K.png'
-CIE_LUT_FILE = 'textures/LUT/CIE.dat'
-SRGB2SPEC_LUT_FILE = 'textures/LUT/srgb2spec.dat'
 
-ALBEDO_TEX_FILE = ALBEDO_4K if USE_LOW_QUAL_TEXTURES else ALBEDO_10K
-ALBEDO_TEX_RES = TEX_RES_4K if USE_LOW_QUAL_TEXTURES else TEX_RES_10K
-TOPOGRAPHY_TEX_FILE = TOPOGRAPHY_4K if USE_LOW_QUAL_TEXTURES else TOPOGRAPHY_10K
-TOPOGRAPHY_TEX_RES = ALBEDO_TEX_RES
-OCEAN_TEX_FILE = OCEAN_4K if USE_LOW_QUAL_TEXTURES else OCEAN_8K
-OCEAN_TEX_RES = TEX_RES_4K if USE_LOW_QUAL_TEXTURES else TEX_RES_8K
 
 @ti.data_oriented
 class Renderer:
@@ -156,116 +139,41 @@ class Renderer:
         d = (d + fu * du + fv * dv).normalized()
         return d
 
-    @ti.func
-    def land_sdf(self, heightmap: ti.template(), pos):
-        # bump-mapped sphere SDF for a sphere centered at origin
-        return length(pos) - atmos.planet_r - \
-                              self.land_height_scale*sample_sphere_texture(heightmap, pos).x
     
-    @ti.func
-    def land_normal(self, heightmap: ti.template(), pos):
-        d = self.land_sdf(heightmap, pos)
-
-        e = ti.Vector([0.5*2.0*np.pi*atmos.planet_r/TOPOGRAPHY_TEX_RES[0], 0.0])
-
-        n = d - vec3(self.land_sdf(heightmap, pos - e.xyy),
-                     self.land_sdf(heightmap, pos - e.yxy),
-                     self.land_sdf(heightmap, pos - e.yyx))
-        return n.normalized()
-    
-    @ti.func
-    def intersect_land(self, heightmap: ti.template(), pos, dir):
-        ray_dist = 0.
-        max_ray_dist = atmos.planet_r*10.0
-    
-        for i in range(0, 150):
-            ro = pos + dir * ray_dist
-
-            dist = self.land_sdf(heightmap, ro)
-            ray_dist += dist
-            
-            if ray_dist > max_ray_dist or abs(dist) < ray_dist*0.0001:
-                break
-        
-        return ray_dist if ray_dist < max_ray_dist else -1.0
 
     @ti.kernel
     def render(self, albedo_sampler: ti.types.texture(num_dimensions=2),
                      height_sampler: ti.types.texture(num_dimensions=2),
                      ocean_sampler: ti.types.texture(num_dimensions=2),
                      cie_lut_sampler: ti.types.texture(num_dimensions=2)):
-        self.light_direction[None] = vec3(-0.5, 0.5, -0.5).normalized()
+
+        scene_params = SceneParameters()
+        scene_params.land_height_scale = self.land_height_scale
+
+        # Sun parameters
+        sunRadius   = 6.95e8
+        sunDistance = 1.4959e11
+        scene_params.sun_angular_radius = sunRadius / sunDistance
+        scene_params.sun_cos_angle      = ti.cos(scene_params.sun_angular_radius)
+        scene_params.light_direction = vec3(-0.5, 0.5, -0.5).normalized()
 
         ti.loop_config(block_dim=256)
         for u, v in self.color_buffer:
-
-            # Sun parameters
-            sunRadius        = 6.95e8
-            sunDistance      = 1.4959e11
-            sunAngularRadius = sunRadius / sunDistance
-            sunCosAngle      = ti.cos(sunAngularRadius)
             
-            # Sample wavelength
+            
+            
+            # Sample a path from sensor
             wavelength, response, wavelength_rcp_pdf = spectrum_sample(cie_lut_sampler, CIE_LUT_RES[0])
+            path_params = PathParameters()
+            path_params.wavelength = wavelength
+            path_params.ray_dir = self.get_cast_dir(u, v)
+            path_params.ray_pos = self.camera_pos[None]
 
-            # Sample primary ray direction
-            ray_dir = self.get_cast_dir(u, v)
-            ray_pos = self.camera_pos[None]
-
-            # Start path tracing
-            in_scattering = 0.0
-            throughput = 1.0
-
-            
-            for scatter_count in range(0, 5):
-                # Intersect ray with surfaces
-                earth_intersection = self.intersect_land(height_sampler, ray_pos, ray_dir)
-
-
-                
-                if earth_intersection > 0.0:
-                    # Surface interaction
-
-                    land_pos = ray_pos + ray_dir*earth_intersection
-                    sphere_normal = land_pos.normalized()
-                    land_normal = self.land_normal(height_sampler, land_pos)
-                    ocean = (sample_sphere_texture(ocean_sampler, land_pos).r)
-                    land_albedo_srgb = (sample_sphere_texture(albedo_sampler, land_pos).rgb)
-                    ocean_albedo_srgb = mix(lum3(land_albedo_srgb), land_albedo_srgb, 0.3)
-                    albedo_srgb = mix(land_albedo_srgb, ocean_albedo_srgb, ocean)
-                    albedo = srgb_to_spectrum(self.srgb_to_spectrum_buff, albedo_srgb, wavelength)
-
-                    # Sample sun light
-                    offset_pos = land_pos * (1.0 + 0.0001*self.land_height_scale/12000.0)
-                    light_dir = sample_cone_oriented(sunCosAngle, self.light_direction[None])
-                    earth_land_shadow = self.intersect_land(height_sampler, offset_pos, light_dir) < 0.0
-
-                    # Ground lighting
-                    sun_irradiance = plancks(5778.0, wavelength) * cone_angle_to_solid_angle(sunAngularRadius)
-                    brdf, n_dot_l = material.earth_brdf(albedo, ocean, -ray_dir, land_normal, light_dir)
-                    in_scattering += earth_land_shadow * sun_irradiance * brdf * n_dot_l
-
-                    # Sample scattered ray direction
-                    view_dir = -ray_dir
-                    ray_dir = sample_hemisphere_cosine_weighted(land_normal)
-                    ray_pos = offset_pos
-                    brdf, n_dot_l = material.earth_brdf(albedo, ocean, view_dir, land_normal, ray_dir)
-                    throughput *= brdf * np.pi
-
-                else:
-                    break
-                
-                
-                # Russian roulette path termination
-                if scatter_count > 3:
-                    termination_p = max(0.05, 1.0 - throughput)
-                    if ti.random() < termination_p:
-                        break
-                    
-                    throughput /= 1.0 - termination_p
+            # Sample incoming radiance for path
+            sample = pt.path_tracer(path_params, scene_params, albedo_sampler, height_sampler, ocean_sampler, self.srgb_to_spectrum_buff)
 
             # Convert spectrum sample to sRGB and accumulate
-            xyz = in_scattering * response * wavelength_rcp_pdf
+            xyz = sample * response * wavelength_rcp_pdf
             self.color_buffer[u, v] += xyzToRGBMatrix_D65 @ xyz 
 
 
