@@ -41,6 +41,44 @@ def intersect_land(heightmap: ti.template(), pos, dir, height_scale):
     return ray_dist if ray_dist < max_ray_dist else -1.0
 
 @ti.func
+def sample_interaction_delta_tracking(ray_pos: vec3, 
+                                ray_dir: vec3,
+                                land_isection: float,
+                                extinctions: vec2,
+                                max_extinction: float):
+    atmos_isection = rsi(ray_pos, ray_dir, volume.atmos_upper_limit)
+
+    t = max(0.0, atmos_isection.x)
+    t_max = land_isection if land_isection > 0.0 else atmos_isection.y
+
+    interaction_id = 0
+    interacted = False
+
+    while t < t_max:
+        t -= log(ti.random()) / max_extinction
+        pos = ray_pos + t*ray_dir
+        
+        extinction_sample = extinctions * volume.get_density(volume.get_elevation(pos)).xy
+
+        rand = ti.random()
+        if rand < extinction_sample.dot(vec2(1.0, 1.0)) / max_extinction:
+            cmf = 0.0
+            while interaction_id < 1:
+                cmf += extinction_sample[interaction_id]
+                if rand < cmf / max_extinction: break
+                interaction_id += 1
+            interacted = True
+            break
+        
+    return interacted, t, interaction_id
+
+
+
+
+
+    
+
+@ti.func
 def path_tracer(path: PathParameters,
                 scene: SceneParameters,
                 albedo_sampler: ti.template(),
@@ -58,7 +96,7 @@ def path_tracer(path: PathParameters,
         # Intersect ray with surfaces
         earth_intersection = intersect_land(height_sampler, ray_pos, ray_dir, scene.land_height_scale)
 
-
+        max_extinction = extinctions * volume.get_density(0.0)
                 
         if earth_intersection > 0.0:
             # Surface interaction
