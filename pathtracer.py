@@ -42,17 +42,21 @@ def intersect_land(heightmap: ti.template(), pos, dir, height_scale):
 
 @ti.func
 def sample_interaction_delta_tracking(ray_pos: vec3, 
-                                ray_dir: vec3,
-                                land_isection: float,
-                                extinctions: vec2,
-                                max_extinction: float):
+                                      ray_dir: vec3,
+                                      land_isection: float,
+                                      extinctions: vec2,
+                                      max_extinction: float):
     atmos_isection = rsi(ray_pos, ray_dir, volume.atmos_upper_limit)
 
+    
     t = max(0.0, atmos_isection.x)
-    t_max = land_isection if land_isection > 0.0 else atmos_isection.y
+    t_max = land_isection if land_isection >= 0.0 else atmos_isection.y
 
     interaction_id = 0
     interacted = False
+
+    if atmos_isection.y < 0.0: 
+        t_max = -1.0 # ray doesnt cross atmosphere
 
     while t < t_max:
         t -= log(ti.random()) / max_extinction
@@ -73,8 +77,32 @@ def sample_interaction_delta_tracking(ray_pos: vec3,
     return interacted, t, interaction_id
 
 
+@ti.func
+def transmittance_ratio_tracking(ray_pos: vec3, 
+                                 ray_dir: vec3,
+                                 land_isection: float,
+                                 extinctions: vec2,
+                                 max_extinction: float):
+    atmos_isection = rsi(ray_pos, ray_dir, volume.atmos_upper_limit)
 
+    t = max(0.0, atmos_isection.x)
+    t_max = land_isection if land_isection >= 0.0 else atmos_isection.y
 
+    transmittance = 1.0
+
+    if atmos_isection.y < 0.0: 
+        t_max = -1.0 # ray doesnt cross atmosphere
+
+    while t < t_max:
+        t -= log(ti.random()) / max_extinction
+        pos = ray_pos + t*ray_dir
+        
+        extinction_sample = extinctions * volume.get_density(volume.get_elevation(pos)).xy
+
+        transmittance *= 1.0 - extinction_sample.dot(vec2(1.0, 1.0)) / max_extinction
+        
+        
+    return transmittance
 
     
 
@@ -93,13 +121,43 @@ def path_tracer(path: PathParameters,
 
             
     for scatter_count in range(0, 5):
+        
+        extinctions = vec2(0.0, 0.0)
+        extinctions.x = volume.spectra_extinction_rayleigh(path.wavelength)
+        extinctions.y = volume.spectra_extinction_mie(path.wavelength)
+
+        max_extinctions = extinctions * volume.get_density(0.0).xy
+        max_extinction = max_extinctions.dot(vec2(1.0, 1.0))
+
         # Intersect ray with surfaces
         earth_intersection = intersect_land(height_sampler, ray_pos, ray_dir, scene.land_height_scale)
 
-        max_extinction = extinctions * volume.get_density(0.0)
-                
-        if earth_intersection > 0.0:
-            # Surface interaction
+        # Sample a particle interaction with volume
+        interacted, interaction_dist, interaction_id = sample_interaction_delta_tracking(ray_pos, 
+                                                                                         ray_dir,
+                                                                                         earth_intersection,
+                                                                                         extinctions,
+                                                                                         max_extinction)
+        # Sample a direction to sun
+        light_dir = sample_cone_oriented(scene.sun_cos_angle, scene.light_direction)
+        if interacted:
+            ### Volume scattering
+
+            interaction_pos = ray_pos + interaction_dist*ray_dir
+
+            # Direct illumination
+            # compute sunlight visibility and transmittance. 
+            # no parallax heightmap shadow because its insignificant at atmosphere scale.
+            direct_visibility = rsi(interaction_pos, light_dir, volume.planet_r).x < 0.0
+            direct_transmittance = transmittance_ratio_tracking(interaction_pos,
+                                                                light_dir,
+                                                                -1.0 if direct_visibility else 0.0,
+                                                                extinctions,
+                                                                max_extinction)
+
+
+        elif earth_intersection > 0.0:
+            #### Surface scattering
 
             land_pos = ray_pos + ray_dir*earth_intersection
             sphere_normal = land_pos.normalized()
@@ -110,15 +168,20 @@ def path_tracer(path: PathParameters,
             albedo_srgb = mix(land_albedo_srgb, ocean_albedo_srgb, ocean)
             albedo = srgb_to_spectrum(srgb_to_spectrum_buff, albedo_srgb, path.wavelength)
 
-            # Sample sun light
+            # Direct illumination
+            # compute sunlight visibility and transmittance
             offset_pos = land_pos * (1.0 + 0.0001*scene.land_height_scale/12000.0)
-            light_dir = sample_cone_oriented(scene.sun_cos_angle, scene.light_direction)
-            earth_land_shadow = intersect_land(height_sampler, offset_pos, light_dir, scene.land_height_scale) < 0.0
+            direct_visibility = intersect_land(height_sampler, offset_pos, light_dir, scene.land_height_scale) < 0.0
+            direct_transmittance = transmittance_ratio_tracking(offset_pos,
+                                                                light_dir,
+                                                                -1.0 if direct_visibility else 0.0,
+                                                                extinctions,
+                                                                max_extinction)
 
             # Ground lighting
             sun_irradiance = plancks(5778.0, path.wavelength) * cone_angle_to_solid_angle(scene.sun_angular_radius)
             brdf, n_dot_l = surface.earth_brdf(albedo, ocean, -ray_dir, land_normal, light_dir)
-            in_scattering += earth_land_shadow * sun_irradiance * brdf * n_dot_l
+            in_scattering += direct_transmittance * direct_visibility * sun_irradiance * brdf * n_dot_l
 
             # Sample scattered ray direction
             view_dir = -ray_dir
