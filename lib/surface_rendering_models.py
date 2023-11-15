@@ -14,14 +14,16 @@ def earth_brdf(albedo: ti.f32, oceanness: ti.f32, v: vec3, n: vec3, l: vec3):
     l_dot_h = saturate(l.dot(h))
     n_dot_h = saturate(n.dot(h))
 
-    land_roughness = 0.5
+    land_roughness = 0.6
     ocean_roughness = 0.23
     land_F_0 = 0.04
     ocean_F_0 = 0.02
 
     diffuse = disney_diffuse(land_roughness, n_dot_l, n_dot_v, l_dot_h)
     land_specular = GGX_smith_specular(land_roughness, land_F_0, n_dot_l, n_dot_v, l_dot_h, n_dot_h)
-    ocean_specular = beckmann_specular(ocean_roughness, ocean_F_0, n_dot_l, n_dot_v, l_dot_h, n_dot_h)
+    ocean_specular_ggx = GGX_smith_specular(ocean_roughness, ocean_F_0, n_dot_l, n_dot_v, l_dot_h, n_dot_h)
+    ocean_specular_beckmann = 0.9*beckmann_specular(ocean_roughness, ocean_F_0, n_dot_l, n_dot_v, l_dot_h, n_dot_h)
+    ocean_specular = mix(ocean_specular_beckmann, ocean_specular_ggx, clamp(smoothstep(0.2, 0.95, n_dot_v), 0.05, 0.94)) # pow(n_dot_v, 0.75)
 
     brdf = albedo*diffuse + mix(land_specular, ocean_specular, oceanness)
 
@@ -50,7 +52,7 @@ def beckmann_specular(roughness: ti.f32, F_0: ti.f32, \
     alpha *= alpha * 2.0
     D = beckmann_isotropic_ndf(n_dot_h, alpha)
     V = G2_VCavity(n_dot_l, n_dot_v, n_dot_h, l_dot_h) # beckmann_isotropic_visibility(n_dot_v, n_dot_l, alpha)
-    F = sclick_fresnel(l_dot_h, F_0)
+    F = fresnel_dielectric(l_dot_h, F_0)
 
     brdf = D*V*F
     # if isinf(brdf) or isnan(brdf) or brdf < 0.0:
@@ -66,7 +68,7 @@ def GGX_smith_specular(roughness: ti.f32, F_0: ti.f32, \
     alpha2 = roughness*roughness
     D = GGX_D(n_dot_h, alpha2)
     G = G2_smith(n_dot_l, n_dot_v, alpha2)
-    F = sclick_fresnel(l_dot_h, F_0)
+    F = fresnel_dielectric(l_dot_h, F_0)
 
     return D * G* F / ti.max(4.0 * n_dot_l * n_dot_v, 1e-5)
 
@@ -97,6 +99,20 @@ def G2_smith(n_dot_l: ti.f32, n_dot_v: ti.f32, alpha2: ti.f32):
 @ti.func
 def sclick_fresnel(v_dot_h: ti.f32, F_0: ti.f32):
     return F_0 + (1 - F_0) * pow(1.0 - v_dot_h, 5.0)
+
+@ti.func
+def fresnel_dielectric(v_dot_h: ti.f32, F_0: ti.f32):
+    F_0 = sqrt(F_0)
+    F_0 = (1.0 + F_0) / (1.0 - F_0)
+
+    sin_theta_I = sqrt(saturate(1.0 - sqr(v_dot_h)))
+    sin_theta_T = sin_theta_I / max(F_0, 1e-8)
+    cos_theta_T = sqrt(1.0 - sqr(sin_theta_T))
+
+    R_s        = sqr((v_dot_h - (F_0 * cos_theta_T)) / max(v_dot_h + (F_0 * cos_theta_T), 1e-8))
+    R_p        = sqr((cos_theta_T - (F_0 * v_dot_h)) / max(cos_theta_T + (F_0 * v_dot_h), 1e-8))
+
+    return saturate((R_s + R_p) * 0.5)
 
 @ti.func
 def sample_ggx_vndf(V_tangent: ti.f32, rand: ti.f32, alpha: ti.f32):
