@@ -47,6 +47,12 @@ def sample_sphere_texture(sampler: ti.template(), pos):
 def saturate(x):
     return ti.math.clamp(x, 0.0, 1.0)
 
+
+@ti.func
+def normal_distribution(x: ti.f32, mean: ti.f32, stdev: ti.f32):
+    return (1.0 / (stdev * sqrt(2.0 * np.pi))) * exp(-0.5 * sqr((x - mean) / stdev))
+
+
 def np_normalize(v):
     # https://stackoverflow.com/a/51512965/12003165
     return v / np.sqrt(np.sum(v**2))
@@ -67,3 +73,4 @@ def np_rotate_matrix(axis, theta):
                      [2 * (bc - ad), aa + cc - bb - dd, 2 * (cd + ab), 0],
                      [2 * (bd + ac), 2 * (cd - ab), aa + dd - bb - cc, 0],
                      [0, 0, 0, 1]])
+

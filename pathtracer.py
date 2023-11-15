@@ -44,7 +44,7 @@ def intersect_land(heightmap: ti.template(), pos: vec3, dir: vec3, height_scale:
 def sample_interaction_delta_tracking(ray_pos: vec3, 
                                       ray_dir: vec3,
                                       land_isection: float,
-                                      extinctions: vec2,
+                                      extinctions: vec3,
                                       max_extinction: float):
     atmos_isection = rsi(ray_pos, ray_dir, volume.atmos_upper_limit)
 
@@ -66,12 +66,12 @@ def sample_interaction_delta_tracking(ray_pos: vec3,
 
         if (t >= t_max): break
         
-        extinction_sample = extinctions * volume.get_density(volume.get_elevation(ray_pos)).xy
+        extinction_sample = extinctions * volume.get_density(volume.get_elevation(ray_pos)).xyz
 
         rand = ti.random()
-        if rand < extinction_sample.dot(vec2(1.0, 1.0)) / max_extinction:
+        if rand < extinction_sample.dot(vec3(1.0, 1.0, 1.0)) / max_extinction:
             cmf = 0.0
-            while interaction_id < 1:
+            while interaction_id < 2:
                 cmf += extinction_sample[interaction_id]
                 if rand < cmf / max_extinction: break
                 interaction_id += 1
@@ -86,7 +86,7 @@ def sample_interaction_delta_tracking(ray_pos: vec3,
 def transmittance_ratio_tracking(ray_pos: vec3, 
                                  ray_dir: vec3,
                                  land_isection: float,
-                                 extinctions: vec2,
+                                 extinctions: vec3,
                                  max_extinction: float):
     atmos_isection = rsi(ray_pos, ray_dir, volume.atmos_upper_limit)
 
@@ -106,9 +106,9 @@ def transmittance_ratio_tracking(ray_pos: vec3,
 
         if (t >= t_max): break
         
-        extinction_sample = extinctions * volume.get_density(volume.get_elevation(ray_pos)).xy
+        extinction_sample = extinctions * volume.get_density(volume.get_elevation(ray_pos)).xyz
 
-        transmittance *= 1.0 - extinction_sample.dot(vec2(1.0, 1.0)) / max_extinction
+        transmittance *= 1.0 - extinction_sample.dot(vec3(1.0, 1.0, 1.0)) / max_extinction
         
     return transmittance
 
@@ -150,16 +150,19 @@ def path_tracer(path: PathParameters,
     in_scattering = 0.0
     throughput = 1.0
     sun_irradiance = plancks(5778.0, path.wavelength) * cone_angle_to_solid_angle(scene.sun_angular_radius)
+    max_densities = volume.get_density(0.0)
+    max_densities.z = volume.get_ozone_density(volume.ozone_peak_height)
             
     for scatter_count in range(0, 15):
         
-        extinctions = vec2(0.0, 0.0)
+        extinctions = vec3(0.0, 0.0, 0.0)
         extinctions.x = volume.spectra_extinction_rayleigh(path.wavelength)
         extinctions.y = volume.spectra_extinction_mie(path.wavelength)
+        extinctions.z = volume.spectra_extinction_ozone(path.wavelength)
         
 
-        max_extinctions = extinctions * volume.get_density(0.0).xy
-        max_extinction = max_extinctions.dot(vec2(1.0, 1.0))
+        max_extinctions = extinctions * max_densities
+        max_extinction = max_extinctions.dot(vec3(1.0, 1.0, 1.0))
 
         # Intersect ray with surfaces
         earth_intersection = intersect_land(height_sampler, ray_pos, ray_dir, scene.land_height_scale)
@@ -209,7 +212,7 @@ def path_tracer(path: PathParameters,
             land_normal = land_normal(height_sampler, land_pos, scene.land_height_scale)
             ocean = (sample_sphere_texture(ocean_sampler, land_pos).r)
             land_albedo_srgb = (sample_sphere_texture(albedo_sampler, land_pos).rgb)
-            ocean_albedo_srgb = mix(lum3(land_albedo_srgb), land_albedo_srgb, 0.3)
+            ocean_albedo_srgb = mix(lum3(land_albedo_srgb), land_albedo_srgb, 0.1)
             albedo_srgb = mix(land_albedo_srgb, ocean_albedo_srgb, ocean)
             albedo = srgb_to_spectrum(srgb_to_spectrum_buff, albedo_srgb, path.wavelength)
 
