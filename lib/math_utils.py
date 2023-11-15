@@ -1,5 +1,6 @@
 import math
 import taichi as ti
+from taichi.math import *
 import numpy as np
 
 eps = 1e-4
@@ -10,11 +11,11 @@ def sqr(x):
     return x*x
 
 @ti.func
-def cone_angle_to_solid_angle(x):
+def cone_angle_to_solid_angle(x: ti.f32):
     return np.pi*2*(1.0 - ti.cos(x))
 
 @ti.func
-def rsi(pos, dir, r):
+def rsi(pos: vec3, dir: vec3, r: ti.f32):
     b     = pos.dot(dir)
     discr   = b*b - pos.dot(pos) + r*r
     discr     = ti.sqrt(discr)
@@ -22,7 +23,7 @@ def rsi(pos, dir, r):
     return ti.select(discr < 0.0, ti.Vector([-1.0, -1.0]), ti.Vector([-b, -b]) + ti.Vector([-discr, discr]))
 
 @ti.func
-def sphere_UV_map(n):
+def sphere_UV_map(n: vec3):
     return ti.Vector([ (ti.atan2(n.z, -n.x) / np.pi + 1.) / 2.,
                        (ti.asin(n.y) / np.pi + 0.5) ])
 

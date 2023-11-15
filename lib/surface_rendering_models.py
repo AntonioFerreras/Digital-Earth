@@ -4,7 +4,7 @@ import numpy as np
 from lib.math_utils import *
 
 @ti.func
-def earth_brdf(albedo, oceanness, v, n, l):
+def earth_brdf(albedo: ti.f32, oceanness: ti.f32, v: vec3, n: vec3, l: vec3):
 
     h = (v+l).normalized()
 
@@ -28,7 +28,7 @@ def earth_brdf(albedo, oceanness, v, n, l):
     return brdf, n_dot_l
 
 @ti.func
-def disney_diffuse(roughness, n_dot_l, n_dot_v, l_dot_h):
+def disney_diffuse(roughness: ti.f32, n_dot_l: ti.f32, n_dot_v: ti.f32, l_dot_h: ti.f32):
 
     R_R = 2.0 * roughness * sqr(l_dot_h)
     F_L = pow(1.0 - n_dot_l, 5.0)
@@ -42,9 +42,9 @@ def disney_diffuse(roughness, n_dot_l, n_dot_v, l_dot_h):
     return f_d
 
 @ti.func
-def beckmann_specular(roughness, F_0, \
-                        n_dot_l, n_dot_v, \
-                        l_dot_h, n_dot_h):
+def beckmann_specular(roughness: ti.f32, F_0: ti.f32, \
+                        n_dot_l: ti.f32, n_dot_v: ti.f32, \
+                        l_dot_h: ti.f32, n_dot_h: ti.f32):
 
     alpha = roughness
     alpha *= alpha * 2.0
@@ -58,9 +58,9 @@ def beckmann_specular(roughness, F_0, \
     return brdf
 
 @ti.func
-def GGX_smith_specular(roughness, F_0, \
-                        n_dot_l, n_dot_v, \
-                        l_dot_h, n_dot_h):
+def GGX_smith_specular(roughness: ti.f32, F_0: ti.f32, \
+                        n_dot_l: ti.f32, n_dot_v: ti.f32, \
+                        l_dot_h: ti.f32, n_dot_h: ti.f32):
         
 
     alpha2 = roughness*roughness
@@ -71,35 +71,35 @@ def GGX_smith_specular(roughness, F_0, \
     return D * G* F / ti.max(4.0 * n_dot_l * n_dot_v, 1e-5)
 
 @ti.func
-def GGX_D(n_dot_h, alpha2):
+def GGX_D(n_dot_h: ti.f32, alpha2: ti.f32):
     den = (alpha2 - 1.0) * n_dot_h * n_dot_h + 1.0
     return alpha2 / (np.pi * den * den)
 
 
 @ti.func
-def lambda_smith(NdotX, alpha2):
+def lambda_smith(NdotX: ti.f32, alpha2: ti.f32):
     n_dot_x2 = NdotX * NdotX
     return (-1.0 + ti.sqrt(alpha2 * (1.0 - n_dot_x2) / n_dot_x2 + 1.0)) * 0.5
 
 # Masking function
 @ti.func
-def G1_smith(n_dot_v, alpha2):
+def G1_smith(n_dot_v: ti.f32, alpha2: ti.f32):
     lambdaV = lambda_smith(n_dot_v, alpha2)
     return 1.0 / (1.0 + lambdaV)
 
 # Height Correlated Masking-shadowing function
 @ti.func
-def G2_smith(n_dot_l, n_dot_v, alpha2):
+def G2_smith(n_dot_l: ti.f32, n_dot_v: ti.f32, alpha2: ti.f32):
     lambdaV = lambda_smith(n_dot_v, alpha2)
     lambdaL = lambda_smith(n_dot_l, alpha2)
     return 1.0 / (1.0 + lambdaV + lambdaL)
 
 @ti.func
-def sclick_fresnel(v_dot_h, F_0):
+def sclick_fresnel(v_dot_h: ti.f32, F_0: ti.f32):
     return F_0 + (1 - F_0) * pow(1.0 - v_dot_h, 5.0)
 
 @ti.func
-def sample_ggx_vndf(V_tangent, rand, alpha):
+def sample_ggx_vndf(V_tangent: ti.f32, rand: ti.f32, alpha: ti.f32):
     # stretch view direction
     V_tangent_stretched = vec3(V_tangent.xy * alpha, V_tangent.z).normalized()
 
@@ -121,7 +121,7 @@ def sample_ggx_vndf(V_tangent, rand, alpha):
     return vec3(hemisphere.xy * alpha, hemisphere.z).normalized()
 
 @ti.func
-def beckmann_isotropic_ndf(n_dot_h, alpha):
+def beckmann_isotropic_ndf(n_dot_h: ti.f32, alpha: ti.f32):
     cosTheta2 = n_dot_h*n_dot_h
     alpha2 = alpha*alpha
     exponent = (1.0-cosTheta2)/(alpha2*cosTheta2)
@@ -129,7 +129,7 @@ def beckmann_isotropic_ndf(n_dot_h, alpha):
     return exp(-exponent) / max(denom, 1e-5)
 
 @ti.func
-def beckmann_isotropic_lambda(n_dot_v, alpha):
+def beckmann_isotropic_lambda(n_dot_v: ti.f32, alpha: ti.f32):
     result = 0.0
     cosTheta2 = n_dot_v*n_dot_v
     sinTheta2 = 1.0-cosTheta2
@@ -143,11 +143,12 @@ def beckmann_isotropic_lambda(n_dot_v, alpha):
     return result
 
 # V-Cavity Masking-shadowing function
-def G2_VCavity(n_dot_l, n_dot_v, n_dot_h, v_dot_h):
+@ti.func
+def G2_VCavity(n_dot_l: ti.f32, n_dot_v: ti.f32, n_dot_h: ti.f32, v_dot_h: ti.f32):
     return min(1.0, min(2.0 * n_dot_v * n_dot_h / v_dot_h, 2.0 * n_dot_l * n_dot_h / v_dot_h))
 
 @ti.func
-def beckmann_isotropic_visibility(n_dot_v, n_dot_l, alpha):
+def beckmann_isotropic_visibility(n_dot_v: ti.f32, n_dot_l: ti.f32, alpha: ti.f32):
     lambda_wo = beckmann_isotropic_lambda(n_dot_v, alpha)
     lambda_wi = beckmann_isotropic_lambda(n_dot_l, alpha)
     denom = (1.0 + lambda_wo + lambda_wi)*n_dot_l*n_dot_v*4.0

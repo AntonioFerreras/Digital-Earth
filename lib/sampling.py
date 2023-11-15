@@ -9,19 +9,19 @@ from lib.math_utils import *
 
 
 @ti.func
-def make_orthonormal_basis(n):
+def make_orthonormal_basis(n: vec3):
     h = ti.select(ti.abs(n.y) > 0.9, ti.math.vec3(1.0, 0.0, 0.0), ti.math.vec3(0.0, 1.0, 0.0))
     y = n.cross(h).normalized()
     x = n.cross(y)
     return x, y
 
 @ti.func
-def make_tangent_space(n):
+def make_tangent_space(n: vec3):
     x, y = make_orthonormal_basis(n)
     return ti.math.mat3(x, y, n).transpose()
 
 @ti.func
-def sample_cone(cos_theta_max):
+def sample_cone(cos_theta_max: ti.f32):
     u0 = ti.random()
     u1 = ti.random()
     cos_theta = (1.0 - u0) + u0 * cos_theta_max
@@ -33,12 +33,12 @@ def sample_cone(cos_theta_max):
     return ti.Vector([x, y, z])
 
 @ti.func
-def sample_cone_oriented(cos_theta_max, n):
+def sample_cone_oriented(cos_theta_max: ti.f32, n: vec3):
     mat_dir = make_tangent_space(n) @ sample_cone(cos_theta_max)
     return ti.Vector([mat_dir[0], mat_dir[1], mat_dir[2]])
 
 @ti.func
-def sample_hemisphere_cosine_weighted(n):
+def sample_hemisphere_cosine_weighted(n: vec3):
     # Shirley, et al, 2019. Sampling Transformation Zoo. Chapter 16, Ray Tracing Gems, p240
     u = ti.Vector([ti.random(), ti.random()])
     a = 1.0 - 2.0 * u[0]
@@ -49,7 +49,7 @@ def sample_hemisphere_cosine_weighted(n):
     return ti.Vector([n.x + b * ti.cos(phi), n.y + b * ti.sin(phi), n.z + a]).normalized()
 
 @ti.func
-def sample_sphere(rand):
+def sample_sphere(rand: vec2):
     rand.x *= np.pi * 2.0; rand.y = rand.y * 2.0 - 1.0
     ground = vec2(sin(rand.x), cos(rand.x)) * sqrt(1.0 - rand.y * rand.y)
     return vec3(ground.x, ground.y, rand.y).normalized()
