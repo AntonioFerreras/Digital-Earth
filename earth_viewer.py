@@ -4,6 +4,7 @@ from datetime import datetime
 import numpy as np
 import taichi as ti
 from renderer import Renderer
+from lib.volume_rendering_models import planet_r
 from lib.math_utils import np_normalize, np_rotate_matrix
 import __main__
 
@@ -84,9 +85,9 @@ class Camera:
             return False
         dir *= 0.05
 
-        speed = 0.08 * np.sqrt(self._camera_pos[0]*self._camera_pos[0] + 
-                               self._camera_pos[1]*self._camera_pos[1] + 
-                               self._camera_pos[2]*self._camera_pos[2])
+        speed = 0.8 * min(np.sqrt(self._camera_pos[0]*self._camera_pos[0] + 
+                                   self._camera_pos[1]*self._camera_pos[1] + 
+                                   self._camera_pos[2]*self._camera_pos[2]) - planet_r, planet_r*0.5)
         if win.is_pressed(ti.ui.SHIFT):
             speed *= 3.0
         self._lookat_pos += dir*speed

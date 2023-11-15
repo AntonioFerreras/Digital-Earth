@@ -29,7 +29,7 @@ def intersect_land(heightmap: ti.template(), pos: vec3, dir: vec3, height_scale:
     ray_dist = 0.
     max_ray_dist = volume.planet_r*10.0
     
-    for i in range(0, 150):
+    for i in range(0, 250):
         ro = pos + dir * ray_dist
 
         dist = land_sdf(heightmap, ro, height_scale)
