@@ -32,8 +32,12 @@ atmos_height  = 110e3
 atmos_upper_limit = planet_r + atmos_height
 
 # Cloud constants
-cloud_height = 1000.0 + 1e3
-cloud_thickness = 170.0*2.0
+clouds_extinct = 0.1
+clouds_density = 1.0
+clouds_height = 10300.0
+clouds_thickness = 50.0
+clouds_lower_limit = planet_r + clouds_height
+clouds_upper_limit = clouds_lower_limit + clouds_thickness
 #############
 
 
@@ -42,9 +46,14 @@ def rayleigh_phase(cos_theta: ti.f32):
     return 3.0/(16.0*np.pi)*(1.0 + cos_theta*cos_theta)
 
 @ti.func
+def hg_phase(cos_theta: ti.f32, g: ti.f32):
+    # Henyey-Greenstein phase
+    return (1-g*g)/(4.0*np.pi*pow(1.0 + g*g - 2*g*cos_theta, 1.5))
+
+@ti.func
 def mie_phase(cos_theta: ti.f32):
     # Henyey-Greenstein phase
-    return (1-mie_g*mie_g)/(4.0*np.pi*pow(1.0 + mie_g*mie_g - 2*mie_g*cos_theta, 1.5))
+    return hg_phase(cos_theta, mie_g)
 
 @ti.func
 def air(wavelength: ti.f32):

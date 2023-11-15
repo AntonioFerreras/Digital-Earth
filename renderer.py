@@ -58,6 +58,11 @@ class Renderer:
         load_image = ti.tools.imread(OCEAN_TEX_FILE)[:, :, 0]
         self.ocean_buff.from_numpy(load_image)
 
+        self.clouds_tex = ti.Texture(ti.Format.r8, CLOUDS_TEX_RES)
+        self.clouds_buff = ti.field(dtype=ti.u8, shape=CLOUDS_TEX_RES)
+        load_image = ti.tools.imread(CLOUDS_TEX_FILE)[:, :, 0]
+        self.clouds_buff.from_numpy(load_image)
+
         # LUTS
         self.CIE_LUT_tex = ti.Texture(ti.Format.rgba16f, CIE_LUT_RES)
         self.CIE_LUT_buff = ti.Vector.field(3, dtype=ti.f32, shape=CIE_LUT_RES)
@@ -85,6 +90,7 @@ class Renderer:
         self.copy_albedo_texture(self.albedo_tex)
         self.copy_topography_texture(self.topography_tex)
         self.copy_ocean_texture(self.ocean_tex)
+        self.copy_clouds_texture(self.clouds_tex)
         self.copy_CIE_LUT_texture(self.CIE_LUT_tex)
 
     @ti.kernel
@@ -103,6 +109,12 @@ class Renderer:
     def copy_ocean_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.r8, lod=0)):
         for i, j in ti.ndrange(OCEAN_TEX_RES[0], OCEAN_TEX_RES[1]):
             val = ti.cast(self.ocean_buff[i, j], ti.f32) / 255.0
+            tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
+    
+    @ti.kernel
+    def copy_clouds_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.r8, lod=0)):
+        for i, j in ti.ndrange(CLOUDS_TEX_RES[0], CLOUDS_TEX_RES[1]):
+            val = ti.cast(self.clouds_buff[i, j], ti.f32) / 255.0
             tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
 
     @ti.kernel
@@ -145,6 +157,7 @@ class Renderer:
     def render(self, albedo_sampler: ti.types.texture(num_dimensions=2),
                      height_sampler: ti.types.texture(num_dimensions=2),
                      ocean_sampler: ti.types.texture(num_dimensions=2),
+                     clouds_sampler: ti.types.texture(num_dimensions=2),
                      cie_lut_sampler: ti.types.texture(num_dimensions=2)):
 
         scene_params = SceneParameters()
@@ -170,7 +183,9 @@ class Renderer:
             path_params.ray_pos = self.camera_pos[None]
 
             # Sample incoming radiance for path
-            sample = pt.path_tracer(path_params, scene_params, albedo_sampler, height_sampler, ocean_sampler, self.srgb_to_spectrum_buff)
+            sample = pt.path_tracer(path_params, scene_params, 
+                                    albedo_sampler, height_sampler, ocean_sampler, clouds_sampler, 
+                                    self.srgb_to_spectrum_buff)
 
             # Convert spectrum sample to sRGB and accumulate
             xyz = sample * response * wavelength_rcp_pdf
@@ -198,7 +213,7 @@ class Renderer:
         self.color_buffer.fill(0)
 
     def accumulate(self):
-        self.render(self.albedo_tex, self.topography_tex, self.ocean_tex, self.CIE_LUT_tex)
+        self.render(self.albedo_tex, self.topography_tex, self.ocean_tex, self.clouds_tex, self.CIE_LUT_tex)
         self.current_spp += 1
 
     def fetch_image(self):

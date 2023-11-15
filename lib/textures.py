@@ -9,6 +9,8 @@ TOPOGRAPHY_4K = 'textures/topography_4k.png'
 TOPOGRAPHY_10K = 'textures/topography_10k.png'
 OCEAN_4K = 'textures/earth_landocean_4K.png'
 OCEAN_8K = 'textures/earth_landocean_8K.png'
+CLOUDS_4K = 'textures/earth_clouds_4K.png'
+CLOUDS_8K = 'textures/earth_clouds_8K.png'
 CIE_LUT_FILE = 'textures/LUT/CIE.dat'
 SRGB2SPEC_LUT_FILE = 'textures/LUT/srgb2spec.dat'
 
@@ -17,4 +19,6 @@ ALBEDO_TEX_RES = TEX_RES_4K if USE_LOW_QUAL_TEXTURES else TEX_RES_10K
 TOPOGRAPHY_TEX_FILE = TOPOGRAPHY_4K if USE_LOW_QUAL_TEXTURES else TOPOGRAPHY_10K
 TOPOGRAPHY_TEX_RES = ALBEDO_TEX_RES
 OCEAN_TEX_FILE = OCEAN_4K if USE_LOW_QUAL_TEXTURES else OCEAN_8K
+CLOUDS_TEX_FILE = CLOUDS_4K if USE_LOW_QUAL_TEXTURES else CLOUDS_8K
 OCEAN_TEX_RES = TEX_RES_4K if USE_LOW_QUAL_TEXTURES else TEX_RES_8K
+CLOUDS_TEX_RES = TEX_RES_4K if USE_LOW_QUAL_TEXTURES else TEX_RES_8K
