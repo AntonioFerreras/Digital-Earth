@@ -45,7 +45,9 @@ def get_clouds_density(clouds_sampler: ti.template(), pos: vec3):
     r = length(pos)
     density = 0.0
     if r > volume.clouds_lower_limit and r < volume.clouds_upper_limit:
-        density = sample_sphere_texture(clouds_sampler, pos).r
+        h = (r - volume.clouds_lower_limit)/volume.clouds_height
+        column_height = pow(sample_sphere_texture(clouds_sampler, pos).r, 1.0)
+        density = column_height if h < column_height else 0.0
     
     return density * volume.clouds_density
 
@@ -204,7 +206,7 @@ def evaluate_phase(ray_dir: vec3, light_dir: vec3, interaction_id: ti.i32):
         phase += volume.rayleigh_phase(cos_theta)
     elif interaction_id == 1:
         phase += volume.mie_phase(cos_theta)
-    elif interaction_id == 2:
+    elif interaction_id == 3:
         peak = volume.hg_phase(cos_theta, 0.85)
         front = volume.hg_phase(cos_theta, 0.35)
         back = volume.hg_phase(cos_theta, -0.35)
@@ -271,7 +273,7 @@ def path_tracer(path: PathParameters,
         
         if interacted:
             ### Volume scattering
-
+            
             interaction_pos = ray_pos + interaction_dist*ray_dir
 
             # Direct illumination
@@ -295,6 +297,7 @@ def path_tracer(path: PathParameters,
                 ray_dir = scatter_dir
                 ray_pos = interaction_pos
                 throughput *= phase_div_pdf
+                
             else:
                 break # absorbed
 
@@ -302,7 +305,6 @@ def path_tracer(path: PathParameters,
 
         elif earth_intersection > 0.0:
             #### Surface scattering
-
             land_pos = ray_pos + ray_dir*earth_intersection
             sphere_normal = land_pos.normalized()
             land_normal = land_normal(height_sampler, land_pos, scene.land_height_scale)
