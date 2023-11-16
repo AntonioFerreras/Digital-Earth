@@ -201,7 +201,7 @@ class Renderer:
             darken = 1.0 - self.vignette_strength * max((ti.sqrt(
                 (u - self.vignette_center[0])**2 +
                 (v - self.vignette_center[1])**2) - self.vignette_radius), 0)
-            exposure = 2.
+            exposure = 6.
             linear = self.color_buffer[i, j]/samples * darken * self.exposure * exposure
             output = srgb_transfer(linear)
 

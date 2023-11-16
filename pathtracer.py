@@ -58,22 +58,16 @@ def get_atmos_density(pos: vec3, clouds_sampler: ti.template()):
 @ti.func
 def sample_interaction_delta_tracking(ray_pos: vec3, 
                                       ray_dir: vec3,
-                                      land_isection: float,
+                                      t_start: float,
+                                      t_max: float,
                                       extinctions: vec4,
                                       max_extinction: float,
                                       clouds_sampler: ti.template()):
-    atmos_isection = rsi(ray_pos, ray_dir, volume.atmos_upper_limit)
-
-    
-    t = max(0.0, atmos_isection.x)
-    t_max = land_isection if land_isection >= 0.0 else atmos_isection.y
+    t = t_start
     ray_pos += t*ray_dir
 
     interaction_id = 0
     interacted = False
-
-    if atmos_isection.y < 0.0: 
-        t_max = -1.0 # ray doesnt cross atmosphere
 
     while t < t_max:
         t_step = -log(ti.random()) / max_extinction
@@ -85,7 +79,7 @@ def sample_interaction_delta_tracking(ray_pos: vec3,
         extinction_sample = extinctions * get_atmos_density(ray_pos, clouds_sampler)
 
         rand = ti.random()
-        if rand < extinction_sample.dot(vec4(1.0, 1.0, 1.0, 1.0)) / max_extinction:
+        if rand < extinction_sample.sum() / max_extinction:
             cmf = 0.0
             while interaction_id < 3:
                 cmf += extinction_sample[interaction_id]
@@ -97,24 +91,18 @@ def sample_interaction_delta_tracking(ray_pos: vec3,
         
     return interacted, t, interaction_id
 
-
 @ti.func
 def transmittance_ratio_tracking(ray_pos: vec3, 
                                  ray_dir: vec3,
-                                 land_isection: float,
+                                 t_start: float,
+                                 t_max: float,
                                  extinctions: vec4,
                                  max_extinction: float,
                                  clouds_sampler: ti.template()):
-    atmos_isection = rsi(ray_pos, ray_dir, volume.atmos_upper_limit)
-
-    t = max(0.0, atmos_isection.x)
-    t_max = land_isection if land_isection >= 0.0 else atmos_isection.y
+    t = t_start
     ray_pos += t*ray_dir
 
     transmittance = 1.0
-
-    if atmos_isection.y < 0.0: 
-        t_max = -1.0 # ray doesnt cross atmosphere
 
     while t < t_max:
         t_step = -log(ti.random()) / max_extinction
@@ -125,9 +113,88 @@ def transmittance_ratio_tracking(ray_pos: vec3,
         
         extinction_sample = extinctions * get_atmos_density(ray_pos, clouds_sampler)
 
-        transmittance *= 1.0 - extinction_sample.dot(vec4(1.0, 1.0, 1.0, 1.0)) / max_extinction
+        transmittance *= 1.0 - extinction_sample.sum() / max_extinction
         
     return transmittance
+
+@ti.func
+def intersect_cloud_limits(ray_pos: vec3, ray_dir: vec3, land_isection: float):
+    t_start = 0.0
+    t_max = 0.0
+    cloud_lower_isection = rsi(ray_pos, ray_dir, volume.clouds_lower_limit)
+    cloud_upper_isection = rsi(ray_pos, ray_dir, volume.clouds_upper_limit)
+    if length(ray_pos) >= volume.clouds_upper_limit:
+        t_start = max(0.0, cloud_upper_isection.x)
+        t_max = cloud_upper_isection.y if cloud_lower_isection.y < 0.0 else cloud_lower_isection.x
+
+        if cloud_upper_isection.y < 0.0: t_max = -1.0
+    elif length(ray_pos) >= volume.clouds_lower_limit:
+        t_start = 0.0
+        t_max = cloud_upper_isection.y if cloud_lower_isection.y < 0.0 else cloud_lower_isection.x
+    else:
+        t_start = cloud_lower_isection.y
+        t_max = cloud_upper_isection.y
+
+        if land_isection > 0.0: t_max = -1.0
+    return t_start, t_max
+
+@ti.func
+def sample_interaction(ray_pos: vec3, 
+                       ray_dir: vec3,
+                       land_isection: float,
+                       extinctions: vec4,
+                       max_extinction_rmo: float,
+                       max_extinction_cloud: float,
+                       clouds_sampler: ti.template()):
+    atmos_isection = rsi(ray_pos, ray_dir, volume.atmos_upper_limit)
+    t_start = max(0.0, atmos_isection.x)
+    t_max = land_isection if land_isection >= 0.0 else atmos_isection.y
+    if atmos_isection.y < 0.0: 
+        t_max = -1.0 # ray doesnt cross atmosphere
+    rmo_extinctions = vec4(extinctions.xyz, 0.0)
+    rmo_interacted, rmo_t, rmo_id = sample_interaction_delta_tracking(ray_pos, ray_dir, t_start, t_max, rmo_extinctions, max_extinction_rmo, clouds_sampler)
+
+    t_start, t_max = intersect_cloud_limits(ray_pos, ray_dir, land_isection)
+    cloud_extinctions = vec4(0.0, 0.0, 0.0, extinctions.w)
+    cloud_interacted, cloud_t, _ = sample_interaction_delta_tracking(ray_pos, ray_dir, t_start, t_max, cloud_extinctions, max_extinction_cloud, clouds_sampler)
+
+    interacted = rmo_interacted or cloud_interacted
+    t = 0.0
+    interaction_id = 0
+    if rmo_interacted: 
+        t = rmo_t
+        interaction_id = rmo_id
+    if cloud_interacted and cloud_t < rmo_t: 
+        t = cloud_t
+        interaction_id = 3
+
+    return interacted, t, interaction_id
+    
+
+
+@ti.func
+def sample_transmittance(ray_pos: vec3, 
+                         ray_dir: vec3,
+                         land_isection: float,
+                         extinctions: vec4,
+                         max_extinction_rmo: float,
+                         max_extinction_cloud: float,
+                         clouds_sampler: ti.template()):
+    atmos_isection = rsi(ray_pos, ray_dir, volume.atmos_upper_limit)
+
+    
+    t_start = max(0.0, atmos_isection.x)
+    t_max = land_isection if land_isection >= 0.0 else atmos_isection.y
+    if atmos_isection.y < 0.0: 
+        t_max = -1.0 # ray doesnt cross atmosphere
+    rmo_extinctions = vec4(extinctions.xyz, 0.0)
+    transmittance  = transmittance_ratio_tracking(ray_pos, ray_dir, t_start, t_max, rmo_extinctions, max_extinction_rmo, clouds_sampler)
+    
+    t_start, t_max = intersect_cloud_limits(ray_pos, ray_dir, land_isection)
+    cloud_extinctions = vec4(0.0, 0.0, 0.0, extinctions.w)
+    transmittance *= transmittance_ratio_tracking(ray_pos, ray_dir, t_start, t_max, cloud_extinctions, max_extinction_cloud, clouds_sampler)
+    return transmittance
+
 
 @ti.func
 def evaluate_phase(ray_dir: vec3, light_dir: vec3, interaction_id: ti.i32):
@@ -173,11 +240,9 @@ def path_tracer(path: PathParameters,
     in_scattering = 0.0
     throughput = 1.0
     sun_irradiance = plancks(5778.0, path.wavelength) * cone_angle_to_solid_angle(scene.sun_angular_radius)
-    max_densities = vec4(0.0, 0.0, 0.0, 0.0)
-    max_densities.xy = volume.get_density(0.0).xy
-    max_densities.z = volume.get_ozone_density(volume.ozone_peak_height)
-    max_densities.w = volume.clouds_density
-            
+    max_densities_rmo = vec3(volume.get_density(0.0).xy, volume.get_ozone_density(volume.ozone_peak_height))
+    max_density_cloud = volume.clouds_density
+    
     for scatter_count in range(0, 7):
         
         extinctions = vec4(0.0, 0.0, 0.0, 0.0)
@@ -187,21 +252,23 @@ def path_tracer(path: PathParameters,
         extinctions.w = volume.clouds_extinct
         
 
-        max_extinctions = extinctions * max_densities
-        max_extinction = max_extinctions.dot(vec4(1.0, 1.0, 1.0, 1.0))
+        max_extinction_rmo = (extinctions.xyz * max_densities_rmo).sum()
+        max_extinction_cloud = extinctions.w * max_density_cloud
 
         # Intersect ray with surfaces
         earth_intersection = intersect_land(height_sampler, ray_pos, ray_dir, scene.land_height_scale)
 
         # Sample a particle interaction with volume
-        interacted, interaction_dist, interaction_id = sample_interaction_delta_tracking(ray_pos, 
-                                                                                         ray_dir,
-                                                                                         earth_intersection,
-                                                                                         extinctions,
-                                                                                         max_extinction,
-                                                                                         clouds_sampler)
+        interacted, interaction_dist, interaction_id = sample_interaction(ray_pos, 
+                                                                          ray_dir,
+                                                                          earth_intersection,
+                                                                          extinctions,
+                                                                          max_extinction_rmo,
+                                                                          max_extinction_cloud,
+                                                                          clouds_sampler)
         # Sample a direction to sun
         light_dir = sample_cone_oriented(scene.sun_cos_angle, scene.light_direction)
+        
         if interacted:
             ### Volume scattering
 
@@ -211,11 +278,12 @@ def path_tracer(path: PathParameters,
             # compute sunlight visibility, phase and transmittance. 
             # no parallax heightmap shadow because its insignificant at atmosphere scale.
             direct_visibility = rsi(interaction_pos, light_dir, volume.planet_r).x < 0.0
-            direct_transmittance = transmittance_ratio_tracking(interaction_pos,
+            direct_transmittance = sample_transmittance(interaction_pos,
                                                                 light_dir,
                                                                 -1.0 if direct_visibility else 0.0,
                                                                 extinctions,
-                                                                max_extinction,
+                                                                max_extinction_rmo,
+                                                                max_extinction_cloud,
                                                                 clouds_sampler)
             direct_phase = evaluate_phase(ray_dir, light_dir, interaction_id)
             in_scattering += direct_transmittance * direct_visibility * sun_irradiance * direct_phase
@@ -248,11 +316,12 @@ def path_tracer(path: PathParameters,
             # compute sunlight visibility and transmittance
             offset_pos = land_pos * (1.0 + 0.0001*scene.land_height_scale/12000.0)
             direct_visibility = intersect_land(height_sampler, offset_pos, light_dir, scene.land_height_scale) < 0.0
-            direct_transmittance = transmittance_ratio_tracking(offset_pos,
+            direct_transmittance = sample_transmittance(offset_pos,
                                                                 light_dir,
                                                                 -1.0 if direct_visibility else 0.0,
                                                                 extinctions,
-                                                                max_extinction,
+                                                                max_extinction_rmo,
+                                                                max_extinction_cloud,
                                                                 clouds_sampler)
             direct_brdf, direct_n_dot_l = surface.earth_brdf(albedo, ocean, -ray_dir, land_normal, light_dir)
             in_scattering += direct_transmittance * direct_visibility * sun_irradiance * direct_brdf * direct_n_dot_l

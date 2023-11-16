@@ -9,7 +9,7 @@ from lib.math_utils import np_normalize, np_rotate_matrix
 import __main__
 
 
-SCREEN_RES = (1920//4, 1080//4)
+SCREEN_RES = (1920//2, 1080//2)
 TARGET_FPS = 30
 UP_DIR = (0, 1, 0)
 HELP_MSG = '''

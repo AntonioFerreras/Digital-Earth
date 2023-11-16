@@ -34,8 +34,8 @@ atmos_upper_limit = planet_r + atmos_height
 # Cloud constants
 clouds_extinct = 0.1
 clouds_density = 1.0
-clouds_height = 10300.0
-clouds_thickness = 50.0
+clouds_height = 100300.0
+clouds_thickness = 120.0
 clouds_lower_limit = planet_r + clouds_height
 clouds_upper_limit = clouds_lower_limit + clouds_thickness
 #############
