@@ -32,12 +32,12 @@ class Camera:
     def mouse_exclusive_owner(self):
         return True
 
-    def update_camera(self):
-        res = self._update_by_wasd()
-        res = self._update_by_mouse() or res
+    def update_camera(self, elapsed_time):
+        res = self._update_by_wasd(elapsed_time)
+        res = self._update_by_mouse(elapsed_time) or res
         return res
 
-    def _update_by_mouse(self):
+    def _update_by_mouse(self, elapsed_time):
         win = self._window
         if not self.mouse_exclusive_owner or not win.is_pressed(ti.ui.LMB):
             self._last_mouse_pos = None
@@ -53,7 +53,7 @@ class Camera:
         out_dir = self._lookat_pos - self._camera_pos
         leftdir = self._compute_left_dir(np_normalize(out_dir))
 
-        scale = 3
+        scale = 3 # 40*elapsed_time
         rotx = np_rotate_matrix(self._up, dx * scale)
         roty = np_rotate_matrix(leftdir, dy * scale)
 
@@ -63,7 +63,11 @@ class Camera:
 
         return True
 
-    def _update_by_wasd(self):
+    def _compute_cam_r(self):
+        return np.sqrt(self._camera_pos[0]*self._camera_pos[0] + 
+                                   self._camera_pos[1]*self._camera_pos[1] + 
+                                   self._camera_pos[2]*self._camera_pos[2])
+    def _update_by_wasd(self, elapsed_time):
         win = self._window
         tgtdir = self.target_dir
         leftdir = self._compute_left_dir(tgtdir)
@@ -85,13 +89,15 @@ class Camera:
             return False
         dir *= 0.05
 
-        speed = 0.8 * min(np.sqrt(self._camera_pos[0]*self._camera_pos[0] + 
-                                   self._camera_pos[1]*self._camera_pos[1] + 
-                                   self._camera_pos[2]*self._camera_pos[2]) - planet_r, planet_r*0.5)
+        speed = 30.0 * max(min(self._compute_cam_r() - planet_r, planet_r*0.5), 0.0)
         if win.is_pressed(ti.ui.SHIFT):
             speed *= 3.0
-        self._lookat_pos += dir*speed
-        self._camera_pos += dir*speed
+        cam_step = dir*speed*elapsed_time
+        self._lookat_pos += cam_step
+        self._camera_pos += cam_step
+        if self._compute_cam_r() < planet_r*1.0002:
+            self._lookat_pos -= cam_step*2
+            self._camera_pos -= cam_step*2 
         return True
 
     @property
@@ -132,10 +138,11 @@ class EarthViewer:
     def start(self):
         canvas = self.window.get_canvas()
         spp = 1
+        elapsed_time = 1.0
         while self.window.running:
             should_reset_framebuffer = False
 
-            if self.camera.update_camera():
+            if self.camera.update_camera(elapsed_time):
                 self.renderer.set_camera_pos(*self.camera.position)
                 look_at = self.camera.look_at
                 self.renderer.set_look_at(*look_at)
