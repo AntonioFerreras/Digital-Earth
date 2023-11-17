@@ -124,22 +124,28 @@ def transmittance_ratio_tracking(ray_pos: vec3,
 def intersect_cloud_limits(ray_pos: vec3, ray_dir: vec3, land_isection: float):
     t_start = 0.0
     t_max = 0.0
+    elevation =  length(ray_pos)
+
     cloud_lower_isection = rsi(ray_pos, ray_dir, volume.clouds_lower_limit)
     cloud_upper_isection = rsi(ray_pos, ray_dir, volume.clouds_upper_limit)
-    if length(ray_pos) >= volume.clouds_upper_limit:
+    if elevation >= volume.clouds_upper_limit:
         t_start = max(0.0, cloud_upper_isection.x)
         t_max = cloud_upper_isection.y if cloud_lower_isection.y < 0.0 else cloud_lower_isection.x
 
         if cloud_upper_isection.y < 0.0: t_max = -1.0
-    elif length(ray_pos) >= volume.clouds_lower_limit:
+    elif elevation >= volume.clouds_lower_limit:
         t_start = 0.0
-        t_max = cloud_upper_isection.y if cloud_lower_isection.y < 0.0 else cloud_lower_isection.x
+        # t_max = cloud_upper_isection.y if cloud_lower_isection.y < 0.0 else cloud_lower_isection.x
+        t_max   = cloud_lower_isection.x if cloud_lower_isection.y >= 0.0 else cloud_upper_isection.y
     else:
         t_start = cloud_lower_isection.y
         t_max = cloud_upper_isection.y
 
         if land_isection > 0.0: t_max = -1.0
+    
+    
     return t_start, t_max
+
 
 @ti.func
 def sample_interaction(ray_pos: vec3, 
@@ -272,9 +278,10 @@ def path_tracer(path: PathParameters,
         # Sample a direction to sun
         light_dir = sample_cone_oriented(scene.sun_cos_angle, scene.light_direction)
 
-        if interacted or False:
+        if interacted and interaction_id == 3:
             ### Volume scattering
-            
+            in_scattering += 1.0 
+            break
             interaction_pos = ray_pos + interaction_dist*ray_dir
 
             # Direct illumination
@@ -305,6 +312,7 @@ def path_tracer(path: PathParameters,
 
 
         elif earth_intersection > 0.0:
+            break
             #### Surface scattering
             land_pos = ray_pos + ray_dir*earth_intersection
             sphere_normal = land_pos.normalized()

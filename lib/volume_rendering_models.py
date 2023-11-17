@@ -35,7 +35,7 @@ atmos_upper_limit = planet_r + atmos_height
 clouds_extinct = 0.1
 clouds_density = 0.5
 clouds_height = 8000.0
-clouds_thickness = 2000.0
+clouds_thickness = 800.0
 clouds_lower_limit = planet_r + clouds_height
 clouds_upper_limit = clouds_lower_limit + clouds_thickness
 #############
@@ -122,7 +122,7 @@ def get_ozone_density(h: ti.f32):
 @ti.func
 def get_density(h: ti.f32):
     h = ti.max(h, 0.0)
-    return vec3(exp(-h/scale_height_rayl)*0, exp(-h/scale_height_mie)*0, get_ozone_density(h))
+    return vec3(exp(-h/scale_height_rayl), exp(-h/scale_height_mie), get_ozone_density(h))
 
 @ti.func
 def get_elevation(pos: vec3):

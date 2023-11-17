@@ -125,7 +125,7 @@ class EarthViewer:
         print(HELP_MSG)
         self.window = ti.ui.Window("Taichi Voxel Renderer",
                                    SCREEN_RES,
-                                   vsync=True)
+                                   vsync=False)
         self.camera = Camera(self.window, up=UP_DIR)
         self.renderer = Renderer(image_res=SCREEN_RES,
                                  up=UP_DIR,
