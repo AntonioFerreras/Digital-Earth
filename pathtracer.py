@@ -45,7 +45,7 @@ def get_clouds_density(clouds_sampler: ti.template(), pos: vec3):
     r = length(pos)
     density = 0.0
     if r > volume.clouds_lower_limit and r < volume.clouds_upper_limit:
-        h = (r - volume.clouds_lower_limit)/volume.clouds_height
+        h = (r - volume.clouds_lower_limit)/volume.clouds_thickness
         cloud_texture = sample_sphere_texture(clouds_sampler, pos).r
         column_height = cloud_texture
         density = pow(cloud_texture, 2.2) if h < column_height else 0.0
@@ -167,7 +167,7 @@ def sample_interaction(ray_pos: vec3,
     if rmo_interacted: 
         t = rmo_t
         interaction_id = rmo_id
-    if cloud_interacted and cloud_t < rmo_t: 
+    if cloud_interacted and (cloud_t < rmo_t or not rmo_interacted): 
         t = cloud_t
         interaction_id = 3
 
