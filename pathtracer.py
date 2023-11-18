@@ -48,7 +48,7 @@ def get_clouds_density(clouds_sampler: ti.template(), pos: vec3):
         h = (r - volume.clouds_lower_limit)/volume.clouds_thickness
         cloud_texture = sample_sphere_texture(clouds_sampler, pos).r
         column_height = cloud_texture
-        density = pow(cloud_texture, 2.2) if h < column_height else 0.0
+        density = cloud_texture if h < column_height else 0.0
     
     return density * volume.clouds_density
 
@@ -112,11 +112,13 @@ def transmittance_ratio_tracking(ray_pos: vec3,
         ray_pos += t_step*ray_dir
         t += t_step
 
-        if (t >= t_max): break
+        if t >= t_max: break
         
         extinction_sample = extinctions * get_atmos_density(ray_pos, clouds_sampler)
 
         transmittance *= 1.0 - extinction_sample.sum() / max_extinction
+
+        if transmittance < 1e-5: break
         
     return transmittance
 
@@ -130,12 +132,12 @@ def intersect_cloud_limits(ray_pos: vec3, ray_dir: vec3, land_isection: float):
     cloud_upper_isection = rsi(ray_pos, ray_dir, volume.clouds_upper_limit)
     if elevation >= volume.clouds_upper_limit:
         t_start = max(0.0, cloud_upper_isection.x)
-        t_max = cloud_upper_isection.y if cloud_lower_isection.y < 0.0 else cloud_lower_isection.x
+        t_max = cloud_lower_isection.x if cloud_lower_isection.y >= 0.0 else cloud_upper_isection.y
 
         if cloud_upper_isection.y < 0.0: t_max = -1.0
     elif elevation >= volume.clouds_lower_limit:
         t_start = 0.0
-        # t_max = cloud_upper_isection.y if cloud_lower_isection.y < 0.0 else cloud_lower_isection.x
+        # t_max = cloud_upper_isection.y if cloud_lower_isection.y <= 0.0 else cloud_lower_isection.x
         t_max   = cloud_lower_isection.x if cloud_lower_isection.y >= 0.0 else cloud_upper_isection.y
     else:
         t_start = cloud_lower_isection.y
@@ -214,17 +216,18 @@ def evaluate_phase(ray_dir: vec3, light_dir: vec3, interaction_id: ti.i32):
     elif interaction_id == 1:
         phase += volume.mie_phase(cos_theta)
     elif interaction_id == 3:
-        peak = volume.hg_phase(cos_theta, 0.85)
-        front = volume.hg_phase(cos_theta, 0.35)
-        back = volume.hg_phase(cos_theta, -0.35)
-        phase += mix(mix(front, back, 0.2), peak, 0.15)
+        phase += volume.cloud_phase(cos_theta)
     return phase
     
 @ti.func
 def sample_phase(ray_dir: vec3, interaction_id: ti.i32):
-    sample_dir = sample_sphere(vec2(ti.random(), ti.random()))
-    phase_div_pdf = evaluate_phase(ray_dir, sample_dir, interaction_id) * (4.0 * np.pi)
-
+    sample_dir = vec3(0.0, 0.0, 0.0)
+    phase_div_pdf = 1.0
+    if interaction_id != 3:
+        sample_dir = sample_sphere(vec2(ti.random(), ti.random()))
+        phase_div_pdf = evaluate_phase(ray_dir, sample_dir, interaction_id) * (4.0 * np.pi)
+    else:
+        sample_dir = volume.sample_cloud_phase(ray_dir)
     return sample_dir, phase_div_pdf
 
 @ti.func
@@ -278,10 +281,9 @@ def path_tracer(path: PathParameters,
         # Sample a direction to sun
         light_dir = sample_cone_oriented(scene.sun_cos_angle, scene.light_direction)
 
-        if interacted and interaction_id == 3:
+        if interacted:
             ### Volume scattering
-            in_scattering += 1.0 
-            break
+
             interaction_pos = ray_pos + interaction_dist*ray_dir
 
             # Direct illumination
@@ -312,14 +314,14 @@ def path_tracer(path: PathParameters,
 
 
         elif earth_intersection > 0.0:
-            break
             #### Surface scattering
             land_pos = ray_pos + ray_dir*earth_intersection
             sphere_normal = land_pos.normalized()
             land_normal = land_normal(height_sampler, land_pos, scene.land_height_scale)
             ocean = (sample_sphere_texture(ocean_sampler, land_pos).r)
-            land_albedo_srgb = (sample_sphere_texture(albedo_sampler, land_pos).rgb)
-            ocean_albedo_srgb = mix(lum3(land_albedo_srgb), land_albedo_srgb, 0.1)
+            albedo_texture_srgb = (sample_sphere_texture(albedo_sampler, land_pos).rgb)
+            land_albedo_srgb = mix(lum3(albedo_texture_srgb), albedo_texture_srgb, 0.7)
+            ocean_albedo_srgb = mix(lum3(albedo_texture_srgb), albedo_texture_srgb, 0.25)
             albedo_srgb = mix(land_albedo_srgb, ocean_albedo_srgb, ocean)
             albedo = srgb_to_spectrum(srgb_to_spectrum_buff, albedo_srgb, path.wavelength)
 
@@ -350,7 +352,7 @@ def path_tracer(path: PathParameters,
                 
         # Russian roulette path termination
         if scatter_count > 3:
-            termination_p = max(0.05, 1.0 - throughput)
+            termination_p =  max(0.05, 1.0 - throughput)
             if ti.random() < termination_p:
                 break
                     

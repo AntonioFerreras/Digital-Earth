@@ -24,13 +24,16 @@ class Camera:
     def __init__(self, window, up):
         self._window = window
         self._lookat_pos = np.array((0.0, 0.0, 0.0))
-        self._camera_pos = np.array((-25000000., 0.0, 25000000.))
+        self._camera_pos = np.array((-15000000., 0.0, 15000000.))
         self._up = np_normalize(np.array(up))
         self._last_mouse_pos = None
 
     @property
     def mouse_exclusive_owner(self):
         return True
+
+    def set_up(self, new_up):
+        self._up = new_up
 
     def update_camera(self, elapsed_time):
         res = self._update_by_wasd(elapsed_time)
@@ -76,8 +79,8 @@ class Camera:
             ('a', leftdir),
             ('s', -tgtdir),
             ('d', -leftdir),
-            ('e', [0, -1, 0]),
-            ('q', [0, 1, 0]),
+            (ti.ui.CTRL, [0, -1, 0]),
+            (ti.ui.SPACE, [0, 1, 0]),
         ]
         dir = np.array([0.0, 0.0, 0.0])
         pressed = False
@@ -85,6 +88,13 @@ class Camera:
             if win.is_pressed(key):
                 pressed = True
                 dir += np.array(d)
+        if win.is_pressed('q'):
+            new_up = np_normalize(self._camera_pos)
+            self.set_up(new_up)
+        if win.is_pressed('e'):
+            new_up = np.array((0.0, 1.0, 0.0))
+            self.set_up(new_up)
+
         if not pressed:
             return False
         dir *= 0.05
@@ -146,6 +156,8 @@ class EarthViewer:
                 self.renderer.set_camera_pos(*self.camera.position)
                 look_at = self.camera.look_at
                 self.renderer.set_look_at(*look_at)
+                up = self.camera._up
+                self.renderer.set_up(*up)
                 should_reset_framebuffer = True
 
             if should_reset_framebuffer:

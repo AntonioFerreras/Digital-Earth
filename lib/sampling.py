@@ -8,17 +8,7 @@ from lib.math_utils import *
 ## DIRECTION SAMPLING
 
 
-@ti.func
-def make_orthonormal_basis(n: vec3):
-    h = ti.select(ti.abs(n.y) > 0.9, ti.math.vec3(1.0, 0.0, 0.0), ti.math.vec3(0.0, 1.0, 0.0))
-    y = n.cross(h).normalized()
-    x = n.cross(y)
-    return x, y
 
-@ti.func
-def make_tangent_space(n: vec3):
-    x, y = make_orthonormal_basis(n)
-    return ti.math.mat3(x, y, n).transpose()
 
 @ti.func
 def sample_cone(cos_theta_max: ti.f32):

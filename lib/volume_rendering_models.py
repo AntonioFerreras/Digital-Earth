@@ -3,6 +3,7 @@ import taichi as ti
 from taichi.math import *
 import numpy as np
 from lib.math_utils import *
+from lib.sampling import *
 
 # Atmos Constants
 air_num_density       = 2.5035422e25
@@ -33,9 +34,9 @@ atmos_upper_limit = planet_r + atmos_height
 
 # Cloud constants
 clouds_extinct = 0.1
-clouds_density = 0.5
+clouds_density = 0.015
 clouds_height = 8000.0
-clouds_thickness = 800.0
+clouds_thickness = 6000.0
 clouds_lower_limit = planet_r + clouds_height
 clouds_upper_limit = clouds_lower_limit + clouds_thickness
 #############
@@ -54,6 +55,102 @@ def hg_phase(cos_theta: ti.f32, g: ti.f32):
 def mie_phase(cos_theta: ti.f32):
     # Henyey-Greenstein phase
     return hg_phase(cos_theta, mie_g)
+
+
+# SPDX-FileCopyrightText: Copyright (c) <2023> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+# 
+# Permission is hereby granted, free of charge, to any person obtaining a
+# copy of this software and associated documentation files (the "Software"),
+# to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense,
+# and/or sell copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+#
+@ti.func
+def draine_phase(cos_theta: ti.f32, g: ti.f32, a: ti.f32):
+    return ((1 - g*g)*(1 + a*cos_theta*cos_theta))/(4.*(1 + (a*(1 + 2*g*g))/3.) * pi * pow(1 + g*g - 2*g*cos_theta, 1.5))
+
+@ti.func
+def sample_draine(view: vec3, g: ti.f32, a: ti.f32):
+    xi = ti.random()
+    g2 = g * g
+    g3 = g * g2
+    g4 = g2 * g2
+    g6 = g2 * g4
+    pgp1_2 = (1 + g2) * (1 + g2)
+    T1 = (-1 + g2) * (4 * g2 + a * pgp1_2)
+    T1a = -a + a * g4
+    T1a3 = T1a * T1a * T1a
+    T2 = -1296 * (-1 + g2) * (a - a * g2) * (T1a) * (4 * g2 + a * pgp1_2)
+    T3 = 3 * g2 * (1 + g * (-1 + 2 * xi)) + a * (2 + g2 + g3 * (1 + 2 * g2) * (-1 + 2 * xi))
+    T4a = 432 * T1a3 + T2 + 432 * (a - a * g2) * T3 * T3
+    T4b = -144 * a * g2 + 288 * a * g4 - 144 * a * g6
+    T4b3 = T4b * T4b * T4b
+    T4 = T4a + sqrt(-4 * T4b3 + T4a * T4a)
+    T4p3 = pow(T4, 1.0 / 3.0)
+    T6 = (2 * T1a + (48 * pow(2, 1.0 / 3.0) *
+		(-(a * g2) + 2 * a * g4 - a * g6)) / T4p3 + T4p3 / (3. * pow(2, 1.0 / 3.0))) / (a - a * g2)
+    T5 = 6 * (1 + g2) + T6
+    cos_theta = (1 + g2 - pow(-0.5 * sqrt(T5) + sqrt(6 * (1 + g2) - (8 * T3) / (a * (-1 + g2) * sqrt(T5)) - T6) / 2., 2)) / (2. * g)
+    sin_theta = sqrt(max(0.0, 1 - cos_theta * cos_theta))
+    phi = 2.0 * pi * ti.random()
+    tang, bitang = make_orthonormal_basis(view)
+    return spherical_direction(sin_theta, cos_theta, phi, tang, bitang, view)
+    
+# END OF NVIDIA CORPORATION & AFFILIATES CODE
+
+@ti.func
+def cloud_phase(cos_theta: ti.f32):
+    # d = 35.0 # droplet size
+    # g_hg = 0.85 # exp( -0.0990567 / (d - 1.67154) )
+    # g_draine = exp( -2.20679 / (d + 3.91029) - 0.428934 )
+    # alpha_draine = exp( 3.62489 - 8.29288 / (d + 5.52825) )
+    # w_draine = exp( -0.599085 / (d - 0.641583) - 0.665888 )
+
+    # return mix(hg_phase(cos_theta, g_hg), draine_phase(cos_theta, g_draine, alpha_draine), w_draine)
+    return mix(hg_phase(cos_theta, -0.4), hg_phase(cos_theta, 0.8), 0.7)
+
+@ti.func
+def sample_hg_phase(view: vec3, g: ti.f32):
+    sqr_term = (1 - g * g) / (1 - g + 2 * g * ti.random())
+    cos_theta = (1 + g * g - sqr_term * sqr_term) / (2 * g)
+    sin_theta = sqrt(max(0.0, 1 - cos_theta * cos_theta))
+    phi = 2.0 * pi * ti.random()
+    tang, bitang = make_orthonormal_basis(view)
+    return spherical_direction(sin_theta, cos_theta, phi, tang, bitang, view)
+
+@ti.func
+def sample_cloud_phase(view: vec3):
+    # d = 35.0 # droplet size
+    # g_hg = 0.85 # exp( -0.0990567 / (d - 1.67154) )
+    # g_draine = exp( -2.20679 / (d + 3.91029) - 0.428934 )
+    # alpha_draine = exp( 3.62489 - 8.29288 / (d + 5.52825) )
+    # w_draine = exp( -0.599085 / (d - 0.641583) - 0.665888 )
+
+    # dir = vec3(0.0, 0.0, 0.0)
+    # if ti.random() < w_draine:
+    #     dir = sample_draine(view, g_draine, alpha_draine)
+    # else:
+    #     dir = sample_hg_phase(view, g_hg)
+    # dir = sample_hg_phase(view, 0.95)
+    dir = vec3(0.0, 0.0, 0.0)
+    if ti.random() < 0.7:
+        dir = sample_hg_phase(view, 0.8)
+    else:
+        dir = sample_hg_phase(view, -0.4)
+    return dir
 
 @ti.func
 def air(wavelength: ti.f32):

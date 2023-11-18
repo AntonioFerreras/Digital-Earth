@@ -52,6 +52,22 @@ def saturate(x):
 def normal_distribution(x: ti.f32, mean: ti.f32, stdev: ti.f32):
     return (1.0 / (stdev * sqrt(2.0 * np.pi))) * exp(-0.5 * sqr((x - mean) / stdev))
 
+@ti.func
+def make_orthonormal_basis(n: vec3):
+    h = ti.select(ti.abs(n.y) > 0.9, ti.math.vec3(1.0, 0.0, 0.0), ti.math.vec3(0.0, 1.0, 0.0))
+    y = n.cross(h).normalized()
+    x = n.cross(y)
+    return x, y
+
+@ti.func
+def make_tangent_space(n: vec3):
+    x, y = make_orthonormal_basis(n)
+    return ti.math.mat3(x, y, n).transpose()
+
+@ti.func
+def spherical_direction(sin_theta: ti.f32, cos_theta: ti.f32, phi: ti.f32, x: vec3, y: vec3, z: vec3):
+    return sin_theta * ti.cos(phi) * x + sin_theta * ti.sin(phi) * y + cos_theta * z
+
 
 def np_normalize(v):
     # https://stackoverflow.com/a/51512965/12003165
