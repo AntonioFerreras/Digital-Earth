@@ -27,6 +27,12 @@ Assume you have a Python 3 environment, simply run:
 
 to install the dependencies of the voxel renderer.
 
+Then in the Earth Viewer folder, run
+```bash
+>>> python3 main.py
+```
+
+
 ## Controls
 
 + Drag with your left mouse button to rotate the camera.
