@@ -1,5 +1,7 @@
 # <a name="title">Earth Viewer</a>
 
+![Earth render 1](screenshot/main.py-2023-11-18-124902.jpg) ![Earth render 2](screenshot/main.py-2023-11-18-124632.jpg)
+
 A renderer that generates highly realistic images of the Earth from outer space. 
 
 Rendering is done with Path Tracing in participating media. 
@@ -28,6 +30,10 @@ to install the dependencies of the voxel renderer.
 ## Controls
 
 + Drag with your left mouse button to rotate the camera.
-+ Press `W/A/S/D/Q/E` to move the camera.
++ Press `W/A/S/D` to move the camera.
+  + Press 'Q' to rotate the camera to Earth's surface
+  + Press 'E' to reset camera rotation
+  + Press SPACE to go up
+  + Press CTRL to go down
 + Press `P` to save a screenshot.
 
