@@ -255,8 +255,8 @@ def path_tracer(path: PathParameters,
     max_densities_rmo = vec3(volume.get_density(0.0).xy, volume.get_ozone_density(volume.ozone_peak_height))
     max_density_cloud = volume.clouds_density
     
-    for scatter_count in range(0, 14):
-        
+    for scatter_count in range(0, 50):
+
         extinctions = vec4(0.0, 0.0, 0.0, 0.0)
         extinctions.x = volume.spectra_extinction_rayleigh(path.wavelength)
         extinctions.y = volume.spectra_extinction_mie(path.wavelength)
@@ -298,7 +298,7 @@ def path_tracer(path: PathParameters,
                                                                 max_extinction_cloud,
                                                                 clouds_sampler)
             direct_phase = evaluate_phase(ray_dir, light_dir, interaction_id)
-            in_scattering += direct_transmittance * direct_visibility * sun_irradiance * direct_phase
+            in_scattering += throughput * direct_transmittance * direct_visibility * sun_irradiance * direct_phase
 
             # Sample scattered ray direction (if scattering event)
             if sample_scatter_event(interaction_id):
@@ -337,7 +337,7 @@ def path_tracer(path: PathParameters,
                                                                 max_extinction_cloud,
                                                                 clouds_sampler)
             direct_brdf, direct_n_dot_l = surface.earth_brdf(albedo, ocean, -ray_dir, land_normal, light_dir)
-            in_scattering += direct_transmittance * direct_visibility * sun_irradiance * direct_brdf * direct_n_dot_l
+            in_scattering += throughput * direct_transmittance * direct_visibility * sun_irradiance * direct_brdf * direct_n_dot_l
 
             # Sample scattered ray direction
             view_dir = -ray_dir
@@ -355,7 +355,7 @@ def path_tracer(path: PathParameters,
             termination_p =  max(0.05, 1.0 - throughput)
             if ti.random() < termination_p:
                 break
-                    
+                        
             throughput /= 1.0 - termination_p
 
     return in_scattering

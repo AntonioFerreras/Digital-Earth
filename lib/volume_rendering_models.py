@@ -34,7 +34,7 @@ atmos_upper_limit = planet_r + atmos_height
 
 # Cloud constants
 clouds_extinct = 0.1
-clouds_density = 0.015
+clouds_density = 0.025
 clouds_height = 8000.0
 clouds_thickness = 6000.0
 clouds_lower_limit = planet_r + clouds_height
@@ -114,7 +114,7 @@ def sample_draine(view: vec3, g: ti.f32, a: ti.f32):
 @ti.func
 def cloud_phase(cos_theta: ti.f32):
     # d = 35.0 # droplet size
-    # g_hg = 0.85 # exp( -0.0990567 / (d - 1.67154) )
+    # g_hg = exp( -0.0990567 / (d - 1.67154) )
     # g_draine = exp( -2.20679 / (d + 3.91029) - 0.428934 )
     # alpha_draine = exp( 3.62489 - 8.29288 / (d + 5.52825) )
     # w_draine = exp( -0.599085 / (d - 0.641583) - 0.665888 )
@@ -134,7 +134,7 @@ def sample_hg_phase(view: vec3, g: ti.f32):
 @ti.func
 def sample_cloud_phase(view: vec3):
     # d = 35.0 # droplet size
-    # g_hg = 0.85 # exp( -0.0990567 / (d - 1.67154) )
+    # g_hg = exp( -0.0990567 / (d - 1.67154) )
     # g_draine = exp( -2.20679 / (d + 3.91029) - 0.428934 )
     # alpha_draine = exp( 3.62489 - 8.29288 / (d + 5.52825) )
     # w_draine = exp( -0.599085 / (d - 0.641583) - 0.665888 )
@@ -144,7 +144,6 @@ def sample_cloud_phase(view: vec3):
     #     dir = sample_draine(view, g_draine, alpha_draine)
     # else:
     #     dir = sample_hg_phase(view, g_hg)
-    # dir = sample_hg_phase(view, 0.95)
     dir = vec3(0.0, 0.0, 0.0)
     if ti.random() < 0.7:
         dir = sample_hg_phase(view, 0.8)

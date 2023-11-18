@@ -79,8 +79,8 @@ class Camera:
             ('a', leftdir),
             ('s', -tgtdir),
             ('d', -leftdir),
-            (ti.ui.CTRL, [0, -1, 0]),
-            (ti.ui.SPACE, [0, 1, 0]),
+            (ti.ui.CTRL, -self._up),
+            (ti.ui.SPACE, self._up),
         ]
         dir = np.array([0.0, 0.0, 0.0])
         pressed = False
