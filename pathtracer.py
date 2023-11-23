@@ -223,9 +223,12 @@ def evaluate_phase(ray_dir: vec3, light_dir: vec3, interaction_id: ti.i32):
 def sample_phase(ray_dir: vec3, interaction_id: ti.i32):
     sample_dir = vec3(0.0, 0.0, 0.0)
     phase_div_pdf = 1.0
-    if interaction_id != 3:
+
+    if interaction_id == 0:
         sample_dir = sample_sphere(vec2(ti.random(), ti.random()))
         phase_div_pdf = evaluate_phase(ray_dir, sample_dir, interaction_id) * (4.0 * np.pi)
+    elif interaction_id == 1:
+        sample_dir = volume.sample_mie_phase(ray_dir)
     else:
         sample_dir = volume.sample_cloud_phase(ray_dir)
     return sample_dir, phase_div_pdf
@@ -251,9 +254,12 @@ def path_tracer(path: PathParameters,
     ray_dir = path.ray_dir
     in_scattering = 0.0
     throughput = 1.0
-    sun_irradiance = plancks(5778.0, path.wavelength) * cone_angle_to_solid_angle(scene.sun_angular_radius)
+    sun_power = plancks(5778.0, path.wavelength)
+    sun_irradiance = sun_power * cone_angle_to_solid_angle(scene.sun_angular_radius)
     max_densities_rmo = vec3(volume.get_density(0.0).xy, volume.get_ozone_density(volume.ozone_peak_height))
     max_density_cloud = volume.clouds_density
+
+    primary_ray_did_not_intersect = False
     
     for scatter_count in range(0, 50):
 
@@ -347,6 +353,7 @@ def path_tracer(path: PathParameters,
             throughput *= brdf * np.pi # NdotL and PI in denominator are cancelled due to cosine weighted PDF
 
         else:
+            primary_ray_did_not_intersect = True
             break
                 
                 
@@ -357,6 +364,14 @@ def path_tracer(path: PathParameters,
                 break
                         
             throughput /= 1.0 - termination_p
+
+    if primary_ray_did_not_intersect:
+        # Draw sun for primary ray
+        if scene.light_direction.dot(path.ray_dir) > scene.sun_cos_angle:
+            in_scattering += sun_power
+
+    if isinf(in_scattering) or isnan(in_scattering) or in_scattering < 0.0:
+        in_scattering = 0.0
 
     return in_scattering
 

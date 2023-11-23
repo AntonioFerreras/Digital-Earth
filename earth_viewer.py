@@ -95,6 +95,10 @@ class Camera:
             new_up = np.array((0.0, 1.0, 0.0))
             self.set_up(new_up)
 
+        if win.is_pressed('g'):
+            print("campos= " + str(self._camera_pos[0]) + ", " + str(self._camera_pos[1]) + ", " + str(self._camera_pos[2]))
+            print("lookat= " + str(self._lookat_pos[0]) + ", " + str(self._lookat_pos[1]) + ", " + str(self._lookat_pos[2]))
+
         if not pressed:
             return False
         dir *= 0.05
@@ -108,6 +112,9 @@ class Camera:
         if self._compute_cam_r() < planet_r*1.0002:
             self._lookat_pos -= cam_step*2
             self._camera_pos -= cam_step*2 
+        
+        
+        
         return True
 
     @property

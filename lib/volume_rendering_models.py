@@ -20,6 +20,7 @@ scale_height_mie  = 1200.0
 scale_heights = ti.Vector([scale_height_rayl, scale_height_mie])
 
 mie_g = 0.75
+mie_asymmetry = 3000.0
 
 rayleigh_albedo = 1.0
 aerosol_albedo = 0.98
@@ -41,10 +42,18 @@ clouds_lower_limit = planet_r + clouds_height
 clouds_upper_limit = clouds_lower_limit + clouds_thickness
 #############
 
-
+# PHASE FUNCTIONS
 @ti.func
 def rayleigh_phase(cos_theta: ti.f32):
     return 3.0/(16.0*np.pi)*(1.0 + cos_theta*cos_theta)
+
+@ti.func
+def mie_phase(cos_theta: ti.f32):
+    # Henyey-Greenstein phase
+    return klein_nishina_phase(cos_theta, mie_asymmetry)
+
+def sample_mie_phase(view: vec3):
+    return sample_klein_nishina_phase(view, mie_asymmetry)
 
 @ti.func
 def hg_phase(cos_theta: ti.f32, g: ti.f32):
@@ -52,9 +61,23 @@ def hg_phase(cos_theta: ti.f32, g: ti.f32):
     return (1-g*g)/(4.0*np.pi*pow(1.0 + g*g - 2*g*cos_theta, 1.5))
 
 @ti.func
-def mie_phase(cos_theta: ti.f32):
-    # Henyey-Greenstein phase
-    return hg_phase(cos_theta, mie_g)
+def sample_hg_phase(view: vec3, g: ti.f32):
+    sqr_term = (1 - g * g) / (1 - g + 2 * g * ti.random())
+    cos_theta = (1 + g * g - sqr_term * sqr_term) / (2 * g)
+    sin_theta = sqrt(max(0.0, 1 - cos_theta * cos_theta))
+    phi = 2.0 * pi * ti.random()
+    tang, bitang = make_orthonormal_basis(view)
+    return spherical_direction(sin_theta, cos_theta, phi, tang, bitang, view)
+
+def klein_nishina_phase(cos_theta: ti.f32, e: ti.f32):
+    return e / (2.0 * pi * (e * (1.0 - cos_theta) + 1.0) * log(2.0 * e + 1.0))
+
+def sample_klein_nishina_phase(view: vec3, e: ti.f32):
+    cos_theta = (-pow(2.0 * e + 1.0, 1.0 - ti.random()) + e + 1.0) / e
+    sin_theta = sqrt(max(0.0, 1 - cos_theta * cos_theta))
+    phi = 2.0 * pi * ti.random()
+    tang, bitang = make_orthonormal_basis(view)
+    return spherical_direction(sin_theta, cos_theta, phi, tang, bitang, view)
 
 
 # SPDX-FileCopyrightText: Copyright (c) <2023> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -123,15 +146,6 @@ def cloud_phase(cos_theta: ti.f32):
     return mix(hg_phase(cos_theta, -0.4), hg_phase(cos_theta, 0.8), 0.7)
 
 @ti.func
-def sample_hg_phase(view: vec3, g: ti.f32):
-    sqr_term = (1 - g * g) / (1 - g + 2 * g * ti.random())
-    cos_theta = (1 + g * g - sqr_term * sqr_term) / (2 * g)
-    sin_theta = sqrt(max(0.0, 1 - cos_theta * cos_theta))
-    phi = 2.0 * pi * ti.random()
-    tang, bitang = make_orthonormal_basis(view)
-    return spherical_direction(sin_theta, cos_theta, phi, tang, bitang, view)
-
-@ti.func
 def sample_cloud_phase(view: vec3):
     # d = 35.0 # droplet size
     # g_hg = exp( -0.0990567 / (d - 1.67154) )
@@ -151,6 +165,9 @@ def sample_cloud_phase(view: vec3):
         dir = sample_hg_phase(view, -0.4)
     return dir
 
+##############################
+
+# SPECTRA
 @ti.func
 def air(wavelength: ti.f32):
     rcp_wavelength_sqr = 1.0 / (wavelength*wavelength)
@@ -195,7 +212,9 @@ def spectra_extinction_ozone(wavelength: ti.f32):
     p11 = normal_distribution(wavelength, 186.0, 8.0) * 1.3
     return 0.0001 * ozone_num_density * ((p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9 + p10 + p11) / 1e20)
 
+#######################
 
+# DENSITY FUNCTIONS
 @ti.func
 def get_ozone_density(h: ti.f32):
     # A curve that roughly fits measured data for ozone distribution.
@@ -224,3 +243,4 @@ def get_density(h: ti.f32):
 def get_elevation(pos: vec3):
     return ti.sqrt(pos.x*pos.x + pos.y*pos.y + pos.z*pos.z) - planet_r
 
+#######################
