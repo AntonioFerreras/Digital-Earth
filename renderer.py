@@ -38,7 +38,7 @@ class Renderer:
 
         self._rendered_image = ti.Vector.field(3, float, image_res)
         self.set_up(*up)
-        self.set_fov(np.radians(24.)*0.5)
+        self.set_fov(np.radians(34.)*0.5)
 
         self.land_height_scale = 8800.0
 

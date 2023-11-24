@@ -14,13 +14,9 @@ ozone_peak_height = 25000.0 # peak density at 25km
 
 
 
-scale_height_rayl = 8500.0
-scale_height_mie  = 1200.0
-
-scale_heights = ti.Vector([scale_height_rayl, scale_height_mie])
-
 mie_g = 0.75
 mie_asymmetry = 3000.0
+turbidity = 1.0
 
 rayleigh_albedo = 1.0
 aerosol_albedo = 0.98
@@ -52,6 +48,7 @@ def mie_phase(cos_theta: ti.f32):
     # Henyey-Greenstein phase
     return klein_nishina_phase(cos_theta, mie_asymmetry)
 
+@ti.func
 def sample_mie_phase(view: vec3):
     return sample_klein_nishina_phase(view, mie_asymmetry)
 
@@ -69,9 +66,11 @@ def sample_hg_phase(view: vec3, g: ti.f32):
     tang, bitang = make_orthonormal_basis(view)
     return spherical_direction(sin_theta, cos_theta, phi, tang, bitang, view)
 
+@ti.func
 def klein_nishina_phase(cos_theta: ti.f32, e: ti.f32):
     return e / (2.0 * pi * (e * (1.0 - cos_theta) + 1.0) * log(2.0 * e + 1.0))
 
+@ti.func
 def sample_klein_nishina_phase(view: vec3, e: ti.f32):
     cos_theta = (-pow(2.0 * e + 1.0, 1.0 - ti.random()) + e + 1.0) / e
     sin_theta = sqrt(max(0.0, 1 - cos_theta * cos_theta))
@@ -176,9 +175,9 @@ def air(wavelength: ti.f32):
 @ti.func
 def spectra_extinction_mie(wavelength: ti.f32):
     junge = 4.0
-    turbidity = 1.0
+    
 
-    c = (0.6544 * turbidity - 0.6510) * 4e-18;
+    c = (0.6544 * turbidity - 0.6510) * 4e-18
     K = (0.773335 - 0.00386891 * wavelength) / (1.0 - 0.00546759 * wavelength)
     return 0.434 * c * np.pi * pow(2.0*np.pi / (wavelength * 1e-9), junge - 2.0) * K
 
@@ -235,9 +234,30 @@ def get_ozone_density(h: ti.f32):
     return d
 
 @ti.func
+def get_rayl_density(h: ti.f32):
+    # Gaussian curve fit to US standard atmosphere
+    return 3.68082 * exp( -pow(h + 24239.99, 2.0)/532307548.4168 )
+
+@ti.func
+def get_mie_density(h: ti.f32):
+    # A smooth-ish version of the OPAC aerosol density function
+    dens = 0.0
+    if h > 11500.0:
+        dens = 0.0918 * exp(-1.0e-6*pow(h - 11500.0, 2.0))
+    elif h > 2400.0:
+        dens = 0.3000 * exp(-2.5e-9*pow(h + 2500.00, 2.0)) - 0.092
+    elif h > 1300.0:
+        dens = 0.6500 * exp(-5.0e-6*pow(h - 1300.00, 2.0)) + 0.18899
+    else:
+        dens = 1.0 - h/8136.646
+
+    return dens*turbidity*0.7
+
+
+@ti.func
 def get_density(h: ti.f32):
     h = ti.max(h, 0.0)
-    return vec3(exp(-h/scale_height_rayl), exp(-h/scale_height_mie), get_ozone_density(h))
+    return vec3(get_rayl_density(h), get_mie_density(h), get_ozone_density(h))
 
 @ti.func
 def get_elevation(pos: vec3):
