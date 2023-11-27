@@ -123,6 +123,35 @@ def transmittance_ratio_tracking(ray_pos: vec3,
     return transmittance
 
 @ti.func
+def transmittance_ray_marching  (ray_pos: vec3, 
+                                 ray_dir: vec3,
+                                 t_start: float,
+                                 t_max: float,
+                                 extinctions: vec4,
+                                 max_extinction: float,
+                                 clouds_sampler: ti.template()):
+    t = t_start
+    ray_pos += t*ray_dir
+
+    t_step = (t_max - t_start)/64.0
+
+    od = 0.0
+
+    while t < t_max:
+        ray_pos += t_step*ray_dir
+        t += t_step
+
+        if t >= t_max: break
+        
+        extinction_sample = extinctions * get_atmos_density(ray_pos, clouds_sampler)
+
+        od += extinction_sample.sum()*t_step
+
+        # if transmittance < 1e-5: break
+        
+    return exp(-od)
+
+@ti.func
 def intersect_cloud_limits(ray_pos: vec3, ray_dir: vec3, land_isection: float):
     t_start = 0.0
     t_max = 0.0
@@ -217,6 +246,8 @@ def evaluate_phase(ray_dir: vec3, light_dir: vec3, interaction_id: ti.i32):
         phase += volume.mie_phase(cos_theta)
     elif interaction_id == 3:
         phase += volume.cloud_phase(cos_theta)
+    elif interaction_id == 4:
+        phase += 1.0 / (4.0 * pi)
     return phase
     
 @ti.func
@@ -224,7 +255,7 @@ def sample_phase(ray_dir: vec3, interaction_id: ti.i32):
     sample_dir = vec3(0.0, 0.0, 0.0)
     phase_div_pdf = 1.0
 
-    if interaction_id == 0:
+    if interaction_id == 0 or interaction_id == 4:
         sample_dir = sample_sphere(vec2(ti.random(), ti.random()))
         phase_div_pdf = evaluate_phase(ray_dir, sample_dir, interaction_id) * (4.0 * np.pi)
     elif interaction_id == 1:
@@ -235,6 +266,7 @@ def sample_phase(ray_dir: vec3, interaction_id: ti.i32):
 
 @ti.func
 def sample_scatter_event(interaction_id: ti.i32):
+    if interaction_id == 4: interaction_id = 3
     scattering_albedos = ti.Vector([volume.rayleigh_albedo, 
                                     volume.aerosol_albedo, 
                                     volume.ozone_albedo, 
@@ -261,7 +293,7 @@ def path_tracer(path: PathParameters,
 
     primary_ray_did_not_intersect = False
     
-    for scatter_count in range(0, 50):
+    for scatter_count in range(0, 15):
 
         extinctions = vec4(0.0, 0.0, 0.0, 0.0)
         extinctions.x = volume.spectra_extinction_rayleigh(path.wavelength)
@@ -284,6 +316,10 @@ def path_tracer(path: PathParameters,
                                                                           max_extinction_rmo,
                                                                           max_extinction_cloud,
                                                                           clouds_sampler)
+        if scatter_count > 10: 
+            extinctions.w = 0.01
+            if interaction_id == 3: interaction_id = 4
+        
         # Sample a direction to sun
         light_dir = sample_cone_oriented(scene.sun_cos_angle, scene.light_direction)
 
