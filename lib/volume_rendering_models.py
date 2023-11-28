@@ -32,8 +32,8 @@ atmos_upper_limit = planet_r + atmos_height
 # Cloud constants
 clouds_extinct = 0.1
 clouds_density = 0.025
-clouds_height = 8000.0
-clouds_thickness = 6000.0
+clouds_height = 5000.0
+clouds_thickness = 9000.0
 clouds_lower_limit = planet_r + clouds_height
 clouds_upper_limit = clouds_lower_limit + clouds_thickness
 #############
@@ -237,7 +237,7 @@ def get_ozone_density(h: ti.f32):
 def get_rayl_density(h: ti.f32):
     # Gaussian curve fit to US standard atmosphere
     density_sea_level = 1.225
-    return 3.68082 * exp( -pow(h + 24239.99, 2.0)/532307548.4168 ) / density_sea_level
+    return 3.68082 * exp( -pow(h + 24239.99, 2.0)/532307548.4168 ) # / density_sea_level
 
 @ti.func
 def get_mie_density(h: ti.f32):

@@ -48,9 +48,11 @@ def get_clouds_density(clouds_sampler: ti.template(), pos: vec3):
         h = (r - volume.clouds_lower_limit)/volume.clouds_thickness
         cloud_texture = sample_sphere_texture(clouds_sampler, pos).r
         column_height = cloud_texture
-        density = cloud_texture if h < column_height else 0.0
+        
+        split = 0.2
+        density = cloud_texture if (h-split < column_height*(1.0 - split) and split-h < column_height*split) else 0.0
     
-    return density * volume.clouds_density
+    return density  * volume.clouds_density
 
 @ti.func
 def get_atmos_density(pos: vec3, clouds_sampler: ti.template()):
@@ -293,7 +295,7 @@ def path_tracer(path: PathParameters,
 
     primary_ray_did_not_intersect = False
     
-    for scatter_count in range(0, 15):
+    for scatter_count in range(0, 13):
 
         extinctions = vec4(0.0, 0.0, 0.0, 0.0)
         extinctions.x = volume.spectra_extinction_rayleigh(path.wavelength)
@@ -317,7 +319,7 @@ def path_tracer(path: PathParameters,
                                                                           max_extinction_cloud,
                                                                           clouds_sampler)
         if scatter_count > 10: 
-            extinctions.w = 0.01
+            extinctions.w = 0.02
             if interaction_id == 3: interaction_id = 4
         
         # Sample a direction to sun
@@ -332,13 +334,15 @@ def path_tracer(path: PathParameters,
             # compute sunlight visibility, phase and transmittance. 
             # no parallax heightmap shadow because its insignificant at atmosphere scale.
             direct_visibility = rsi(interaction_pos, light_dir, volume.planet_r).x < 0.0
-            direct_transmittance = sample_transmittance(interaction_pos,
-                                                                light_dir,
-                                                                -1.0 if direct_visibility else 0.0,
-                                                                extinctions,
-                                                                max_extinction_rmo,
-                                                                max_extinction_cloud,
-                                                                clouds_sampler)
+            direct_transmittance = 1.0
+            if direct_visibility:
+                direct_transmittance = sample_transmittance(interaction_pos,
+                                                                    light_dir,
+                                                                    -1.0 if direct_visibility else 0.0,
+                                                                    extinctions,
+                                                                    max_extinction_rmo,
+                                                                    max_extinction_cloud,
+                                                                    clouds_sampler)
             direct_phase = evaluate_phase(ray_dir, light_dir, interaction_id)
             in_scattering += throughput * direct_transmittance * direct_visibility * sun_irradiance * direct_phase
 

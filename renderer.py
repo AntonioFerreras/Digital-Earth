@@ -40,7 +40,7 @@ class Renderer:
         self.set_up(*up)
         self.set_fov(np.radians(34.)*0.5)
 
-        self.land_height_scale = 8800.0
+        self.land_height_scale = 5800.0
 
         # Load Textures
         self.albedo_tex = ti.Texture(ti.Format.rgba8, ALBEDO_TEX_RES)
