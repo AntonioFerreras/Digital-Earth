@@ -293,15 +293,17 @@ def path_tracer(path: PathParameters,
     max_densities_rmo = vec3(volume.get_density(0.0).xy, volume.get_ozone_density(volume.ozone_peak_height))
     max_density_cloud = volume.clouds_density
 
+    extinctions = vec4(0.0, 0.0, 0.0, 0.0)
+    extinctions.x = volume.spectra_extinction_rayleigh(path.wavelength)
+    extinctions.y = volume.spectra_extinction_mie(path.wavelength)
+    extinctions.z = volume.spectra_extinction_ozone(path.wavelength)
+    extinctions.w = volume.clouds_extinct
+
     primary_ray_did_not_intersect = False
     
     for scatter_count in range(0, 13):
 
-        extinctions = vec4(0.0, 0.0, 0.0, 0.0)
-        extinctions.x = volume.spectra_extinction_rayleigh(path.wavelength)
-        extinctions.y = volume.spectra_extinction_mie(path.wavelength)
-        extinctions.z = volume.spectra_extinction_ozone(path.wavelength)
-        extinctions.w = volume.clouds_extinct
+       
         
 
         max_extinction_rmo = (extinctions.xyz * max_densities_rmo).sum()
@@ -320,6 +322,7 @@ def path_tracer(path: PathParameters,
                                                                           clouds_sampler)
         if scatter_count > 10: 
             extinctions.w = 0.02
+            max_density_cloud = extinctions.w
             if interaction_id == 3: interaction_id = 4
         
         # Sample a direction to sun
