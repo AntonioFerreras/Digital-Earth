@@ -301,7 +301,7 @@ def path_tracer(path: PathParameters,
 
     primary_ray_did_not_intersect = False
     
-    for scatter_count in range(0, 13):
+    for scatter_count in range(0, 53):
 
        
         

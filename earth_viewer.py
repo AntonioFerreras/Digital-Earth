@@ -109,7 +109,7 @@ class Camera:
         cam_step = dir*speed*elapsed_time
         self._lookat_pos += cam_step
         self._camera_pos += cam_step
-        if self._compute_cam_r() < planet_r*1.0002:
+        if self._compute_cam_r() < planet_r*1.000:
             self._lookat_pos -= cam_step*2
             self._camera_pos -= cam_step*2 
         

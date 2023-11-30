@@ -31,14 +31,27 @@ atmos_upper_limit = planet_r + atmos_height
 
 # Cloud constants
 clouds_extinct = 0.1
-clouds_density = 0.025
-clouds_height = 5000.0
-clouds_thickness = 9000.0
+clouds_density = 0.025*0
+clouds_height = 4000.0
+clouds_thickness = 6000.0
 clouds_lower_limit = planet_r + clouds_height
 clouds_upper_limit = clouds_lower_limit + clouds_thickness
 #############
 
+# Refractive index of air
+@ti.func
+def air(wavelength: ti.f32):
+    rcp_wavelength_sqr = 1.0 / (wavelength*wavelength)
+    return 1.0+8.06051e-5+2.480990e-2/(132.274-rcp_wavelength_sqr)+1.74557e-4/(39.32957-rcp_wavelength_sqr)
+
 # PHASE FUNCTIONS
+
+# @ti.func
+# def rayleigh_phase(cos_theta: ti.f32, wavelength: ti.f32):
+#     return ((1.0 + sqr(cos_theta)) / (2.0 * 2.0 * sqr(1.0))) * \
+#            pow(2.0 * pi / wavelength, 4.0) * sqr((sqr(air(wavelength * 1e-3)) - 1.0) / \
+#            (sqr(air(wavelength * 1e-3)) + 2.0)) * pow(5.0 / 2.0, 6.0)
+
 @ti.func
 def rayleigh_phase(cos_theta: ti.f32):
     return 3.0/(16.0*np.pi)*(1.0 + cos_theta*cos_theta)
@@ -167,16 +180,16 @@ def sample_cloud_phase(view: vec3):
 ##############################
 
 # SPECTRA
+
 @ti.func
-def air(wavelength: ti.f32):
-    rcp_wavelength_sqr = 1.0 / (wavelength*wavelength)
-    return 1.0+8.06051e-5+2.480990e-2/(132.274-rcp_wavelength_sqr)+1.74557e-4/(39.32957-rcp_wavelength_sqr)
+def spectra_extinction_mie2(wavelength: ti.f32):
+    B = 0.0009
+    return B/wavelength
 
 @ti.func
 def spectra_extinction_mie(wavelength: ti.f32):
     junge = 4.0
     
-
     c = (0.6544 * turbidity - 0.6510) * 4e-18
     K = (0.773335 - 0.00386891 * wavelength) / (1.0 - 0.00546759 * wavelength)
     return 0.434 * c * np.pi * pow(2.0*np.pi / (wavelength * 1e-9), junge - 2.0) * K
@@ -186,9 +199,13 @@ def spectra_extinction_mie(wavelength: ti.f32):
 def spectra_extinction_rayleigh(wavelength: ti.f32):
     nanometers = wavelength * 1e-9
 
+    # depolarization 
     F_N2 = 1.034 + 3.17e-4 * (1.0 / pow(wavelength, 2.0))
     F_O2 = 1.096 + 1.385e-3 * (1.0 / pow(wavelength, 2.0)) + 1.448e-4 * (1.0 / pow(wavelength, 4.0))
-    CCO2 = 0.045
+
+    # concentration of CO2 in ppm
+    CCO2 = 0.0421
+
     king_factor = (78.084 * F_N2 + 20.946 * F_O2 + 0.934 + CCO2 * 1.15) / (78.084 + 20.946 + 0.934 + CCO2)
     n = sqr(air(wavelength * 1e-3)) - 1.0
 
@@ -231,7 +248,7 @@ def get_ozone_density(h: ti.f32):
                                                          # could modify the coefficients to model the small increase 
                                                          # in ozone at the very bottom that happens due to pollution
 
-    return d
+    return d*2.0
 
 @ti.func
 def get_rayl_density(h: ti.f32):
@@ -252,7 +269,7 @@ def get_mie_density(h: ti.f32):
     else:
         dens = 1.0 - h/8136.646
     
-    return dens*turbidity*0.7
+    return dens*turbidity
 
 
 @ti.func
