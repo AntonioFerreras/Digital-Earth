@@ -1,6 +1,6 @@
 # <a name="title">Earth Viewer</a>
 
-![Earth render 1](screenshot/main.py-2023-11-18-124902.jpg) ![Earth render 2](screenshot/main.py-2023-11-18-124632.jpg)
+![Earth render 1](screenshot/main.py-2023-12-04-003721.jpg) ![Earth render 2](screenshot/main.py-2023-12-04-002739.jpg)
 
 A renderer that generates highly realistic images of the Earth from outer space. 
 
