@@ -31,7 +31,7 @@ atmos_upper_limit = planet_r + atmos_height
 
 # Cloud constants
 clouds_extinct = 0.1
-clouds_density = 0.025*0
+clouds_density = 0.0175
 clouds_height = 4000.0
 clouds_thickness = 6000.0
 clouds_lower_limit = planet_r + clouds_height
@@ -248,7 +248,7 @@ def get_ozone_density(h: ti.f32):
                                                          # could modify the coefficients to model the small increase 
                                                          # in ozone at the very bottom that happens due to pollution
 
-    return d*2.0
+    return d
 
 @ti.func
 def get_rayl_density(h: ti.f32):

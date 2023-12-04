@@ -6,6 +6,7 @@ from lib.sampling import *
 from lib.colour import *
 from lib.textures import *
 from lib.parameters import PathParameters, SceneParameters
+import lib.AgX as agx
 import pathtracer as pt
 
 
@@ -38,9 +39,9 @@ class Renderer:
 
         self._rendered_image = ti.Vector.field(3, float, image_res)
         self.set_up(*up)
-        self.set_fov(np.radians(34.)*0.5)
+        self.set_fov(np.radians(27.)*0.5)
 
-        self.land_height_scale = 5800.0
+        self.land_height_scale = 7800.0
 
         # Load Textures
         self.albedo_tex = ti.Texture(ti.Format.rgba8, ALBEDO_TEX_RES)
@@ -201,8 +202,9 @@ class Renderer:
             darken = 1.0 - self.vignette_strength * max((ti.sqrt(
                 (u - self.vignette_center[0])**2 +
                 (v - self.vignette_center[1])**2) - self.vignette_radius), 0)
-            exposure = 4.
+            exposure = 6.
             linear = self.color_buffer[i, j]/samples * darken * self.exposure * exposure
+            # output = srgb_transfer(agx.display_transform(linear))
             output = srgb_transfer(linear)
 
 

@@ -276,6 +276,27 @@ def sample_scatter_event(interaction_id: ti.i32):
     return ti.random() < scattering_albedos[interaction_id]
 
 @ti.func
+def get_land_material(albedo_sampler: ti.template(), ocean_sampler: ti.template(), pos):
+    ocean = (sample_sphere_texture(ocean_sampler, pos).r)
+    albedo_texture_srgb = (sample_sphere_texture(albedo_sampler, pos).rgb)
+
+    # darken greenery, boost saturation and reds of deserts
+    land_albedo_srgb = mix(lum3(albedo_texture_srgb), albedo_texture_srgb, 6.5)
+    land_greenery = pow(land_albedo_srgb.y / lum(land_albedo_srgb), 2.0)
+    land_greenery = smoothstep(1.5, 1.9, land_greenery)
+    land_albedo_srgb = 1.7*albedo_texture_srgb / (land_greenery*1.35 + 1.0)
+    land_albedo_srgb = mix(lum3(land_albedo_srgb), land_albedo_srgb, 1.2 - land_greenery*0.2)
+    land_albedo_srgb.x = land_albedo_srgb.x*(1.0 + land_greenery*0.3)
+
+    # desaturate ocean albedo
+    ocean_albedo_srgb = mix(lum3(albedo_texture_srgb), albedo_texture_srgb, 0.25)
+
+    # mix land and ocean
+    albedo_srgb = mix(land_albedo_srgb, ocean_albedo_srgb, ocean)
+    return albedo_srgb, ocean
+
+
+@ti.func
 def path_tracer(path: PathParameters,
                 scene: SceneParameters,
                 albedo_sampler: ti.template(),
@@ -301,7 +322,7 @@ def path_tracer(path: PathParameters,
 
     primary_ray_did_not_intersect = False
     
-    for scatter_count in range(0, 53):
+    for scatter_count in range(0, 13):
 
        
         
@@ -327,7 +348,6 @@ def path_tracer(path: PathParameters,
         
         # Sample a direction to sun
         light_dir = sample_cone_oriented(scene.sun_cos_angle, scene.light_direction)
-
         if interacted:
             ### Volume scattering
 
@@ -336,18 +356,18 @@ def path_tracer(path: PathParameters,
             # Direct illumination
             # compute sunlight visibility, phase and transmittance. 
             # no parallax heightmap shadow because its insignificant at atmosphere scale.
-            direct_visibility = rsi(interaction_pos, light_dir, volume.planet_r).x < 0.0
-            direct_transmittance = 1.0
-            if direct_visibility:
+            direct_visibility = rsi(interaction_pos, light_dir, volume.planet_r).y > 0.0
+            direct_transmittance = 0.0
+            if not direct_visibility:
                 direct_transmittance = sample_transmittance(interaction_pos,
                                                                     light_dir,
-                                                                    -1.0 if direct_visibility else 0.0,
+                                                                    -1.0,
                                                                     extinctions,
                                                                     max_extinction_rmo,
                                                                     max_extinction_cloud,
                                                                     clouds_sampler)
             direct_phase = evaluate_phase(ray_dir, light_dir, interaction_id)
-            in_scattering += throughput * direct_transmittance * direct_visibility * sun_irradiance * direct_phase
+            in_scattering += throughput * direct_transmittance * sun_irradiance * direct_phase
 
             # Sample scattered ray direction (if scattering event)
             if sample_scatter_event(interaction_id):
@@ -367,11 +387,7 @@ def path_tracer(path: PathParameters,
             land_pos = ray_pos + ray_dir*earth_intersection
             sphere_normal = land_pos.normalized()
             land_normal = land_normal(height_sampler, land_pos, scene.land_height_scale)
-            ocean = (sample_sphere_texture(ocean_sampler, land_pos).r)
-            albedo_texture_srgb = (sample_sphere_texture(albedo_sampler, land_pos).rgb)
-            land_albedo_srgb = mix(lum3(albedo_texture_srgb), albedo_texture_srgb, 0.7)
-            ocean_albedo_srgb = mix(lum3(albedo_texture_srgb), albedo_texture_srgb, 0.25)
-            albedo_srgb = mix(land_albedo_srgb, ocean_albedo_srgb, ocean)
+            albedo_srgb, ocean = get_land_material(albedo_sampler, ocean_sampler, land_pos)
             albedo = srgb_to_spectrum(srgb_to_spectrum_buff, albedo_srgb, path.wavelength)
 
             # Direct illumination
@@ -396,7 +412,8 @@ def path_tracer(path: PathParameters,
             throughput *= brdf * np.pi # NdotL and PI in denominator are cancelled due to cosine weighted PDF
 
         else:
-            primary_ray_did_not_intersect = True
+
+            if scatter_count == 0: primary_ray_did_not_intersect = True
             break
                 
                 
