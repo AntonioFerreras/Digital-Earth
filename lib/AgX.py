@@ -18,7 +18,7 @@ COMPRESSION = 0.15 # Default = 0.15
 #Demo Settings
 MIN_EV = -10.0
 MAX_EV = 6.5
-SATURATION = 1.2
+SATURATION = 1.4
 
 @ti.func
 def InverseMat(m: mat3):

@@ -284,7 +284,7 @@ def get_land_material(albedo_sampler: ti.template(), ocean_sampler: ti.template(
     land_albedo_srgb = mix(lum3(albedo_texture_srgb), albedo_texture_srgb, 6.5)
     land_greenery = pow(land_albedo_srgb.y / lum(land_albedo_srgb), 2.0)
     land_greenery = smoothstep(1.5, 1.9, land_greenery)
-    land_albedo_srgb = 1.7*albedo_texture_srgb / (land_greenery*1.35 + 1.0)
+    land_albedo_srgb = 1.2*albedo_texture_srgb / (land_greenery*0.9 + 1.0)
     land_albedo_srgb = mix(lum3(land_albedo_srgb), land_albedo_srgb, 1.2 - land_greenery*0.2)
     land_albedo_srgb.x = land_albedo_srgb.x*(1.0 + land_greenery*0.3)
 
