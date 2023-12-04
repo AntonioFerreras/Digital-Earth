@@ -25,7 +25,7 @@ Assume you have a Python 3 environment, simply run:
 >>> pip3 install -r requirements.txt
 ```
 
-to install the dependencies of the voxel renderer.
+to install the dependencies of the renderer.
 
 Then in the Earth Viewer folder, run
 ```bash
