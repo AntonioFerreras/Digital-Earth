@@ -1,6 +1,6 @@
 # <a name="title">Earth Viewer</a>
 
-![Earth render 1](screenshot/main.py-2023-12-04-003721.jpg) ![Earth render 2](screenshot/main.py-2023-12-04-002739.jpg)
+![Earth render 1](screenshot/main.py-2023-12-04-010432.jpg) ![Earth render 2](screenshot/main.py-2023-12-04-002739.jpg)
 
 A renderer that generates highly realistic images of the Earth from outer space. 
 
@@ -29,7 +29,7 @@ Assume you have a Python 3 environment, simply run:
 >>> pip3 install -r requirements.txt
 ```
 
-to install the dependencies of the voxel renderer.
+to install the dependencies of the renderer.
 
 Then in the Earth Viewer folder, run
 ```bash
