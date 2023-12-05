@@ -1,5 +1,4 @@
 import taichi as ti
-import lib.volume_rendering_models as volume
 import numpy as np
 from lib.math_utils import *
 from lib.sampling import *
@@ -13,7 +12,7 @@ import pathtracer as pt
 
 @ti.data_oriented
 class Renderer:
-    def __init__(self, image_res, up, exposure=3):
+    def __init__(self, image_res, up):
         self.image_res = image_res
         self.aspect_ratio = image_res[0] / image_res[1]
         self.vignette_strength = 0.9
@@ -26,7 +25,7 @@ class Renderer:
         self.fov = ti.field(dtype=ti.f32, shape=())
 
         self.light_direction = ti.Vector.field(3, dtype=ti.f32, shape=())
-        self.exposure = exposure
+        self.exposure = ti.field(dtype=ti.f32, shape=())
 
         self.camera_pos = ti.Vector.field(3, dtype=ti.f32, shape=())
         self.look_at = ti.Vector.field(3, dtype=ti.f32, shape=())
@@ -40,6 +39,7 @@ class Renderer:
         self._rendered_image = ti.Vector.field(3, float, image_res)
         self.set_up(*up)
         self.set_fov(np.radians(27.)*0.5)
+        self.set_exposure(3.0)
 
         self.land_height_scale = 7800.0
 
@@ -86,6 +86,14 @@ class Renderer:
             data_array[x, 1] = load_data[x*3 + 1]
             data_array[x, 2] = load_data[x*3 + 2]
         self.srgb_to_spectrum_buff.from_numpy(data_array)
+
+        self.O3_crossec_LUT_buff = ti.field(dtype=ti.f32, shape=(O3_CROSSEC_LUT_RES))
+        with open(O3_CROSSEC_LUT_FILE, 'rb') as file:
+            load_data = np.fromfile(file, dtype=np.float32, count=O3_CROSSEC_LUT_RES)
+        data_array = np.zeros(shape=(O3_CROSSEC_LUT_RES), dtype=np.float32)
+        for x in range (0, O3_CROSSEC_LUT_RES):
+            data_array[x] = load_data[x]
+        self.O3_crossec_LUT_buff.from_numpy(data_array)
 
     def copy_textures(self):
         self.copy_albedo_texture(self.albedo_tex)
@@ -140,6 +148,10 @@ class Renderer:
     def set_fov(self, fov: ti.f32):
         self.fov[None] = fov
 
+    @ti.kernel
+    def set_exposure(self, exposure: ti.f32):
+        self.exposure[None] = exposure
+
     @ti.func
     def get_cast_dir(self, u, v):
         fov = self.fov[None]
@@ -186,7 +198,8 @@ class Renderer:
             # Sample incoming radiance for path
             sample = pt.path_tracer(path_params, scene_params, 
                                     albedo_sampler, height_sampler, ocean_sampler, clouds_sampler, 
-                                    self.srgb_to_spectrum_buff)
+                                    self.srgb_to_spectrum_buff,
+                                    self.O3_crossec_LUT_buff)
 
             # Convert spectrum sample to sRGB and accumulate
             xyz = sample * response * wavelength_rcp_pdf
@@ -202,8 +215,7 @@ class Renderer:
             darken = 1.0 - self.vignette_strength * max((ti.sqrt(
                 (u - self.vignette_center[0])**2 +
                 (v - self.vignette_center[1])**2) - self.vignette_radius), 0)
-            exposure = 6.
-            linear = self.color_buffer[i, j]/samples * darken * self.exposure * exposure
+            linear = self.color_buffer[i, j]/samples * darken * ti.pow(2.0, self.exposure[None])
             # output = srgb_transfer(agx.display_transform(linear))
             output = srgb_transfer(linear)
 

@@ -280,13 +280,13 @@ def get_land_material(albedo_sampler: ti.template(), ocean_sampler: ti.template(
     ocean = (sample_sphere_texture(ocean_sampler, pos).r)
     albedo_texture_srgb = (sample_sphere_texture(albedo_sampler, pos).rgb)
 
-    # darken greenery, boost saturation and reds of deserts
+    # darken and desaturate greenery, boost saturation and reds of deserts
     land_albedo_srgb = mix(lum3(albedo_texture_srgb), albedo_texture_srgb, 6.5)
     land_greenery = pow(land_albedo_srgb.y / lum(land_albedo_srgb), 2.0)
     land_greenery = smoothstep(1.5, 1.9, land_greenery)
     land_albedo_srgb = 1.2*albedo_texture_srgb / (land_greenery*0.9 + 1.0)
-    land_albedo_srgb = mix(lum3(land_albedo_srgb), land_albedo_srgb, 1.2 - land_greenery*0.2)
-    land_albedo_srgb.x = land_albedo_srgb.x*(1.0 + land_greenery*0.3)
+    land_albedo_srgb = mix(lum3(land_albedo_srgb), land_albedo_srgb, 1.2 - land_greenery*0.45)
+    land_albedo_srgb.x = land_albedo_srgb.x*(1.0 + land_greenery*0.45)
 
     # desaturate ocean albedo
     ocean_albedo_srgb = mix(lum3(albedo_texture_srgb), albedo_texture_srgb, 0.25)
@@ -303,7 +303,8 @@ def path_tracer(path: PathParameters,
                 height_sampler: ti.template(),
                 ocean_sampler: ti.template(),
                 clouds_sampler: ti.template(),
-                srgb_to_spectrum_buff: ti.template()):
+                srgb_to_spectrum_buff: ti.template(),
+                o3_crossec_buff: ti.template()):
     
     ray_pos = path.ray_pos
     ray_dir = path.ray_dir
@@ -317,7 +318,7 @@ def path_tracer(path: PathParameters,
     extinctions = vec4(0.0, 0.0, 0.0, 0.0)
     extinctions.x = volume.spectra_extinction_rayleigh(path.wavelength)
     extinctions.y = volume.spectra_extinction_mie(path.wavelength)
-    extinctions.z = volume.spectra_extinction_ozone(path.wavelength)
+    extinctions.z = volume.spectra_extinction_ozone(path.wavelength, o3_crossec_buff)
     extinctions.w = volume.clouds_extinct
 
     primary_ray_did_not_intersect = False

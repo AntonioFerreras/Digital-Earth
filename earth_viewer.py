@@ -42,7 +42,7 @@ class Camera:
 
     def _update_by_mouse(self, elapsed_time):
         win = self._window
-        if not self.mouse_exclusive_owner or not win.is_pressed(ti.ui.LMB):
+        if not self.mouse_exclusive_owner or not win.is_pressed(ti.ui.RMB):
             self._last_mouse_pos = None
             return False
         mouse_pos = np.array(win.get_cursor_pos())
@@ -95,9 +95,9 @@ class Camera:
             new_up = np.array((0.0, 1.0, 0.0))
             self.set_up(new_up)
 
-        if win.is_pressed('g'):
-            print("campos= " + str(self._camera_pos[0]) + ", " + str(self._camera_pos[1]) + ", " + str(self._camera_pos[2]))
-            print("lookat= " + str(self._lookat_pos[0]) + ", " + str(self._lookat_pos[1]) + ", " + str(self._lookat_pos[2]))
+        # if win.is_pressed('g'):
+        #     print("campos= " + str(self._camera_pos[0]) + ", " + str(self._camera_pos[1]) + ", " + str(self._camera_pos[2]))
+        #     print("lookat= " + str(self._lookat_pos[0]) + ", " + str(self._lookat_pos[1]) + ", " + str(self._lookat_pos[2]))
 
         if not pressed:
             return False
@@ -145,8 +145,7 @@ class EarthViewer:
                                    vsync=False)
         self.camera = Camera(self.window, up=UP_DIR)
         self.renderer = Renderer(image_res=SCREEN_RES,
-                                 up=UP_DIR,
-                                 exposure=exposure)
+                                 up=UP_DIR)
         self.renderer.set_camera_pos(*self.camera.position)
         if not os.path.exists('screenshot'):
             os.makedirs('screenshot')
@@ -154,8 +153,16 @@ class EarthViewer:
 
     def start(self):
         canvas = self.window.get_canvas()
+        gui = self.window.get_gui()
         spp = 1
         elapsed_time = 1.0
+
+        # GUI
+        enable_gui = True
+        current_fov = self.renderer.fov[None]
+        current_exposure = self.renderer.exposure[None]
+        ##########
+
         while self.window.running:
             should_reset_framebuffer = False
 
@@ -167,8 +174,7 @@ class EarthViewer:
                 self.renderer.set_up(*up)
                 should_reset_framebuffer = True
 
-            if should_reset_framebuffer:
-                self.renderer.reset_framebuffer()
+            
 
             t = time.time()
             for _ in range(spp):
@@ -188,4 +194,26 @@ class EarthViewer:
             #     spp = max(spp, 1)
             # else:
             #     spp += 1
+
+            
+            if self.window.is_pressed("g"):
+                enable_gui = not enable_gui
+
+            if enable_gui:
+                with gui.sub_window("Settings", x=0.025, y=0.025, width=0.25, height=0.2) as g:
+                    g.text("Press G to show/hide GUI")
+                    new_fow = np.deg2rad(g.slider_float("Verticle FOV", np.rad2deg(current_fov), 1.0, 90.0))
+                    if new_fow != current_fov:
+                        should_reset_framebuffer = True
+                        current_fov = new_fow
+                        self.renderer.fov[None] = current_fov
+                    
+                    new_exposure = g.slider_float("Exposure", current_exposure, 0.0, 5.0)
+                    if new_exposure != current_exposure:
+                        current_exposure = new_exposure
+                        self.renderer.exposure[None] = current_exposure
+
+            if should_reset_framebuffer:
+                self.renderer.reset_framebuffer()
+                
             self.window.show()

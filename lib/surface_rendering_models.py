@@ -4,7 +4,7 @@ import numpy as np
 from lib.math_utils import *
 
 DIFFUSE_FACTOR =  0.25
-SPECULAR_FACTOR = 0.5
+SPECULAR_FACTOR = 0.75
 
 @ti.func
 def earth_brdf(albedo: ti.f32, oceanness: ti.f32, v: vec3, n: vec3, l: vec3):
@@ -25,7 +25,7 @@ def earth_brdf(albedo: ti.f32, oceanness: ti.f32, v: vec3, n: vec3, l: vec3):
     diffuse = disney_diffuse(land_roughness, n_dot_l, n_dot_v, l_dot_h)
     land_specular = GGX_smith_specular(land_roughness, land_F_0, n_dot_l, n_dot_v, l_dot_h, n_dot_h)
     ocean_specular_ggx = GGX_smith_specular(ocean_roughness, ocean_F_0, n_dot_l, n_dot_v, l_dot_h, n_dot_h)
-    ocean_specular_beckmann = 0.9*beckmann_specular(ocean_roughness, ocean_F_0, n_dot_l, n_dot_v, l_dot_h, n_dot_h)
+    ocean_specular_beckmann = 0.65*beckmann_specular(ocean_roughness, ocean_F_0, n_dot_l, n_dot_v, l_dot_h, n_dot_h)
     ocean_specular = mix(ocean_specular_beckmann, ocean_specular_ggx, clamp(smoothstep(0.2, 0.95, n_dot_v), 0.05, 0.94)) # pow(n_dot_v, 0.75)
 
     brdf = albedo*diffuse*DIFFUSE_FACTOR + mix(land_specular, ocean_specular, oceanness)*SPECULAR_FACTOR

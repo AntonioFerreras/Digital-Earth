@@ -212,21 +212,11 @@ def spectra_extinction_rayleigh(wavelength: ti.f32):
     return ((8.0 * pow(np.pi, 3.0) * pow(n, 2.0)) / (3.0 * air_num_density * pow(nanometers, 4.0))) * king_factor
 
 @ti.func
-def spectra_extinction_ozone(wavelength: ti.f32):
-    # preetham fit by Jessie
-    wavelength = wavelength - 390.0
-    p1 = normal_distribution(wavelength, 202.0, 15.0) * 14.4
-    p2 = normal_distribution(wavelength, 170.0, 10.0) * 6.5
-    p3 = normal_distribution(wavelength, 50.0, 20.0) * 3.0
-    p4 = normal_distribution(wavelength, 100.0, 25.0) * 7.0
-    p5 = normal_distribution(wavelength, 140.0, 30.0) * 20.0
-    p6 = normal_distribution(wavelength, 150.0, 10.0) * 3.0
-    p7 = normal_distribution(wavelength, 290.0, 30.0) * 12.0
-    p8 = normal_distribution(wavelength, 330.0, 80.0) * 10.0
-    p9 = normal_distribution(wavelength, 240.0, 20.0) * 13.0
-    p10 = normal_distribution(wavelength, 220.0, 10.0) * 2.0
-    p11 = normal_distribution(wavelength, 186.0, 8.0) * 1.3
-    return 0.0001 * ozone_num_density * ((p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9 + p10 + p11) / 1e20)
+def spectra_extinction_ozone(wavelength: ti.f32, o3_crossec_buff: ti.template()):
+    ext = 0.0
+    if wavelength >= 390.0 and wavelength < 831.0:
+        ext = 0.0001 * ozone_num_density * o3_crossec_buff[int(wavelength - 390.0)]
+    return ext
 
 #######################
 
@@ -254,7 +244,7 @@ def get_ozone_density(h: ti.f32):
 def get_rayl_density(h: ti.f32):
     # Gaussian curve fit to US standard atmosphere
     density_sea_level = 1.225
-    return 3.68082 * exp( -pow(h + 24239.99, 2.0)/532307548.4168 ) # / density_sea_level
+    return 3.68082 * exp( -pow(h + 24239.99, 2.0)/532307548.4168 ) / density_sea_level
 
 @ti.func
 def get_mie_density(h: ti.f32):

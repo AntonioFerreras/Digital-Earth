@@ -3,6 +3,7 @@ TEX_RES_4K = (3840, 1920)
 TEX_RES_8K = (8100, 4050)
 TEX_RES_10K = (10800, 5400)
 CIE_LUT_RES = (441, 2)
+O3_CROSSEC_LUT_RES = 441
 ALBEDO_4K = 'textures/earth_color_4K.png'
 ALBEDO_10K = 'textures/earth_color_10K.png'
 TOPOGRAPHY_4K = 'textures/topography_4k.png'
@@ -13,6 +14,7 @@ CLOUDS_4K = 'textures/earth_clouds_4K.png'
 CLOUDS_8K = 'textures/earth_clouds_8K.png'
 CIE_LUT_FILE = 'textures/LUT/CIE.dat'
 SRGB2SPEC_LUT_FILE = 'textures/LUT/srgb2spec.dat'
+O3_CROSSEC_LUT_FILE = 'textures/LUT/ozone_cross_section.dat'
 
 ALBEDO_TEX_FILE = ALBEDO_4K if USE_LOW_QUAL_TEXTURES else ALBEDO_10K
 ALBEDO_TEX_RES = TEX_RES_4K if USE_LOW_QUAL_TEXTURES else TEX_RES_10K
