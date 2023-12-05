@@ -7,10 +7,11 @@ Demo shots             |  1080p
 A renderer that generates highly realistic images of the Earth from outer space. 
 
 Rendering is done with Path Tracing in participating media. 
-+ Uses measured data for density and light response (extinction coeficients and scattering functions) of atmospheric gases
++ Uses measured data for density and light response (extinction coeficients and scattering functions) of atmospheric gases.
   + Rayleigh scatterers: Nitrogen (N2), Oxygen (O2),  Carbon Dioxide (CO2)
   + Mie scatterers: Water vapour
   + Other absorbers: Ozone (O3)
++ Uses textures from NASA for ground albedo, water bodies, topology, clouds.
 + Uses spectral rendering to get an accurate representation of colours. 
 + Uses importance sampling in the form of direct light (sun) sampling and phase function pdf.
 
