@@ -4,6 +4,8 @@ Demo shots             |  1080p
 ![Earth render 1](screenshot/main.py-2023-12-05-200146.jpg) | ![Earth render 2](screenshot/main.py-2023-12-05-184411.jpg)
 ![Earth render 1](screenshot/main.py-2023-12-05-002427.jpg) | ![Earth render 2](screenshot/main.py-2023-12-05-192722.jpg)
 
+
+## Overview
 A renderer that generates highly realistic images of the Earth from outer space. 
 
 Rendering is done with Path Tracing in participating media. 
