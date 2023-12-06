@@ -16,10 +16,10 @@ ozone_peak_height = 25000.0 # peak density at 25km
 
 mie_g = 0.75
 mie_asymmetry = 3000.0
-turbidity = 1.0
+turbidity = 1.06
 
 rayleigh_albedo = 1.0
-aerosol_albedo = 0.98
+aerosol_albedo = 0.95
 ozone_albedo = 0.0
 cloud_albedo = 0.99
 
@@ -244,7 +244,7 @@ def get_ozone_density(h: ti.f32):
 def get_rayl_density(h: ti.f32):
     # Gaussian curve fit to US standard atmosphere
     density_sea_level = 1.225
-    return 3.68082 * exp( -pow(h + 24239.99, 2.0)/532307548.4168 ) / density_sea_level
+    return 3.68082 * exp( -pow(h + 24239.99, 2.0)/532307548.4168 ) # / density_sea_level
 
 @ti.func
 def get_mie_density(h: ti.f32):

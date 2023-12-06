@@ -17,7 +17,7 @@ def land_sdf(heightmap: ti.template(), pos: vec3, scale: ti.f32):
 def land_normal(heightmap: ti.template(), pos: vec3, scale: ti.f32):
     d = land_sdf(heightmap, pos, scale)
 
-    e = ti.Vector([0.5*2.0*np.pi*volume.planet_r/TOPOGRAPHY_TEX_RES[0], 0.0])
+    e = ti.Vector([np.pi*volume.planet_r/TOPOGRAPHY_TEX_RES[0], 0.0])
 
     n = d - vec3(land_sdf(heightmap, pos - e.xyy, scale),
                  land_sdf(heightmap, pos - e.yxy, scale),

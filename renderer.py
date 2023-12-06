@@ -24,8 +24,10 @@ class Renderer:
         self.bbox = ti.Vector.field(3, dtype=ti.f32, shape=2)
         self.fov = ti.field(dtype=ti.f32, shape=())
 
-        self.light_direction = ti.Vector.field(3, dtype=ti.f32, shape=())
         self.exposure = ti.field(dtype=ti.f32, shape=())
+
+        self.sun_angle = ti.field(dtype=ti.f32, shape=())
+        self.sun_path_rot = ti.field(dtype=ti.f32, shape=())
 
         self.camera_pos = ti.Vector.field(3, dtype=ti.f32, shape=())
         self.look_at = ti.Vector.field(3, dtype=ti.f32, shape=())
@@ -40,6 +42,8 @@ class Renderer:
         self.set_up(*up)
         self.set_fov(np.radians(27.)*0.5)
         self.set_exposure(3.0)
+        self.set_sun_angle(np.radians(60.0))
+        self.set_sun_path_rot(np.radians(-45.0))
 
         self.land_height_scale = 7800.0
 
@@ -152,6 +156,15 @@ class Renderer:
     def set_exposure(self, exposure: ti.f32):
         self.exposure[None] = exposure
 
+    @ti.kernel
+    def set_sun_angle(self, ang: ti.f32):
+        self.sun_angle[None] = ang
+    
+    @ti.kernel
+    def set_sun_path_rot(self, ang: ti.f32):
+        self.sun_path_rot[None] = ang
+
+
     @ti.func
     def get_cast_dir(self, u, v):
         fov = self.fov[None]
@@ -177,11 +190,12 @@ class Renderer:
         scene_params.land_height_scale = self.land_height_scale
 
         # Sun parameters
-        sunRadius   = 6.95e8
-        sunDistance = 1.4959e11
-        scene_params.sun_angular_radius = sunRadius / sunDistance
+        sun_radius   = 6.95e8
+        sun_distance = 1.4959e11
+        scene_params.sun_angular_radius = sun_radius / sun_distance
         scene_params.sun_cos_angle      = ti.cos(scene_params.sun_angular_radius)
-        scene_params.light_direction = vec3(-0.5, 0.5, -0.5).normalized()
+        sun_rot = vec2( -sin(self.sun_path_rot[None]), cos(self.sun_path_rot[None]))
+        scene_params.light_direction = vec3(-sin(self.sun_angle[None]), cos(self.sun_angle[None]) * sun_rot)
 
         ti.loop_config(block_dim=256)
         for u, v in self.color_buffer:

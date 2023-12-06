@@ -161,6 +161,9 @@ class EarthViewer:
         enable_gui = True
         current_fov = self.renderer.fov[None]
         current_exposure = self.renderer.exposure[None]
+
+        current_sun_angle = self.renderer.sun_angle[None]
+        current_sun_path_rot = self.renderer.sun_path_rot[None]
         ##########
 
         while self.window.running:
@@ -202,6 +205,20 @@ class EarthViewer:
             if enable_gui:
                 with gui.sub_window("Settings", x=0.025, y=0.025, width=0.25, height=0.2) as g:
                     g.text("Press G to show/hide GUI")
+
+                    g.text("\nWorld")
+                    new_sun_angle = np.deg2rad(g.slider_float("Sun angle", np.rad2deg(current_sun_angle), 0.0, 360.0))
+                    if new_sun_angle != current_sun_angle:
+                        should_reset_framebuffer = True
+                        current_sun_angle = new_sun_angle
+                        self.renderer.sun_angle[None] = current_sun_angle
+                    new_sun_path_rot = np.deg2rad(g.slider_float("Sun path rotation", np.rad2deg(current_sun_path_rot), -40.0, 40.0))
+                    if new_sun_path_rot != current_sun_path_rot:
+                        should_reset_framebuffer = True
+                        current_sun_path_rot = new_sun_path_rot
+                        self.renderer.sun_path_rot[None] = new_sun_path_rot
+
+                    g.text("\nCamera")
                     new_fow = np.deg2rad(g.slider_float("Verticle FOV", np.rad2deg(current_fov), 1.0, 90.0))
                     if new_fow != current_fov:
                         should_reset_framebuffer = True
@@ -212,6 +229,8 @@ class EarthViewer:
                     if new_exposure != current_exposure:
                         current_exposure = new_exposure
                         self.renderer.exposure[None] = current_exposure
+
+                    
 
             if should_reset_framebuffer:
                 self.renderer.reset_framebuffer()
