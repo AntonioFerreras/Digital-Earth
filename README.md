@@ -17,26 +17,19 @@ Rendering is done with Path Tracing in participating media.
 
 **Taichi Lang documentation:** https://docs.taichi-lang.org/
 
-## Installation
+## Step-by-step Installation
 
-Make sure your `pip` is up-to-date:
-
+1. Install dependencies of the renderer. (Assuming you have Python)
 ```bash
-Python:
->>> pip3 install pip --upgrade
+pip install -r requirements.txt
 ```
 
-Assume you have a Python 3 environment, simply run:
+2. Then download textures from [here (google drive)](https://drive.google.com/drive/folders/1RPspOXGj9JEV4nX78C5mGNWEgzic9dsv?usp=sharing)
+and drag them into the `textures` folder.
 
+3. Finally, to run Earth Viewer,
 ```bash
->>> pip3 install -r requirements.txt
-```
-
-to install the dependencies of the renderer.
-
-Then in the Earth Viewer folder, run
-```bash
->>> python3 main.py
+python main.py
 ```
 
 
