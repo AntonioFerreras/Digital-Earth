@@ -148,33 +148,33 @@ def sample_draine(view: vec3, g: ti.f32, a: ti.f32):
 
 @ti.func
 def cloud_phase(cos_theta: ti.f32):
-    # d = 35.0 # droplet size
-    # g_hg = exp( -0.0990567 / (d - 1.67154) )
-    # g_draine = exp( -2.20679 / (d + 3.91029) - 0.428934 )
-    # alpha_draine = exp( 3.62489 - 8.29288 / (d + 5.52825) )
-    # w_draine = exp( -0.599085 / (d - 0.641583) - 0.665888 )
+    d = 8.0 # droplet size
+    g_hg =   exp( -0.0990567 / (d - 1.67154) )
+    g_draine = exp( -2.20679 / (d + 3.91029) - 0.428934 )
+    alpha_draine = exp( 3.62489 - 8.29288 / (d + 5.52825) )
+    w_draine = exp( -0.599085 / (d - 0.641583) - 0.665888 )
 
-    # return mix(hg_phase(cos_theta, g_hg), draine_phase(cos_theta, g_draine, alpha_draine), w_draine)
-    return mix(hg_phase(cos_theta, -0.4), hg_phase(cos_theta, 0.8), 0.7)
+    return mix(hg_phase(cos_theta, g_hg), draine_phase(cos_theta, g_draine, alpha_draine), w_draine)
+    # return mix(hg_phase(cos_theta, -0.4), hg_phase(cos_theta, 0.8), 0.7)
 
 @ti.func
 def sample_cloud_phase(view: vec3):
-    # d = 35.0 # droplet size
-    # g_hg = exp( -0.0990567 / (d - 1.67154) )
-    # g_draine = exp( -2.20679 / (d + 3.91029) - 0.428934 )
-    # alpha_draine = exp( 3.62489 - 8.29288 / (d + 5.52825) )
-    # w_draine = exp( -0.599085 / (d - 0.641583) - 0.665888 )
+    d = 8.0 # droplet size
+    g_hg =  exp( -0.0990567 / (d - 1.67154) )
+    g_draine = exp( -2.20679 / (d + 3.91029) - 0.428934 )
+    alpha_draine = exp( 3.62489 - 8.29288 / (d + 5.52825) )
+    w_draine = exp( -0.599085 / (d - 0.641583) - 0.665888 )
 
-    # dir = vec3(0.0, 0.0, 0.0)
-    # if ti.random() < w_draine:
-    #     dir = sample_draine(view, g_draine, alpha_draine)
-    # else:
-    #     dir = sample_hg_phase(view, g_hg)
     dir = vec3(0.0, 0.0, 0.0)
-    if ti.random() < 0.7:
-        dir = sample_hg_phase(view, 0.8)
+    if ti.random() < w_draine:
+        dir = sample_draine(view, g_draine, alpha_draine)
     else:
-        dir = sample_hg_phase(view, -0.4)
+        dir = sample_hg_phase(view, g_hg)
+    # dir = vec3(0.0, 0.0, 0.0)
+    # if ti.random() < 0.7:
+    #     dir = sample_hg_phase(view, 0.8)
+    # else:
+    #     dir = sample_hg_phase(view, -0.4)
     return dir
 
 ##############################

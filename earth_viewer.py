@@ -89,15 +89,42 @@ class Camera:
                 pressed = True
                 dir += np.array(d)
         if win.is_pressed('q'):
+            pressed = True
             new_up = np_normalize(self._camera_pos)
             self.set_up(new_up)
         if win.is_pressed('e'):
+            pressed = True
             new_up = np.array((0.0, 1.0, 0.0))
             self.set_up(new_up)
 
-        # if win.is_pressed('g'):
-        #     print("campos= " + str(self._camera_pos[0]) + ", " + str(self._camera_pos[1]) + ", " + str(self._camera_pos[2]))
-        #     print("lookat= " + str(self._lookat_pos[0]) + ", " + str(self._lookat_pos[1]) + ", " + str(self._lookat_pos[2]))
+        if win.is_pressed('i'):
+            f = open("config.txt", "w")
+            f.write(str(self._camera_pos[0]) + " " + str(self._camera_pos[1]) + " " + str(self._camera_pos[2]) + "\n")
+            f.write(str(self._lookat_pos[0]) + " " + str(self._lookat_pos[1]) + " " + str(self._lookat_pos[2]) + "\n")
+            f.write(str(self._up[0]) + " " + str(self._up[1]) + " " + str(self._up[2]) + "\n")
+            f.close()
+
+        if win.is_pressed('o'):
+            f = open("config.txt")
+            cam_pos_string = f.readline().split()
+            cam_lookat_string = f.readline().split()
+            cam_up_string = f.readline().split()
+            f.close()
+
+            self._camera_pos[0] = float(cam_pos_string[0])
+            self._camera_pos[1] = float(cam_pos_string[1])
+            self._camera_pos[2] = float(cam_pos_string[2])
+
+            self._lookat_pos[0] = float(cam_lookat_string[0])
+            self._lookat_pos[1] = float(cam_lookat_string[1])
+            self._lookat_pos[2] = float(cam_lookat_string[2])
+
+            self._up[0] = float(cam_up_string[0])
+            self._up[1] = float(cam_up_string[1])
+            self._up[2] = float(cam_up_string[2])
+
+            pressed = True
+
 
         if not pressed:
             return False
@@ -177,7 +204,24 @@ class EarthViewer:
                 self.renderer.set_up(*up)
                 should_reset_framebuffer = True
 
-            
+            if self.window.is_pressed('i'):
+                f = open("config.txt", "a")
+                f.write(str(current_fov) + "\n")
+                f.write(str(current_exposure) + "\n")
+                f.write(str(current_sun_angle) + "\n")
+                f.write(str(current_sun_path_rot))
+                f.close()
+
+            if self.window.is_pressed('o'):
+                f = open("config.txt")
+                f.readline()
+                f.readline()
+                f.readline()
+                current_fov = float(f.readline())
+                current_exposure = float(f.readline())
+                current_sun_angle = float(f.readline())
+                current_sun_path_rot = float(f.readline())
+                f.close()
 
             t = time.time()
             for _ in range(spp):
@@ -211,7 +255,6 @@ class EarthViewer:
                     if new_sun_angle != current_sun_angle:
                         should_reset_framebuffer = True
                         current_sun_angle = new_sun_angle
-                        self.renderer.sun_angle[None] = current_sun_angle
                     new_sun_path_rot = np.deg2rad(g.slider_float("Sun path rotation", np.rad2deg(current_sun_path_rot), -40.0, 40.0))
                     if new_sun_path_rot != current_sun_path_rot:
                         should_reset_framebuffer = True
@@ -219,10 +262,10 @@ class EarthViewer:
                         self.renderer.sun_path_rot[None] = new_sun_path_rot
 
                     g.text("\nCamera")
-                    new_fow = np.deg2rad(g.slider_float("Verticle FOV", np.rad2deg(current_fov), 1.0, 90.0))
-                    if new_fow != current_fov:
+                    new_fov = np.deg2rad(g.slider_float("Verticle FOV", np.rad2deg(current_fov), 1.0, 90.0))
+                    if new_fov != current_fov:
                         should_reset_framebuffer = True
-                        current_fov = new_fow
+                        current_fov = new_fov
                         self.renderer.fov[None] = current_fov
                     
                     new_exposure = g.slider_float("Exposure", current_exposure, 0.0, 5.0)
@@ -230,7 +273,11 @@ class EarthViewer:
                         current_exposure = new_exposure
                         self.renderer.exposure[None] = current_exposure
 
-                    
+            
+            self.renderer.sun_angle[None] = current_sun_angle
+            self.renderer.sun_path_rot[None] = new_sun_path_rot
+            self.renderer.fov[None] = current_fov
+            self.renderer.exposure[None] = current_exposure
 
             if should_reset_framebuffer:
                 self.renderer.reset_framebuffer()
