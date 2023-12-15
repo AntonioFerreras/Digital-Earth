@@ -239,7 +239,7 @@ def sample_transmittance(ray_pos: vec3,
 
 
 @ti.func
-def evaluate_phase(ray_dir: vec3, light_dir: vec3, interaction_id: ti.i32):
+def evaluate_phase(ray_dir: vec3, light_dir: vec3, interaction_id: ti.i32, reduce_peak):
     phase = 0.0
     cos_theta = ray_dir.dot(light_dir)
     if interaction_id == 0:
@@ -247,23 +247,23 @@ def evaluate_phase(ray_dir: vec3, light_dir: vec3, interaction_id: ti.i32):
     elif interaction_id == 1:
         phase += volume.mie_phase(cos_theta)
     elif interaction_id == 3:
-        phase += volume.cloud_phase(cos_theta)
+        phase += volume.cloud_phase(cos_theta, reduce_peak)
     elif interaction_id == 4:
         phase += 1.0 / (4.0 * pi)
     return phase
     
 @ti.func
-def sample_phase(ray_dir: vec3, interaction_id: ti.i32):
+def sample_phase(ray_dir: vec3, interaction_id: ti.i32, reduce_peak):
     sample_dir = vec3(0.0, 0.0, 0.0)
     phase_div_pdf = 1.0
 
     if interaction_id == 0 or interaction_id == 4:
         sample_dir = sample_sphere(vec2(ti.random(), ti.random()))
-        phase_div_pdf = evaluate_phase(ray_dir, sample_dir, interaction_id) * (4.0 * np.pi)
+        phase_div_pdf = evaluate_phase(ray_dir, sample_dir, interaction_id, reduce_peak) * (4.0 * np.pi)
     elif interaction_id == 1:
         sample_dir = volume.sample_mie_phase(ray_dir)
     else:
-        sample_dir = volume.sample_cloud_phase(ray_dir)
+        sample_dir = volume.sample_cloud_phase(ray_dir, reduce_peak)
     return sample_dir, phase_div_pdf
 
 @ti.func
@@ -372,12 +372,12 @@ def path_tracer(path: PathParameters,
                                                                     max_extinction_rmo,
                                                                     max_extinction_cloud,
                                                                     clouds_sampler)
-            direct_phase = evaluate_phase(ray_dir, light_dir, interaction_id)
+            direct_phase = evaluate_phase(ray_dir, light_dir, interaction_id, scatter_count > 0)
             in_scattering += throughput * direct_transmittance * sun_irradiance * direct_phase
 
             # Sample scattered ray direction (if scattering event)
             if sample_scatter_event(interaction_id):
-                scatter_dir, phase_div_pdf = sample_phase(ray_dir, interaction_id)
+                scatter_dir, phase_div_pdf = sample_phase(ray_dir, interaction_id, scatter_count > 0)
 
                 ray_dir = scatter_dir
                 ray_pos = interaction_pos

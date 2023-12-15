@@ -31,7 +31,7 @@ atmos_upper_limit = planet_r + atmos_height
 
 # Cloud constants
 clouds_extinct = 0.1
-clouds_density = 0.0175
+clouds_density = 0.029 # 0.0175
 clouds_height = 5500.0
 clouds_thickness = 6000.0
 clouds_lower_limit = planet_r + clouds_height
@@ -147,9 +147,9 @@ def sample_draine(view: vec3, g: ti.f32, a: ti.f32):
 # END OF NVIDIA CORPORATION & AFFILIATES CODE
 
 @ti.func
-def cloud_phase(cos_theta: ti.f32):
+def cloud_phase(cos_theta: ti.f32, reduce_peak):
     d = 8.0 # droplet size
-    g_hg =   exp( -0.0990567 / (d - 1.67154) )
+    g_hg =  0.93 if reduce_peak else exp( -0.0990567 / (d - 1.67154) )
     g_draine = exp( -2.20679 / (d + 3.91029) - 0.428934 )
     alpha_draine = exp( 3.62489 - 8.29288 / (d + 5.52825) )
     w_draine = exp( -0.599085 / (d - 0.641583) - 0.665888 )
@@ -158,9 +158,9 @@ def cloud_phase(cos_theta: ti.f32):
     # return mix(hg_phase(cos_theta, -0.4), hg_phase(cos_theta, 0.8), 0.7)
 
 @ti.func
-def sample_cloud_phase(view: vec3):
+def sample_cloud_phase(view: vec3, reduce_peak):
     d = 8.0 # droplet size
-    g_hg =  exp( -0.0990567 / (d - 1.67154) )
+    g_hg =  0.93 if reduce_peak else exp( -0.0990567 / (d - 1.67154) )
     g_draine = exp( -2.20679 / (d + 3.91029) - 0.428934 )
     alpha_draine = exp( 3.62489 - 8.29288 / (d + 5.52825) )
     w_draine = exp( -0.599085 / (d - 0.641583) - 0.665888 )
