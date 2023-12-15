@@ -6,6 +6,7 @@ TEX_RES_16K = (16200, 8100)
 TEX_RES_21K = (21600, 10800)
 CIE_LUT_RES = (441, 2)
 O3_CROSSEC_LUT_RES = 441
+
 ALBEDO_4K = 'textures/earth_color_4K.png'
 ALBEDO_10K = 'textures/earth_color_10K.png'
 ALBEDO_21K = 'textures/earth_color_21K.png'
@@ -18,6 +19,10 @@ OCEAN_16K = 'textures/earth_landocean_16K.png'
 CLOUDS_4K = 'textures/earth_clouds_4K.png'
 CLOUDS_8K = 'textures/earth_clouds_8K.png'
 CLOUDS_21K = 'textures/earth_clouds_21K.png'
+BATHYMETRY_4K = 'textures/earth_bathymetry_4k.png'
+BATHYMETRY_10K = 'textures/earth_bathymetry_10k.png'
+BATHYMETRY_21K = 'textures/earth_bathymetry_21k.png'
+
 CIE_LUT_FILE = 'LUT/CIE.dat'
 SRGB2SPEC_LUT_FILE = 'LUT/srgb2spec.dat'
 O3_CROSSEC_LUT_FILE = 'LUT/ozone_cross_section.dat'
@@ -29,7 +34,8 @@ TOPOGRAPHY_TEX_RES = ALBEDO_TEX_RES
 OCEAN_TEX_FILE = OCEAN_4K
 OCEAN_TEX_RES = TEX_RES_4K
 CLOUDS_TEX_FILE = CLOUDS_4K
-CLOUDS_TEX_RES = TEX_RES_4K
+BATHYMETRY_TEX_FILE = BATHYMETRY_4K
+BATHYMETRY_TEX_RES = TEX_RES_4K
 
 if TEXTURE_QUALITY == 1:
     ALBEDO_TEX_FILE = ALBEDO_10K
@@ -40,6 +46,9 @@ if TEXTURE_QUALITY == 1:
     OCEAN_TEX_RES = TEX_RES_8K
     CLOUDS_TEX_FILE = CLOUDS_8K
     CLOUDS_TEX_RES = TEX_RES_8K
+    BATHYMETRY_TEX_FILE = BATHYMETRY_10K
+    BATHYMETRY_TEX_RES = TEX_RES_10K
+
 elif TEXTURE_QUALITY == 2:
     ALBEDO_TEX_FILE = ALBEDO_21K
     ALBEDO_TEX_RES = TEX_RES_21K
@@ -49,3 +58,5 @@ elif TEXTURE_QUALITY == 2:
     OCEAN_TEX_RES = TEX_RES_16K
     CLOUDS_TEX_FILE = CLOUDS_21K
     CLOUDS_TEX_RES = TEX_RES_21K
+    BATHYMETRY_TEX_FILE = BATHYMETRY_21K
+    BATHYMETRY_TEX_RES = TEX_RES_21K

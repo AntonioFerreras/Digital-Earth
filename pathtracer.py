@@ -276,7 +276,10 @@ def sample_scatter_event(interaction_id: ti.i32):
     return ti.random() < scattering_albedos[interaction_id]
 
 @ti.func
-def get_land_material(albedo_sampler: ti.template(), ocean_sampler: ti.template(), pos):
+def get_land_material(albedo_sampler: ti.template(), 
+                      ocean_sampler: ti.template(), 
+                      bathymetry_sampler: ti.template(), 
+                      pos: vec3):
     ocean = (sample_sphere_texture(ocean_sampler, pos).r)
     albedo_texture_srgb = (sample_sphere_texture(albedo_sampler, pos).rgb)
 
@@ -289,11 +292,12 @@ def get_land_material(albedo_sampler: ti.template(), ocean_sampler: ti.template(
     land_albedo_srgb.x = land_albedo_srgb.x*(1.0 + land_greenery*0.45)
 
     # desaturate ocean albedo
-    ocean_albedo_srgb = mix(lum3(albedo_texture_srgb), albedo_texture_srgb, 0.25)
+    ocean_albedo_srgb = mix(lum3(albedo_texture_srgb), albedo_texture_srgb, 0.18)*0.7
 
     # mix land and ocean
     albedo_srgb = mix(land_albedo_srgb, ocean_albedo_srgb, ocean)
-    return albedo_srgb, ocean
+
+    return albedo_srgb, ocean, sample_sphere_texture(bathymetry_sampler, pos).r
 
 
 @ti.func
@@ -303,6 +307,7 @@ def path_tracer(path: PathParameters,
                 height_sampler: ti.template(),
                 ocean_sampler: ti.template(),
                 clouds_sampler: ti.template(),
+                bathymetry_sampler: ti.template(),
                 srgb_to_spectrum_buff: ti.template(),
                 o3_crossec_buff: ti.template()):
     
@@ -388,7 +393,7 @@ def path_tracer(path: PathParameters,
             land_pos = ray_pos + ray_dir*earth_intersection
             sphere_normal = land_pos.normalized()
             land_normal = land_normal(height_sampler, land_pos, scene.land_height_scale)
-            albedo_srgb, ocean = get_land_material(albedo_sampler, ocean_sampler, land_pos)
+            albedo_srgb, ocean, bathymetry = get_land_material(albedo_sampler, ocean_sampler, bathymetry_sampler, land_pos)
             albedo = srgb_to_spectrum(srgb_to_spectrum_buff, albedo_srgb, path.wavelength)
 
             # Direct illumination
@@ -402,14 +407,14 @@ def path_tracer(path: PathParameters,
                                                                 max_extinction_rmo,
                                                                 max_extinction_cloud,
                                                                 clouds_sampler)
-            direct_brdf, direct_n_dot_l = surface.earth_brdf(albedo, ocean, -ray_dir, land_normal, light_dir)
+            direct_brdf, direct_n_dot_l = surface.earth_brdf(albedo, ocean, bathymetry, -ray_dir, land_normal, light_dir)
             in_scattering += throughput * direct_transmittance * direct_visibility * sun_irradiance * direct_brdf * direct_n_dot_l
 
             # Sample scattered ray direction
             view_dir = -ray_dir
             ray_dir = sample_hemisphere_cosine_weighted(land_normal)
             ray_pos = offset_pos
-            brdf, _ = surface.earth_brdf(albedo, ocean, view_dir, land_normal, ray_dir)
+            brdf, _ = surface.earth_brdf(albedo, ocean, bathymetry, view_dir, land_normal, ray_dir)
             throughput *= brdf * np.pi # NdotL and PI in denominator are cancelled due to cosine weighted PDF
 
         else:

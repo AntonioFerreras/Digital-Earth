@@ -7,7 +7,7 @@ DIFFUSE_FACTOR =  0.25
 SPECULAR_FACTOR = 0.75
 
 @ti.func
-def earth_brdf(albedo: ti.f32, oceanness: ti.f32, v: vec3, n: vec3, l: vec3):
+def earth_brdf(albedo: ti.f32, oceanness: ti.f32, bathymetry: ti.f32, v: vec3, n: vec3, l: vec3):
 
     h = (v+l).normalized()
 
@@ -16,9 +16,12 @@ def earth_brdf(albedo: ti.f32, oceanness: ti.f32, v: vec3, n: vec3, l: vec3):
 
     l_dot_h = saturate(l.dot(h))
     n_dot_h = saturate(n.dot(h))
+    
+    alpha = 0.75
+    # bathymetry = 0.5 * (2.0*bathymetry - 1.0)/(alpha + (1.0 + alpha)*abs(2.0 * bathymetry - 1.0)) + 0.5
 
     land_roughness = 0.6
-    ocean_roughness = 0.23
+    ocean_roughness = mix(0.23+0.03, 0.23-0.06, smoothstep(0.3, 0.7, bathymetry))
     land_F_0 = 0.04
     ocean_F_0 = 0.02
 

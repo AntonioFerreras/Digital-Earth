@@ -255,7 +255,7 @@ class EarthViewer:
                     if new_sun_angle != current_sun_angle:
                         should_reset_framebuffer = True
                         current_sun_angle = new_sun_angle
-                    new_sun_path_rot = np.deg2rad(g.slider_float("Sun path rotation", np.rad2deg(current_sun_path_rot), -40.0, 40.0))
+                    new_sun_path_rot = np.deg2rad(g.slider_float("Sun path rotation", np.rad2deg(current_sun_path_rot), -50.0, 50.0))
                     if new_sun_path_rot != current_sun_path_rot:
                         should_reset_framebuffer = True
                         current_sun_path_rot = new_sun_path_rot

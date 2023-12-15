@@ -41,7 +41,7 @@ class Renderer:
         self._rendered_image = ti.Vector.field(3, float, image_res)
         self.set_up(*up)
         self.set_fov(np.radians(27.)*0.5)
-        self.set_exposure(3.0)
+        self.set_exposure(2.5)
         self.set_sun_angle(np.radians(60.0))
         self.set_sun_path_rot(np.radians(-45.0))
 
@@ -67,6 +67,11 @@ class Renderer:
         self.clouds_buff = ti.field(dtype=ti.u8, shape=CLOUDS_TEX_RES)
         load_image = ti.tools.imread(CLOUDS_TEX_FILE)[:, :, 0]
         self.clouds_buff.from_numpy(load_image)
+
+        self.bathymetry_tex = ti.Texture(ti.Format.r8, BATHYMETRY_TEX_RES)
+        self.bathymetry_buff = ti.field(dtype=ti.u8, shape=BATHYMETRY_TEX_RES)
+        load_image = ti.tools.imread(BATHYMETRY_TEX_FILE)[:, :, 0]
+        self.bathymetry_buff.from_numpy(load_image)
 
         # LUTS
         self.CIE_LUT_tex = ti.Texture(ti.Format.rgba16f, CIE_LUT_RES)
@@ -104,6 +109,7 @@ class Renderer:
         self.copy_topography_texture(self.topography_tex)
         self.copy_ocean_texture(self.ocean_tex)
         self.copy_clouds_texture(self.clouds_tex)
+        self.copy_bathymetry_texture(self.bathymetry_tex)
         self.copy_CIE_LUT_texture(self.CIE_LUT_tex)
 
     @ti.kernel
@@ -128,6 +134,12 @@ class Renderer:
     def copy_clouds_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.r8, lod=0)):
         for i, j in ti.ndrange(CLOUDS_TEX_RES[0], CLOUDS_TEX_RES[1]):
             val = ti.cast(self.clouds_buff[i, j], ti.f32) / 255.0
+            tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
+
+    @ti.kernel
+    def copy_bathymetry_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.r8, lod=0)):
+        for i, j in ti.ndrange(BATHYMETRY_TEX_RES[0], BATHYMETRY_TEX_RES[1]):
+            val = ti.cast(self.bathymetry_buff[i, j], ti.f32) / 255.0
             tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
 
     @ti.kernel
@@ -184,6 +196,7 @@ class Renderer:
                      height_sampler: ti.types.texture(num_dimensions=2),
                      ocean_sampler: ti.types.texture(num_dimensions=2),
                      clouds_sampler: ti.types.texture(num_dimensions=2),
+                     bathymetry_sampler: ti.types.texture(num_dimensions=2),
                      cie_lut_sampler: ti.types.texture(num_dimensions=2)):
 
         scene_params = SceneParameters()
@@ -211,7 +224,7 @@ class Renderer:
 
             # Sample incoming radiance for path
             sample = pt.path_tracer(path_params, scene_params, 
-                                    albedo_sampler, height_sampler, ocean_sampler, clouds_sampler, 
+                                    albedo_sampler, height_sampler, ocean_sampler, clouds_sampler, bathymetry_sampler,
                                     self.srgb_to_spectrum_buff,
                                     self.O3_crossec_LUT_buff)
 
@@ -241,7 +254,7 @@ class Renderer:
         self.color_buffer.fill(0)
 
     def accumulate(self):
-        self.render(self.albedo_tex, self.topography_tex, self.ocean_tex, self.clouds_tex, self.CIE_LUT_tex)
+        self.render(self.albedo_tex, self.topography_tex, self.ocean_tex, self.clouds_tex, self.bathymetry_tex, self.CIE_LUT_tex)
         self.current_spp += 1
 
     def fetch_image(self):
