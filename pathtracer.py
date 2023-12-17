@@ -125,35 +125,6 @@ def transmittance_ratio_tracking(ray_pos: vec3,
     return transmittance
 
 @ti.func
-def transmittance_ray_marching  (ray_pos: vec3, 
-                                 ray_dir: vec3,
-                                 t_start: float,
-                                 t_max: float,
-                                 extinctions: vec4,
-                                 max_extinction: float,
-                                 clouds_sampler: ti.template()):
-    t = t_start
-    ray_pos += t*ray_dir
-
-    t_step = (t_max - t_start)/64.0
-
-    od = 0.0
-
-    while t < t_max:
-        ray_pos += t_step*ray_dir
-        t += t_step
-
-        if t >= t_max: break
-        
-        extinction_sample = extinctions * get_atmos_density(ray_pos, clouds_sampler)
-
-        od += extinction_sample.sum()*t_step
-
-        # if transmittance < 1e-5: break
-        
-    return exp(-od)
-
-@ti.func
 def intersect_cloud_limits(ray_pos: vec3, ray_dir: vec3, land_isection: float):
     t_start = 0.0
     t_max = 0.0
@@ -196,19 +167,27 @@ def sample_interaction(ray_pos: vec3,
     rmo_extinctions = vec4(extinctions.xyz, 0.0)
     rmo_interacted, rmo_t, rmo_id = sample_interaction_delta_tracking(ray_pos, ray_dir, t_start, t_max, rmo_extinctions, max_extinction_rmo, clouds_sampler)
 
-    t_start, t_max = intersect_cloud_limits(ray_pos, ray_dir, land_isection)
-    cloud_extinctions = vec4(0.0, 0.0, 0.0, extinctions.w)
-    cloud_interacted, cloud_t, _ = sample_interaction_delta_tracking(ray_pos, ray_dir, t_start, t_max, cloud_extinctions, max_extinction_cloud, clouds_sampler)
 
-    interacted = rmo_interacted or cloud_interacted
-    t = 0.0
-    interaction_id = 0
-    if rmo_interacted: 
-        t = rmo_t
-        interaction_id = rmo_id
-    if cloud_interacted and (cloud_t < rmo_t or not rmo_interacted): 
-        t = cloud_t
-        interaction_id = 3
+    t_start, t_max = intersect_cloud_limits(ray_pos, ray_dir, land_isection)
+
+    interacted = rmo_interacted
+    t = rmo_t
+    interaction_id = rmo_id
+
+    if not rmo_interacted or rmo_t > t_start:
+
+        cloud_extinctions = vec4(0.0, 0.0, 0.0, extinctions.w)
+        cloud_interacted, cloud_t, _ = sample_interaction_delta_tracking(ray_pos, ray_dir, t_start, t_max, cloud_extinctions, max_extinction_cloud, clouds_sampler)
+
+        interacted = rmo_interacted or cloud_interacted
+        
+        
+        if rmo_interacted: 
+            t = rmo_t
+            interaction_id = rmo_id
+        if cloud_interacted and (cloud_t < rmo_t or not rmo_interacted): 
+            t = cloud_t
+            interaction_id = 3
 
     return interacted, t, interaction_id
     
@@ -355,27 +334,27 @@ def path_tracer(path: PathParameters,
         light_dir = sample_cone_oriented(scene.sun_cos_angle, scene.light_direction)
         if interacted:
             ### Volume scattering
-
-            interaction_pos = ray_pos + interaction_dist*ray_dir
-
-            # Direct illumination
-            # compute sunlight visibility, phase and transmittance. 
-            # no parallax heightmap shadow because its insignificant at atmosphere scale.
-            direct_visibility = rsi(interaction_pos, light_dir, volume.planet_r).y > 0.0
-            direct_transmittance = 0.0
-            if not direct_visibility:
-                direct_transmittance = sample_transmittance(interaction_pos,
-                                                                    light_dir,
-                                                                    -1.0,
-                                                                    extinctions,
-                                                                    max_extinction_rmo,
-                                                                    max_extinction_cloud,
-                                                                    clouds_sampler)
-            direct_phase = evaluate_phase(ray_dir, light_dir, interaction_id, scatter_count > 0)
-            in_scattering += throughput * direct_transmittance * sun_irradiance * direct_phase
-
-            # Sample scattered ray direction (if scattering event)
+            # Sample scattered ray direction
             if sample_scatter_event(interaction_id):
+
+                interaction_pos = ray_pos + interaction_dist*ray_dir
+
+                # Direct illumination
+                # compute sunlight visibility, phase and transmittance. 
+                # no parallax heightmap shadow because its insignificant at atmosphere scale.
+                direct_visibility = rsi(interaction_pos, light_dir, volume.planet_r).y > 0.0
+                direct_transmittance = 0.0
+                if not direct_visibility:
+                    direct_transmittance = sample_transmittance(interaction_pos,
+                                                                        light_dir,
+                                                                        -1.0,
+                                                                        extinctions,
+                                                                        max_extinction_rmo,
+                                                                        max_extinction_cloud,
+                                                                        clouds_sampler)
+                direct_phase = evaluate_phase(ray_dir, light_dir, interaction_id, scatter_count > 0)
+                in_scattering += throughput * direct_transmittance * sun_irradiance * direct_phase
+
                 scatter_dir, phase_div_pdf = sample_phase(ray_dir, interaction_id, scatter_count > 0)
 
                 ray_dir = scatter_dir
