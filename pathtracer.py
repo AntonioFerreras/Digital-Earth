@@ -328,9 +328,10 @@ def path_tracer(path: PathParameters,
 
     primary_ray_did_not_intersect = False
     
-    for scatter_count in range(0, 13):
+    for scatter_count in range(0, 25):
 
-       
+        if scatter_count > 9: 
+            extinctions.w = 0.02
         
 
         max_extinction_rmo = (extinctions.xyz * max_densities_rmo).sum()
@@ -347,10 +348,8 @@ def path_tracer(path: PathParameters,
                                                                           max_extinction_rmo,
                                                                           max_extinction_cloud,
                                                                           clouds_sampler)
-        if scatter_count > 10: 
-            extinctions.w = 0.02
-            max_density_cloud = extinctions.w
-            if interaction_id == 3: interaction_id = 4
+        if scatter_count > 9 and interaction_id == 3: 
+            interaction_id = 4
         
         # Sample a direction to sun
         light_dir = sample_cone_oriented(scene.sun_cos_angle, scene.light_direction)
