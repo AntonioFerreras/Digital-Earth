@@ -18,6 +18,12 @@ mie_g = 0.75
 mie_asymmetry = 3000.0
 turbidity = 1.06
 
+RAYLEIGH_ID = 0
+MIE_ID = 1
+OZONE_ID = 2
+CLOUD_ID = 3
+ISOTROPIC_CLOUD_ID = 4
+
 rayleigh_albedo = 1.0
 aerosol_albedo = 0.95
 ozone_albedo = 0.0

@@ -187,7 +187,7 @@ def sample_interaction(ray_pos: vec3,
             interaction_id = rmo_id
         if cloud_interacted and (cloud_t < rmo_t or not rmo_interacted): 
             t = cloud_t
-            interaction_id = 3
+            interaction_id = volume.CLOUD_ID
 
     return interacted, t, interaction_id
     
@@ -221,13 +221,13 @@ def sample_transmittance(ray_pos: vec3,
 def evaluate_phase(ray_dir: vec3, light_dir: vec3, interaction_id: ti.i32, reduce_peak):
     phase = 0.0
     cos_theta = ray_dir.dot(light_dir)
-    if interaction_id == 0:
+    if interaction_id == volume.RAYLEIGH_ID:
         phase += volume.rayleigh_phase(cos_theta)
-    elif interaction_id == 1:
+    elif interaction_id == volume.MIE_ID:
         phase += volume.mie_phase(cos_theta)
-    elif interaction_id == 3:
+    elif interaction_id == volume.CLOUD_ID:
         phase += volume.cloud_phase(cos_theta, reduce_peak)
-    elif interaction_id == 4:
+    elif interaction_id == volume.ISOTROPIC_CLOUD_ID:
         phase += 1.0 / (4.0 * pi)
     return phase
     
@@ -236,10 +236,10 @@ def sample_phase(ray_dir: vec3, interaction_id: ti.i32, reduce_peak):
     sample_dir = vec3(0.0, 0.0, 0.0)
     phase_div_pdf = 1.0
 
-    if interaction_id == 0 or interaction_id == 4:
+    if interaction_id == volume.RAYLEIGH_ID or interaction_id == volume.ISOTROPIC_CLOUD_ID:
         sample_dir = sample_sphere(vec2(ti.random(), ti.random()))
         phase_div_pdf = evaluate_phase(ray_dir, sample_dir, interaction_id, reduce_peak) * (4.0 * np.pi)
-    elif interaction_id == 1:
+    elif interaction_id == volume.MIE_ID:
         sample_dir = volume.sample_mie_phase(ray_dir)
     else:
         sample_dir = volume.sample_cloud_phase(ray_dir, reduce_peak)
@@ -247,7 +247,7 @@ def sample_phase(ray_dir: vec3, interaction_id: ti.i32, reduce_peak):
 
 @ti.func
 def sample_scatter_event(interaction_id: ti.i32):
-    if interaction_id == 4: interaction_id = 3
+    if interaction_id == volume.ISOTROPIC_CLOUD_ID: interaction_id = volume.CLOUD_ID
     scattering_albedos = ti.Vector([volume.rayleigh_albedo, 
                                     volume.aerosol_albedo, 
                                     volume.ozone_albedo, 
@@ -327,8 +327,8 @@ def path_tracer(path: PathParameters,
                                                                           max_extinction_rmo,
                                                                           max_extinction_cloud,
                                                                           clouds_sampler)
-        if scatter_count > 9 and interaction_id == 3: 
-            interaction_id = 4
+        if scatter_count > 9 and interaction_id == volume.CLOUD_ID: 
+            interaction_id = volume.ISOTROPIC_CLOUD_ID
         
         # Sample a direction to sun
         light_dir = sample_cone_oriented(scene.sun_cos_angle, scene.light_direction)
