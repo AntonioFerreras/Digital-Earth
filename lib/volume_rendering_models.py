@@ -29,6 +29,8 @@ aerosol_albedo = 0.95
 ozone_albedo = 0.0
 cloud_albedo = 0.99
 
+albedos_vector = vec4(rayleigh_albedo, aerosol_albedo, ozone_albedo, cloud_albedo)
+
 
 
 planet_r = 6371e3
@@ -192,7 +194,7 @@ def spectra_extinction_mie2(wavelength: ti.f32):
     return B/wavelength
 
 @ti.func
-def spectra_extinction_mie(wavelength: ti.f32):
+def spectra_extinction_mie(wavelength):
     junge = 4.0
     
     c = (0.6544 * turbidity - 0.6510) * 4e-18
@@ -201,7 +203,7 @@ def spectra_extinction_mie(wavelength: ti.f32):
 
 
 @ti.func
-def spectra_extinction_rayleigh(wavelength: ti.f32):
+def spectra_extinction_rayleigh(wavelength):
     nanometers = wavelength * 1e-9
 
     # depolarization 
@@ -222,6 +224,12 @@ def spectra_extinction_ozone(wavelength: ti.f32, o3_crossec_buff: ti.template())
     if wavelength >= 390.0 and wavelength < 831.0:
         ext = 0.0001 * ozone_num_density * o3_crossec_buff[int(wavelength - 390.0)]
     return ext
+
+@ti.func
+def spectra_extinction_ozone_triplet(wavelengths, o3_crossec_buff: ti.template()):
+    return vec3(spectra_extinction_ozone(wavelengths.x, o3_crossec_buff), 
+                spectra_extinction_ozone(wavelengths.y, o3_crossec_buff), 
+                spectra_extinction_ozone(wavelengths.z, o3_crossec_buff))
 
 #######################
 

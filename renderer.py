@@ -215,10 +215,17 @@ class Renderer:
             
             
             
-            # Sample a path from sensor
-            wavelength, response, wavelength_rcp_pdf = spectrum_sample(cie_lut_sampler, CIE_LUT_RES[0])
+            # Sample a wavelength triplet from CIE LUT
+            wavelengths = vec3(0.0)
+            responses = mat3(0.0)
+            wavelengths_rcp_pdf = vec3(0.0)
+            wavelengths[0], responses[0], wavelengths_rcp_pdf[0] = spectrum_sample(cie_lut_sampler, CIE_LUT_RES[0])
+            wavelengths[1], responses[1], wavelengths_rcp_pdf[1] = spectrum_sample(cie_lut_sampler, CIE_LUT_RES[0])
+            wavelengths[2], responses[2], wavelengths_rcp_pdf[2] = spectrum_sample(cie_lut_sampler, CIE_LUT_RES[0])
             path_params = PathParameters()
-            path_params.wavelength = wavelength
+            path_params.wavelengths = wavelengths
+
+            # Sample a path from sensor
             path_params.ray_dir = self.get_cast_dir(u, v)
             path_params.ray_pos = self.camera_pos[None]
 
@@ -228,8 +235,8 @@ class Renderer:
                                     self.srgb_to_spectrum_buff,
                                     self.O3_crossec_LUT_buff)
 
-            # Convert spectrum sample to sRGB and accumulate
-            xyz = sample * response * wavelength_rcp_pdf
+            # Convert spectrum samples to sRGB and accumulate
+            xyz = ((sample * wavelengths_rcp_pdf) @ responses) / 3.0
             self.color_buffer[u, v] += xyzToRGBMatrix_D65 @ xyz 
 
 

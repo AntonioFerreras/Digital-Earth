@@ -3,7 +3,7 @@ from taichi.math import *
 
 @ti.dataclass
 class PathParameters:
-    wavelength: float
+    wavelengths: vec3
     ray_dir: vec3
     ray_pos: vec3
 

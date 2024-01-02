@@ -69,7 +69,18 @@ def srgb_to_spectrum(lut: ti.template(), rgb, wavelength):
         power = rgb.dot(coeff)
     
     return power
-        
+
+@ti.func
+def srgb_to_spectrum_triplet(lut: ti.template(), rgb, wavelengths):
+    w = ti.cast(wavelengths - 400, ti.i32)
+    f = w - (wavelengths - 400.0)
+    power = vec3(0.0)
+    for i in range(3):
+        if w[i] > 0 and w[i] < 299:
+            coeff = mix(lut[w[i]], lut[w[i]+1], f)
+            power[i] = rgb.dot(coeff)
+    
+    return power
 
 @ti.func
 def srgb_transfer(linear):
