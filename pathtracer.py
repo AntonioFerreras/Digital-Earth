@@ -60,6 +60,10 @@ def get_atmos_density(pos: vec3, clouds_sampler: ti.template()):
     c = get_clouds_density(clouds_sampler, pos)
     return vec4(rmo, c)
 
+NULL_EVENT = 0
+ABSORB_EVENT = 1
+SCATTER_EVENT = 2
+
 @ti.func
 def sample_interaction_delta_tracking(ray_pos: vec3, 
                                       ray_dir: vec3,
@@ -72,7 +76,7 @@ def sample_interaction_delta_tracking(ray_pos: vec3,
     ray_pos += t*ray_dir
 
     interaction_id = 0
-    interacted = False
+    event = NULL_EVENT
 
     while t < t_max:
         t_step = -log(ti.random()) / max_extinction
@@ -90,11 +94,15 @@ def sample_interaction_delta_tracking(ray_pos: vec3,
                 cmf += extinction_sample[interaction_id]
                 if rand < cmf / max_extinction: break
                 interaction_id += 1
-            interacted = True
+            
+            if sample_scatter_event(interaction_id):
+                event = SCATTER_EVENT
+            else:
+                event = ABSORB_EVENT
             break
 
         
-    return interacted, t, interaction_id
+    return event, t, interaction_id
 
 @ti.func
 def transmittance_ratio_tracking(ray_pos: vec3, 
@@ -165,31 +173,28 @@ def sample_interaction(ray_pos: vec3,
     if atmos_isection.y < 0.0: 
         t_max = -1.0 # ray doesnt cross atmosphere
     rmo_extinctions = vec4(extinctions.xyz, 0.0)
-    rmo_interacted, rmo_t, rmo_id = sample_interaction_delta_tracking(ray_pos, ray_dir, t_start, t_max, rmo_extinctions, max_extinction_rmo, clouds_sampler)
+    rmo_event, rmo_t, rmo_id = sample_interaction_delta_tracking(ray_pos, ray_dir, t_start, t_max, rmo_extinctions, max_extinction_rmo, clouds_sampler)
 
 
     t_start, t_max = intersect_cloud_limits(ray_pos, ray_dir, land_isection)
 
-    interacted = rmo_interacted
+    event = rmo_event
     t = rmo_t
     interaction_id = rmo_id
 
-    if not rmo_interacted or rmo_t > t_start:
+    if rmo_event == NULL_EVENT or rmo_t > t_start:
 
         cloud_extinctions = vec4(0.0, 0.0, 0.0, extinctions.w)
-        cloud_interacted, cloud_t, _ = sample_interaction_delta_tracking(ray_pos, ray_dir, t_start, t_max, cloud_extinctions, max_extinction_cloud, clouds_sampler)
+        cloud_event, cloud_t, _ = sample_interaction_delta_tracking(ray_pos, ray_dir, t_start, t_max, cloud_extinctions, max_extinction_cloud, clouds_sampler)
 
-        interacted = rmo_interacted or cloud_interacted
         
         
-        if rmo_interacted: 
-            t = rmo_t
-            interaction_id = rmo_id
-        if cloud_interacted and (cloud_t < rmo_t or not rmo_interacted): 
+        if cloud_event > 0 and (cloud_t < rmo_t or rmo_event == NULL_EVENT): 
             t = cloud_t
             interaction_id = volume.CLOUD_ID
+            event = cloud_event
 
-    return interacted, t, interaction_id
+    return event, t, interaction_id
     
 
 
@@ -262,16 +267,16 @@ def get_land_material(albedo_sampler: ti.template(),
     ocean = (sample_sphere_texture(ocean_sampler, pos).r)
     albedo_texture_srgb = (sample_sphere_texture(albedo_sampler, pos).rgb)
 
-    # darken and desaturate greenery, boost saturation and reds of deserts
+    # darken and desaturate greenery, boost saturation and orange of deserts
     land_albedo_srgb = mix(lum3(albedo_texture_srgb), albedo_texture_srgb, 6.5)
     land_greenery = pow(land_albedo_srgb.y / lum(land_albedo_srgb), 2.0)
     land_greenery = smoothstep(1.5, 1.9, land_greenery)
-    land_albedo_srgb = 1.2*albedo_texture_srgb / (land_greenery*0.9 + 1.0)
-    land_albedo_srgb = mix(lum3(land_albedo_srgb), land_albedo_srgb, 1.4 - land_greenery*0.65)
-    land_albedo_srgb.x = land_albedo_srgb.x*(1.0 + land_greenery*0.45)
+    land_albedo_srgb = 1.0*albedo_texture_srgb / (land_greenery*0.7 + 1.0)
+    land_albedo_srgb = mix(lum3(land_albedo_srgb), land_albedo_srgb, 1.4 - land_greenery*0.45)
+    land_albedo_srgb = mix(land_albedo_srgb, land_albedo_srgb * vec3(255.0, 128.0, 64.0)/255.0, 0.12*(1.0 - land_greenery))
 
     # desaturate ocean albedo
-    ocean_albedo_srgb = mix(lum3(albedo_texture_srgb), albedo_texture_srgb, 0.18)*0.7
+    ocean_albedo_srgb = mix(lum3(albedo_texture_srgb), albedo_texture_srgb, 0.75)*0.9
 
     # mix land and ocean
     albedo_srgb = mix(land_albedo_srgb, ocean_albedo_srgb, ocean)
@@ -320,7 +325,7 @@ def path_tracer(path: PathParameters,
         earth_intersection = intersect_land(height_sampler, ray_pos, ray_dir, scene.land_height_scale)
 
         # Sample a particle interaction with volume
-        interacted, interaction_dist, interaction_id = sample_interaction(ray_pos, 
+        event, interaction_dist, interaction_id = sample_interaction(ray_pos, 
                                                                           ray_dir,
                                                                           earth_intersection,
                                                                           extinctions,
@@ -332,42 +337,38 @@ def path_tracer(path: PathParameters,
         
         # Sample a direction to sun
         light_dir = sample_cone_oriented(scene.sun_cos_angle, scene.light_direction)
-        if interacted:
+        if event == ABSORB_EVENT:
+            break
+        elif event == SCATTER_EVENT:
             ### Volume scattering
-            # Sample scattered ray direction
-            if sample_scatter_event(interaction_id):
 
-                interaction_pos = ray_pos + interaction_dist*ray_dir
+            interaction_pos = ray_pos + interaction_dist*ray_dir
 
-                # Direct illumination
-                # compute sunlight visibility, phase and transmittance. 
-                # no parallax heightmap shadow because its insignificant at atmosphere scale.
-                direct_visibility = rsi(interaction_pos, light_dir, volume.planet_r).y > 0.0
-                direct_transmittance = 0.0
-                if not direct_visibility:
-                    direct_transmittance = sample_transmittance(interaction_pos,
-                                                                        light_dir,
-                                                                        -1.0,
-                                                                        extinctions,
-                                                                        max_extinction_rmo,
-                                                                        max_extinction_cloud,
-                                                                        clouds_sampler)
-                direct_phase = evaluate_phase(ray_dir, light_dir, interaction_id, scatter_count > 0)
-                in_scattering += throughput * direct_transmittance * sun_irradiance * direct_phase
+            # Direct illumination
+            # compute sunlight visibility, phase and transmittance. 
+            # no parallax heightmap shadow because its insignificant at atmosphere scale.
+            direct_visibility = rsi(interaction_pos, light_dir, volume.planet_r).y > 0.0
+            direct_transmittance = 0.0
+            if not direct_visibility:
+                direct_transmittance = sample_transmittance(interaction_pos,
+                                                            light_dir,
+                                                            -1.0,
+                                                            extinctions,
+                                                            max_extinction_rmo,
+                                                            max_extinction_cloud,
+                                                            clouds_sampler)
+            direct_phase = evaluate_phase(ray_dir, light_dir, interaction_id, scatter_count > 0)
+            in_scattering += throughput * direct_transmittance * sun_irradiance * direct_phase
 
-                scatter_dir, phase_div_pdf = sample_phase(ray_dir, interaction_id, scatter_count > 0)
+            scatter_dir, phase_div_pdf = sample_phase(ray_dir, interaction_id, scatter_count > 0)
 
-                ray_dir = scatter_dir
-                ray_pos = interaction_pos
-                throughput *= phase_div_pdf
+            ray_dir = scatter_dir
+            ray_pos = interaction_pos
+            throughput *= phase_div_pdf
                 
-            else:
-                break # absorbed
-
-
 
         elif earth_intersection > 0.0:
-            #### Surface scattering
+            ### Surface scattering
             land_pos = ray_pos + ray_dir*earth_intersection
             sphere_normal = land_pos.normalized()
             land_normal = land_normal(height_sampler, land_pos, scene.land_height_scale)
