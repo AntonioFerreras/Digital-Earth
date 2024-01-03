@@ -3,7 +3,7 @@ from taichi.math import *
 import numpy as np
 from lib.math_utils import *
 
-DIFFUSE_FACTOR =  0.35
+DIFFUSE_FACTOR =  0.28
 SPECULAR_FACTOR = 0.75
 
 @ti.func

@@ -249,7 +249,7 @@ def get_ozone_density(h: ti.f32):
 def get_rayl_density(h: ti.f32):
     # Gaussian curve fit to US standard atmosphere
     density_sea_level = 1.225
-    return 3.68082 * exp( -pow(h + 24239.99, 2.0)/532307548.4168 ) # / density_sea_level
+    return 3.68082 * exp( -pow(h + 24239.99, 2.0)/532307548.4168 ) / density_sea_level
 
 @ti.func
 def get_mie_density(h: ti.f32):
