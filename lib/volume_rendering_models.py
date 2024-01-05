@@ -202,7 +202,7 @@ def spectra_extinction_mie(wavelength: ti.f32):
 
 @ti.func
 def spectra_extinction_rayleigh(wavelength: ti.f32):
-    nanometers = wavelength * 1e-9
+    wavelength_nanometers = wavelength * 1e-9
 
     # depolarization 
     F_N2 = 1.034 + 3.17e-4 * (1.0 / pow(wavelength, 2.0))
@@ -214,7 +214,7 @@ def spectra_extinction_rayleigh(wavelength: ti.f32):
     king_factor = (78.084 * F_N2 + 20.946 * F_O2 + 0.934 + CCO2 * 1.15) / (78.084 + 20.946 + 0.934 + CCO2)
     n = sqr(air(wavelength * 1e-3)) - 1.0
 
-    return ((8.0 * pow(np.pi, 3.0) * pow(n, 2.0)) / (3.0 * air_num_density * pow(nanometers, 4.0))) * king_factor
+    return ((8.0 * pow(np.pi, 3.0) * pow(n, 2.0)) / (3.0 * air_num_density * pow(wavelength_nanometers, 4.0))) * king_factor
 
 @ti.func
 def spectra_extinction_ozone(wavelength: ti.f32, o3_crossec_buff: ti.template()):

@@ -36,12 +36,12 @@ def UV_to_index_stochastic(uv, res):
     return ti.cast(uv * res + ti.random()*2.0 - 1.0, ti.i32)
 
 @ti.func
-def sample_sphere_texture(sampler: ti.template(), pos):
+def sample_sphere_texture(sampler: ti.template(), pos, scale=1.0):
     uv = sphere_UV_map(pos.normalized())
         # coord = UV_to_index_stochastic(uv, 
         #                                ti.Vector([self.albedo_buff.shape[0], 
         #                                           self.albedo_buff.shape[1]]))
-    return sampler.sample_lod(uv, 0.0)# self.albedo_buff[coord.x, coord.y].xyz/255.0
+    return sampler.sample_lod(fract(uv*scale), 0.0)# self.albedo_buff[coord.x, coord.y].xyz/255.0
 
 @ti.func
 def saturate(x):

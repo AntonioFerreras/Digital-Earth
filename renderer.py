@@ -104,6 +104,12 @@ class Renderer:
             data_array[x] = load_data[x]
         self.O3_crossec_LUT_buff.from_numpy(data_array)
 
+        # NOISE
+        self.noise_tex = ti.Texture(ti.Format.r8, NOISE_TEX_RES)
+        self.noise_buff = ti.field(dtype=ti.u8, shape=NOISE_TEX_RES)
+        load_image = ti.tools.imread(NOISE_TEX_FILE)[:, :, 0]
+        self.noise_buff.from_numpy(load_image)
+
     def copy_textures(self):
         self.copy_albedo_texture(self.albedo_tex)
         self.copy_topography_texture(self.topography_tex)
@@ -111,6 +117,7 @@ class Renderer:
         self.copy_clouds_texture(self.clouds_tex)
         self.copy_bathymetry_texture(self.bathymetry_tex)
         self.copy_CIE_LUT_texture(self.CIE_LUT_tex)
+        self.copy_noise_texture(self.noise_tex)
 
     @ti.kernel
     def copy_albedo_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.rgba8, lod=0)):
@@ -147,6 +154,12 @@ class Renderer:
         for i, j in ti.ndrange(CIE_LUT_RES[0], CIE_LUT_RES[1]):
             val = ti.cast(self.CIE_LUT_buff[i, j], ti.f32)
             tex.store(ti.Vector([i, j]), ti.Vector([val.x, val.y, val.z, 0.0]))
+
+    @ti.kernel
+    def copy_noise_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.r8, lod=0)):
+        for i, j in ti.ndrange(NOISE_TEX_RES[0], NOISE_TEX_RES[1]):
+            val = ti.cast(self.noise_buff[i, j], ti.f32) / 255.0
+            tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
 
     @ti.kernel
     def set_camera_pos(self, x: ti.f32, y: ti.f32, z: ti.f32):
@@ -197,7 +210,8 @@ class Renderer:
                      ocean_sampler: ti.types.texture(num_dimensions=2),
                      clouds_sampler: ti.types.texture(num_dimensions=2),
                      bathymetry_sampler: ti.types.texture(num_dimensions=2),
-                     cie_lut_sampler: ti.types.texture(num_dimensions=2)):
+                     cie_lut_sampler: ti.types.texture(num_dimensions=2),
+                     noise_sampler: ti.types.texture(num_dimensions=2)):
 
         scene_params = SceneParameters()
         scene_params.land_height_scale = self.land_height_scale
@@ -226,7 +240,8 @@ class Renderer:
             sample = pt.path_tracer(path_params, scene_params, 
                                     albedo_sampler, height_sampler, ocean_sampler, clouds_sampler, bathymetry_sampler,
                                     self.srgb_to_spectrum_buff,
-                                    self.O3_crossec_LUT_buff)
+                                    self.O3_crossec_LUT_buff,
+                                    noise_sampler)
 
             # Convert spectrum sample to sRGB and accumulate
             xyz = sample * response * wavelength_rcp_pdf
@@ -254,7 +269,7 @@ class Renderer:
         self.color_buffer.fill(0)
 
     def accumulate(self):
-        self.render(self.albedo_tex, self.topography_tex, self.ocean_tex, self.clouds_tex, self.bathymetry_tex, self.CIE_LUT_tex)
+        self.render(self.albedo_tex, self.topography_tex, self.ocean_tex, self.clouds_tex, self.bathymetry_tex, self.CIE_LUT_tex, self.noise_tex)
         self.current_spp += 1
 
     def fetch_image(self):
