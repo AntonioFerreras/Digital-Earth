@@ -1,3 +1,4 @@
+import os
 import taichi as ti
 import numpy as np
 from lib.math_utils import *
@@ -23,8 +24,13 @@ class Renderer:
         self.color_buffer = ti.Vector.field(3, dtype=ti.f32)
         self.bbox = ti.Vector.field(3, dtype=ti.f32, shape=2)
         self.fov = ti.field(dtype=ti.f32, shape=())
+        self.aspect_scale = ti.field(dtype=ti.f32, shape=())
 
         self.exposure = ti.field(dtype=ti.f32, shape=())
+        self.selected_crf = ti.field(dtype=ti.i32, shape=())
+        self.crf_count = ti.field(dtype=ti.i32, shape=())
+        self.gamma = ti.field(dtype=ti.f32, shape=())
+
 
         self.sun_angle = ti.field(dtype=ti.f32, shape=())
         self.sun_path_rot = ti.field(dtype=ti.f32, shape=())
@@ -41,7 +47,10 @@ class Renderer:
         self._rendered_image = ti.Vector.field(3, float, image_res)
         self.set_up(*up)
         self.set_fov(np.radians(27.)*0.5)
+        self.set_aspect_scale(1.0)
         self.set_exposure(2.5)
+        self.set_gamma(1.0)
+        self.set_crf(0)
         self.set_sun_angle(np.radians(60.0))
         self.set_sun_path_rot(np.radians(-45.0))
 
@@ -78,7 +87,7 @@ class Renderer:
         self.CIE_LUT_buff = ti.Vector.field(3, dtype=ti.f32, shape=CIE_LUT_RES)
         with open(CIE_LUT_FILE, 'rb') as file:
             load_data = np.fromfile(file, dtype=np.float32, count=CIE_LUT_RES[0]*CIE_LUT_RES[1]*3)
-        data_array = np.zeros(shape=(CIE_LUT_RES[0], CIE_LUT_RES[1], 3), dtype=np.float32) # load_data.reshape((CIE_LUT_RES[0], CIE_LUT_RES[1], 3))
+        data_array = np.zeros(shape=(CIE_LUT_RES[0], CIE_LUT_RES[1], 3), dtype=np.float32)
         for x in range (0, CIE_LUT_RES[0]):
             for y in range (0, CIE_LUT_RES[1]):
                 data_array[x, y, 0] = load_data[(x + y*CIE_LUT_RES[0])*3]
@@ -104,11 +113,14 @@ class Renderer:
             data_array[x] = load_data[x]
         self.O3_crossec_LUT_buff.from_numpy(data_array)
 
-        # NOISE
-        self.noise_tex = ti.Texture(ti.Format.r8, NOISE_TEX_RES)
-        self.noise_buff = ti.field(dtype=ti.u8, shape=NOISE_TEX_RES)
-        load_image = ti.tools.imread(NOISE_TEX_FILE)[:, :, 0]
-        self.noise_buff.from_numpy(load_image)
+        # CRF
+        self.crf_names = []
+        data_array = self.load_crfs()
+        self.crf_lut_res = (1024, len(self.crf_names))
+        self.crf_tex = ti.Texture(ti.Format.rgba32f, self.crf_lut_res)
+        self.crf_buff = ti.Vector.field(3, dtype=ti.f32, shape=self.crf_lut_res)
+        self.crf_buff.from_numpy(data_array)
+        self.set_crf_count(self.crf_lut_res[1])
 
     def copy_textures(self):
         self.copy_albedo_texture(self.albedo_tex)
@@ -117,7 +129,30 @@ class Renderer:
         self.copy_clouds_texture(self.clouds_tex)
         self.copy_bathymetry_texture(self.bathymetry_tex)
         self.copy_CIE_LUT_texture(self.CIE_LUT_tex)
-        self.copy_noise_texture(self.noise_tex)
+        self.copy_CRF_LUT_texture(self.crf_tex)
+
+    def load_crfs(self):
+        # Re-running the code with the updated directory path
+        directory = os.path.join(os.getcwd(), 'LUT/camera_response_functions/')
+
+        # Resetting the lists for file names and data
+        crf_data = []
+
+        filenames = os.listdir(directory)
+        filenames.insert(0, filenames.pop(filenames.index('Neutral.rf'))) # Moving the neutral file to the front of the list
+        for filename in filenames:
+            if (filename.endswith(".txt") or filename.endswith(".rf")) and not "README" in filename:  # Ensuring to read only the relevant .txt files
+                self.crf_names.append(filename)
+
+                with open(os.path.join(directory, filename), 'r') as file:
+                    lines = file.readlines()
+                    file_data = [list(map(float, line.split()))[1:] for line in lines]  # Ignore the irradiance float
+                    crf_data.append(file_data)
+
+        # Convert the list to a numpy array with the specified shape (1024, n, 3)
+        crf_array = np.array(crf_data, dtype=np.float32).transpose(1, 0, 2)
+        return crf_array
+
 
     @ti.kernel
     def copy_albedo_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.rgba8, lod=0)):
@@ -154,12 +189,12 @@ class Renderer:
         for i, j in ti.ndrange(CIE_LUT_RES[0], CIE_LUT_RES[1]):
             val = ti.cast(self.CIE_LUT_buff[i, j], ti.f32)
             tex.store(ti.Vector([i, j]), ti.Vector([val.x, val.y, val.z, 0.0]))
-
+    
     @ti.kernel
-    def copy_noise_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.r8, lod=0)):
-        for i, j in ti.ndrange(NOISE_TEX_RES[0], NOISE_TEX_RES[1]):
-            val = ti.cast(self.noise_buff[i, j], ti.f32) / 255.0
-            tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
+    def copy_CRF_LUT_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.rgba32f, lod=0)):
+        for i, j in ti.ndrange(self.crf_lut_res[0], self.crf_lut_res[1]):
+            val = ti.cast(self.crf_buff[i, j], ti.f32)
+            tex.store(ti.Vector([i, j]), ti.Vector([val.x, val.y, val.z, 0.0]))
 
     @ti.kernel
     def set_camera_pos(self, x: ti.f32, y: ti.f32, z: ti.f32):
@@ -178,8 +213,24 @@ class Renderer:
         self.fov[None] = fov
 
     @ti.kernel
+    def set_aspect_scale(self, scale: ti.f32):
+        self.aspect_scale[None] = scale
+
+    @ti.kernel
     def set_exposure(self, exposure: ti.f32):
         self.exposure[None] = exposure
+
+    @ti.kernel
+    def set_gamma(self, gam: ti.f32):
+        self.gamma[None] = gam
+
+    @ti.kernel
+    def set_crf(self, index: ti.i32):
+        self.selected_crf[None] = index
+
+    @ti.kernel
+    def set_crf_count(self, num: ti.i32):
+        self.crf_count[None] = num
 
     @ti.kernel
     def set_sun_angle(self, ang: ti.f32):
@@ -195,7 +246,7 @@ class Renderer:
         fov = self.fov[None]
         d = (self.look_at[None] - self.camera_pos[None]).normalized()
         fu = (2 * fov * (u + ti.random(ti.f32)) / self.image_res[1] -
-              fov * self.aspect_ratio - 1e-5)
+              fov * self.aspect_ratio - 1e-5)*self.aspect_scale[None]
         fv = 2 * fov * (v + ti.random(ti.f32)) / self.image_res[1] - fov - 1e-5
         du = d.cross(self.up[None]).normalized()
         dv = du.cross(d).normalized()
@@ -210,8 +261,7 @@ class Renderer:
                      ocean_sampler: ti.types.texture(num_dimensions=2),
                      clouds_sampler: ti.types.texture(num_dimensions=2),
                      bathymetry_sampler: ti.types.texture(num_dimensions=2),
-                     cie_lut_sampler: ti.types.texture(num_dimensions=2),
-                     noise_sampler: ti.types.texture(num_dimensions=2)):
+                     cie_lut_sampler: ti.types.texture(num_dimensions=2)):
 
         scene_params = SceneParameters()
         scene_params.land_height_scale = self.land_height_scale
@@ -240,16 +290,28 @@ class Renderer:
             sample = pt.path_tracer(path_params, scene_params, 
                                     albedo_sampler, height_sampler, ocean_sampler, clouds_sampler, bathymetry_sampler,
                                     self.srgb_to_spectrum_buff,
-                                    self.O3_crossec_LUT_buff,
-                                    noise_sampler)
+                                    self.O3_crossec_LUT_buff)
 
             # Convert spectrum sample to sRGB and accumulate
             xyz = sample * response * wavelength_rcp_pdf
             self.color_buffer[u, v] += xyzToRGBMatrix_D65 @ xyz 
 
 
+    @ti.func
+    def camera_response(self, crf_sampler: ti.template(), tristimulus: vec3):
+
+        tristimulus = clamp(tristimulus, 0.0, 1.0)
+
+        slice_v = (ti.cast(self.selected_crf[None], ti.f32) + 0.5) / ti.cast(self.crf_count[None], ti.f32)
+        u_offset = 0.5 / 1024.0
+        u_lookup = min(tristimulus + u_offset, 1.0 - u_offset)
+        red = crf_sampler.sample_lod(ti.Vector([u_lookup.r, slice_v]), 0.0).r
+        green = crf_sampler.sample_lod(ti.Vector([u_lookup.g, slice_v]), 0.0).g
+        blue = crf_sampler.sample_lod(ti.Vector([u_lookup.b, slice_v]), 0.0).b
+        return clamp( vec3(red, green, blue), 0.0, 1.0)
+
     @ti.kernel
-    def _render_to_image(self, samples: ti.i32):
+    def _render_to_image(self, samples: ti.i32, crf_sampler: ti.types.texture(num_dimensions=2)):
         for i, j in self.color_buffer:
             u = 1.0 * i / self.image_res[0]
             v = 1.0 * j / self.image_res[1]
@@ -259,7 +321,12 @@ class Renderer:
                 (v - self.vignette_center[1])**2) - self.vignette_radius), 0)
             linear = self.color_buffer[i, j]/samples * darken * ti.pow(2.0, self.exposure[None])
             # output = srgb_transfer(agx.display_transform(linear))
-            output = srgb_transfer(linear)
+
+            camera = self.camera_response(crf_sampler, linear)
+
+            gamma = pow(camera, self.gamma[None])
+
+            output = srgb_transfer(gamma)
 
 
             self._rendered_image[i, j] = output
@@ -269,11 +336,11 @@ class Renderer:
         self.color_buffer.fill(0)
 
     def accumulate(self):
-        self.render(self.albedo_tex, self.topography_tex, self.ocean_tex, self.clouds_tex, self.bathymetry_tex, self.CIE_LUT_tex, self.noise_tex)
+        self.render(self.albedo_tex, self.topography_tex, self.ocean_tex, self.clouds_tex, self.bathymetry_tex, self.CIE_LUT_tex)
         self.current_spp += 1
 
     def fetch_image(self):
-        self._render_to_image(self.current_spp)
+        self._render_to_image(self.current_spp, self.crf_tex)
         return self._rendered_image
 
     @staticmethod

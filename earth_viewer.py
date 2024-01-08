@@ -164,7 +164,7 @@ class Camera:
 
 
 class EarthViewer:
-    def __init__(self, exposure=3):
+    def __init__(self):
         ti.init(arch=ti.vulkan, offline_cache=True)
         print(HELP_MSG)
         self.window = ti.ui.Window("Earth Viewer",
@@ -178,6 +178,8 @@ class EarthViewer:
             os.makedirs('screenshot')
         self.renderer.copy_textures()
 
+        print (str(len(self.renderer.crf_names)) + " Camera responses loaded.")
+
     def start(self):
         canvas = self.window.get_canvas()
         gui = self.window.get_gui()
@@ -187,7 +189,11 @@ class EarthViewer:
         # GUI
         enable_gui = True
         current_fov = self.renderer.fov[None]
+        current_aspect_scale = self.renderer.aspect_scale[None]
         current_exposure = self.renderer.exposure[None]
+
+        selected_crf = 0
+        current_gamma = self.renderer.gamma[None]
 
         current_sun_angle = self.renderer.sun_angle[None]
         current_sun_path_rot = self.renderer.sun_path_rot[None]
@@ -207,7 +213,10 @@ class EarthViewer:
             if self.window.is_pressed('i'):
                 f = open("config.txt", "a")
                 f.write(str(current_fov) + "\n")
+                f.write(str(current_aspect_scale) + "\n")
                 f.write(str(current_exposure) + "\n")
+                f.write(str(selected_crf) + "\n")
+                f.write(str(current_gamma) + "\n")
                 f.write(str(current_sun_angle) + "\n")
                 f.write(str(current_sun_path_rot))
                 f.close()
@@ -218,10 +227,15 @@ class EarthViewer:
                 f.readline()
                 f.readline()
                 current_fov = float(f.readline())
+                current_aspect_scale = float(f.readline())
                 current_exposure = float(f.readline())
+                selected_crf = int(f.readline())
+                current_gamma = float(f.readline())
                 current_sun_angle = float(f.readline())
                 current_sun_path_rot = float(f.readline())
                 f.close()
+
+            
 
             t = time.time()
             for _ in range(spp):
@@ -247,7 +261,7 @@ class EarthViewer:
                 enable_gui = not enable_gui
 
             if enable_gui:
-                with gui.sub_window("Settings", x=0.025, y=0.025, width=0.25, height=0.2) as g:
+                with gui.sub_window("Settings", x=0.025, y=0.025, width=0.25, height=0.3) as g:
                     g.text("Press G to show/hide GUI")
 
                     g.text("\nWorld")
@@ -255,7 +269,7 @@ class EarthViewer:
                     if new_sun_angle != current_sun_angle:
                         should_reset_framebuffer = True
                         current_sun_angle = new_sun_angle
-                    new_sun_path_rot = np.deg2rad(g.slider_float("Sun path rotation", np.rad2deg(current_sun_path_rot), -95.0, 95.0))
+                    new_sun_path_rot = np.deg2rad(g.slider_float("Sun path rotation", np.rad2deg(current_sun_path_rot), -105.0, 105.0))
                     if new_sun_path_rot != current_sun_path_rot:
                         should_reset_framebuffer = True
                         current_sun_path_rot = new_sun_path_rot
@@ -267,17 +281,37 @@ class EarthViewer:
                         should_reset_framebuffer = True
                         current_fov = new_fov
                         self.renderer.fov[None] = current_fov
+
+                    new_aspect_scale = g.slider_float("Aspect scale", current_aspect_scale, 0.9, 1.1)
+                    if new_aspect_scale != current_aspect_scale:
+                        should_reset_framebuffer = True
+                        current_aspect_scale = new_aspect_scale
+                        self.renderer.aspect_scale[None] = current_aspect_scale
                     
-                    new_exposure = g.slider_float("Exposure", current_exposure, 0.0, 5.0)
+                    new_exposure = g.slider_float("Exposure", current_exposure, -1.0, 5.0)
                     if new_exposure != current_exposure:
                         current_exposure = new_exposure
                         self.renderer.exposure[None] = current_exposure
+                    
+                    new_crf = g.slider_int("Camera response", selected_crf, 0, len(self.renderer.crf_names)-1)
+                    if new_crf != selected_crf:
+                        selected_crf = new_crf
+                        self.renderer.selected_crf[None] = selected_crf
+                    g.text(f"    {self.renderer.crf_names[selected_crf]}")
+
+                    new_gamma = g.slider_float("Gamma", current_gamma, 0.45, 2.2)
+                    if new_gamma != current_gamma:
+                        current_gamma = new_gamma
+                        self.renderer.gamma[None] = current_gamma
 
             
             self.renderer.sun_angle[None] = current_sun_angle
             self.renderer.sun_path_rot[None] = new_sun_path_rot
             self.renderer.fov[None] = current_fov
+            self.renderer.aspect_scale[None] = current_aspect_scale
             self.renderer.exposure[None] = current_exposure
+            self.renderer.gamma[None] = current_gamma
+            self.renderer.selected_crf[None] = selected_crf
 
             if should_reset_framebuffer:
                 self.renderer.reset_framebuffer()

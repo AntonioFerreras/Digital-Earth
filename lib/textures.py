@@ -6,7 +6,6 @@ TEX_RES_16K = (16200, 8100)
 TEX_RES_21K = (21600, 10800)
 CIE_LUT_RES = (441, 2)
 O3_CROSSEC_LUT_RES = 441
-NOISE_TEX_RES = (256, 256)
 
 ALBEDO_4K = 'textures/earth_color_4K.png'
 ALBEDO_10K = 'textures/earth_color_10K.png'
@@ -28,7 +27,6 @@ CIE_LUT_FILE = 'LUT/CIE.dat'
 SRGB2SPEC_LUT_FILE = 'LUT/srgb2spec.dat'
 O3_CROSSEC_LUT_FILE = 'LUT/ozone_cross_section.dat'
 
-NOISE_TEX_FILE = 'textures/noise.png'
 
 ALBEDO_TEX_FILE = ALBEDO_4K
 ALBEDO_TEX_RES = TEX_RES_4K

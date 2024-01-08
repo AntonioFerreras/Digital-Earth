@@ -4,7 +4,7 @@ import numpy as np
 from lib.math_utils import *
 
 DIFFUSE_FACTOR =  0.28
-SPECULAR_FACTOR = 0.75
+SPECULAR_FACTOR = 0.5
 
 @ti.func
 def earth_brdf(albedo: ti.f32, oceanness: ti.f32, bathymetry: ti.f32, v: vec3, n: vec3, l: vec3):
