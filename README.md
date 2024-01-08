@@ -1,7 +1,7 @@
 # <a name="title">Earth Viewer</a>
 Demo shots             |  1080p
 :-------------------------:|:-------------------------:
-![Earth render 1](screenshot/main.py-2023-12-05-200146.jpg) | ![Earth render 2](screenshot/main.py-2023-12-05-184411.jpg)
+![Earth render 1](screenshot/Film%20comparison/Ektachrome%2064.jpg) | ![Earth render 2](screenshot/main.py-2023-12-05-184411.jpg)
 ![Earth render 1](screenshot/main.py-2023-12-05-002427.jpg) | ![Earth render 2](screenshot/main.py-2023-12-05-192722.jpg)
 
 
