@@ -6,6 +6,7 @@ from lib.sampling import *
 from lib.colour import *
 from lib.textures import *
 from lib.parameters import PathParameters, SceneParameters
+from lib.OpenDRT import openDR_transform
 import lib.AgX as agx
 import pathtracer as pt
 
@@ -321,8 +322,8 @@ class Renderer:
                 (v - self.vignette_center[1])**2) - self.vignette_radius), 0)
             linear = self.color_buffer[i, j]/samples * darken * ti.pow(2.0, self.exposure[None])
             # output = srgb_transfer(agx.display_transform(linear))
-
-            camera = self.camera_response(crf_sampler, linear)
+            tonemapped = openDR_transform(linear.r, linear.g, linear.b)
+            camera = self.camera_response(crf_sampler, tonemapped)
 
             gamma = pow(camera, self.gamma[None])
 
