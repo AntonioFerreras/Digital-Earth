@@ -273,6 +273,7 @@ def sample_scatter_event(interaction_id: ti.i32):
 def get_land_material(albedo_sampler: ti.template(), 
                       ocean_sampler: ti.template(), 
                       bathymetry_sampler: ti.template(), 
+                      emissive_sampler: ti.template(), 
                       pos: vec3):
     ocean = (sample_sphere_texture(ocean_sampler, pos).r)
     albedo_texture_srgb = (sample_sphere_texture(albedo_sampler, pos).rgb)
@@ -291,7 +292,10 @@ def get_land_material(albedo_sampler: ti.template(),
     # mix land and ocean
     albedo_srgb = mix(land_albedo_srgb, ocean_albedo_srgb, ocean)
 
-    return albedo_srgb, ocean, sample_sphere_texture(bathymetry_sampler, pos).r
+    bathymetry = sample_sphere_texture(bathymetry_sampler, pos).r
+    emissive_factor = sample_sphere_texture(emissive_sampler, pos).r
+
+    return albedo_srgb, ocean, bathymetry, emissive_factor
 
 
 @ti.func
@@ -302,6 +306,7 @@ def path_tracer(path: PathParameters,
                 ocean_sampler: ti.template(),
                 clouds_sampler: ti.template(),
                 bathymetry_sampler: ti.template(),
+                emissive_sampler: ti.template(),
                 srgb_to_spectrum_buff: ti.template(),
                 o3_crossec_buff: ti.template()):
     
@@ -310,6 +315,7 @@ def path_tracer(path: PathParameters,
     in_scattering = 0.0
     throughput = 1.0
     sun_power = plancks(5778.0, path.wavelength)
+    nightlights_power = plancks(2700.0, path.wavelength)
     sun_irradiance = sun_power * cone_angle_to_solid_angle(scene.sun_angular_radius)
     max_densities_rmo = vec3(volume.get_density(0.0).xy, volume.get_ozone_density(volume.ozone_peak_height))
     max_density_cloud = volume.clouds_density
@@ -382,8 +388,15 @@ def path_tracer(path: PathParameters,
             land_pos = ray_pos + ray_dir*earth_intersection
             sphere_normal = land_pos.normalized()
             land_normal = land_normal(height_sampler, land_pos, scene.land_height_scale)
-            albedo_srgb, ocean, bathymetry = get_land_material(albedo_sampler, ocean_sampler, bathymetry_sampler, land_pos)
+            albedo_srgb, ocean, bathymetry, emissive_factor = get_land_material(albedo_sampler, 
+                                                                                ocean_sampler, 
+                                                                                bathymetry_sampler, 
+                                                                                emissive_sampler,
+                                                                                land_pos)
             albedo = srgb_to_spectrum(srgb_to_spectrum_buff, albedo_srgb, path.wavelength)
+
+            # Emissive term
+            in_scattering += throughput * emissive_factor * nightlights_power
 
             # Direct illumination
             # compute sunlight visibility and transmittance
