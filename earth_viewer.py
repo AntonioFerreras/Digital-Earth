@@ -288,7 +288,7 @@ class EarthViewer:
                         current_aspect_scale = new_aspect_scale
                         self.renderer.aspect_scale[None] = current_aspect_scale
                     
-                    new_exposure = g.slider_float("Exposure", current_exposure, -1.0, 5.0)
+                    new_exposure = g.slider_float("Exposure", current_exposure, -1.0, 8.0)
                     if new_exposure != current_exposure:
                         current_exposure = new_exposure
                         self.renderer.exposure[None] = current_exposure
