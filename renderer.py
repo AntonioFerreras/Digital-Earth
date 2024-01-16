@@ -88,6 +88,11 @@ class Renderer:
         load_image = ti.tools.imread(EMISSIVE_TEX_FILE)[:, :, 0]
         self.emissive_buff.from_numpy(load_image)
 
+        # self.albedo_tex = ti.Texture(ti.Format.rgba8, ALBEDO_TEX_RES)
+        # self.albedo_buff = ti.Vector.field(3, dtype=ti.u8, shape=ALBEDO_TEX_RES)
+        # load_image = ti.tools.imread(ALBEDO_TEX_FILE)
+        # self.albedo_buff.from_numpy(load_image)
+
         # LUTS
         self.CIE_LUT_tex = ti.Texture(ti.Format.rgba16f, CIE_LUT_RES)
         self.CIE_LUT_buff = ti.Vector.field(3, dtype=ti.f32, shape=CIE_LUT_RES)

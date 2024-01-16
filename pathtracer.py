@@ -315,7 +315,7 @@ def path_tracer(path: PathParameters,
     in_scattering = 0.0
     throughput = 1.0
     sun_power = plancks(5778.0, path.wavelength)
-    nightlights_power = plancks(2700.0, path.wavelength)
+    nightlights_power = plancks(2700.0, path.wavelength) * 0.00002
     sun_irradiance = sun_power * cone_angle_to_solid_angle(scene.sun_angular_radius)
     max_densities_rmo = vec3(volume.get_density(0.0).xy, volume.get_ozone_density(volume.ozone_peak_height))
     max_density_cloud = volume.clouds_density
@@ -328,7 +328,7 @@ def path_tracer(path: PathParameters,
 
     primary_ray_did_not_intersect = False
     
-    for scatter_count in range(0, 25):
+    for scatter_count in range(0, 1000):
 
         if scatter_count > 9: 
             extinctions.w = 0.02
