@@ -294,6 +294,7 @@ def get_land_material(albedo_sampler: ti.template(),
 
     bathymetry = sample_sphere_texture(bathymetry_sampler, pos).r
     emissive_factor = sample_sphere_texture(emissive_sampler, pos).r
+    emissive_factor = pow(emissive_factor, 2.0)*1.5
 
     return albedo_srgb, ocean, bathymetry, emissive_factor
 
@@ -307,6 +308,7 @@ def path_tracer(path: PathParameters,
                 clouds_sampler: ti.template(),
                 bathymetry_sampler: ti.template(),
                 emissive_sampler: ti.template(),
+                stars_sampler: ti.template(),
                 srgb_to_spectrum_buff: ti.template(),
                 o3_crossec_buff: ti.template()):
     
@@ -438,6 +440,12 @@ def path_tracer(path: PathParameters,
         # Draw sun for primary ray
         if scene.light_direction.dot(path.ray_dir) > scene.sun_cos_angle:
             in_scattering += sun_power
+
+        # Stars radiance
+        stars_srgb = sample_sphere_texture(stars_sampler, path.ray_dir).rgb
+        stars_power = srgb_to_spectrum(srgb_to_spectrum_buff, stars_srgb, path.wavelength)
+        in_scattering += stars_power * sun_power * 0.0000002
+
 
     if isinf(in_scattering) or isnan(in_scattering) or in_scattering < 0.0:
         in_scattering = 0.0

@@ -88,10 +88,10 @@ class Renderer:
         load_image = ti.tools.imread(EMISSIVE_TEX_FILE)[:, :, 0]
         self.emissive_buff.from_numpy(load_image)
 
-        # self.albedo_tex = ti.Texture(ti.Format.rgba8, ALBEDO_TEX_RES)
-        # self.albedo_buff = ti.Vector.field(3, dtype=ti.u8, shape=ALBEDO_TEX_RES)
-        # load_image = ti.tools.imread(ALBEDO_TEX_FILE)
-        # self.albedo_buff.from_numpy(load_image)
+        self.stars_tex = ti.Texture(ti.Format.rgba8, STARS_TEX_RES)
+        self.stars_buff = ti.Vector.field(3, dtype=ti.u8, shape=STARS_TEX_RES)
+        load_image = ti.tools.imread(STARS_TEX_FILE)
+        self.stars_buff.from_numpy(load_image)
 
         # LUTS
         self.CIE_LUT_tex = ti.Texture(ti.Format.rgba16f, CIE_LUT_RES)
@@ -140,6 +140,7 @@ class Renderer:
         self.copy_clouds_texture(self.clouds_tex)
         self.copy_bathymetry_texture(self.bathymetry_tex)
         self.copy_emissive_texture(self.emissive_tex)
+        self.copy_stars_texture(self.stars_tex)
         self.copy_CIE_LUT_texture(self.CIE_LUT_tex)
         self.copy_CRF_LUT_texture(self.crf_tex)
 
@@ -201,6 +202,12 @@ class Renderer:
         for i, j in ti.ndrange(EMISSIVE_TEX_RES[0], EMISSIVE_TEX_RES[1]):
             val = ti.cast(self.emissive_buff[i, j], ti.f32) / 255.0
             tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
+
+    @ti.kernel
+    def copy_stars_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.rgba8, lod=0)):
+        for i, j in ti.ndrange(STARS_TEX_RES[0], STARS_TEX_RES[1]):
+            val = ti.cast(self.stars_buff[i, j], ti.f32) / 255.0
+            tex.store(ti.Vector([i, j]), ti.Vector([val.x, val.y, val.z, 0.0]))
 
     @ti.kernel
     def copy_CIE_LUT_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.rgba16f, lod=0)):
@@ -280,6 +287,7 @@ class Renderer:
                      clouds_sampler: ti.types.texture(num_dimensions=2),
                      bathymetry_sampler: ti.types.texture(num_dimensions=2),
                      emissive_sampler: ti.types.texture(num_dimensions=2),
+                     stars_sampler: ti.types.texture(num_dimensions=2),
                      cie_lut_sampler: ti.types.texture(num_dimensions=2)):
 
         scene_params = SceneParameters()
@@ -313,6 +321,7 @@ class Renderer:
                                     clouds_sampler, 
                                     bathymetry_sampler,
                                     emissive_sampler,
+                                    stars_sampler,
                                     self.srgb_to_spectrum_buff,
                                     self.O3_crossec_LUT_buff)
 
@@ -366,6 +375,7 @@ class Renderer:
                     self.clouds_tex, 
                     self.bathymetry_tex, 
                     self.emissive_tex, 
+                    self.stars_tex,
                     self.CIE_LUT_tex)
         self.current_spp += 1
 
