@@ -330,7 +330,7 @@ def path_tracer(path: PathParameters,
 
     primary_ray_did_not_intersect = False
     
-    for scatter_count in range(0, 1000):
+    for scatter_count in range(0, 25):
 
         if scatter_count > 9: 
             extinctions.w = 0.02
@@ -444,7 +444,7 @@ def path_tracer(path: PathParameters,
         # Stars radiance
         stars_srgb = sample_sphere_texture(stars_sampler, path.ray_dir).rgb
         stars_power = srgb_to_spectrum(srgb_to_spectrum_buff, stars_srgb, path.wavelength)
-        in_scattering += stars_power * sun_power * 0.0000002
+        in_scattering += stars_power * sun_power * 0.0000001
 
 
     if isinf(in_scattering) or isnan(in_scattering) or in_scattering < 0.0:
