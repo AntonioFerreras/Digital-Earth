@@ -270,6 +270,18 @@ def sample_scatter_event(interaction_id: ti.i32):
     return ti.random() < scattering_albedos[interaction_id]
 
 @ti.func
+def speckle(p: vec2, density: ti.f32):
+    m = 0.
+    for y in range(-1, 2):
+        for x in range(-1, 2):
+            q = floor(p) + vec2(x, y) + hash22(floor(p) + vec2(x,y))
+            a = 1.5 * -log(1e-4 + (1. - 2e-4) * hash12(q)) * pow(1.5 * clamp(density, 0., 0.67), 1.5)
+            dist = distance(p,q)
+            pdf = mix(normal_distribution(dist, 0.0, 0.1), normal_distribution(dist, 0.0, 1.0), 0.7)*0.6
+            m += a * exp(-6.0 * dist / clamp(density, 0.67, 1.)) # 0.004 / (dist * dist + 0.002)# 
+    return m
+
+@ti.func
 def get_land_material(albedo_sampler: ti.template(), 
                       ocean_sampler: ti.template(), 
                       bathymetry_sampler: ti.template(), 
@@ -293,10 +305,12 @@ def get_land_material(albedo_sampler: ti.template(),
     albedo_srgb = mix(land_albedo_srgb, ocean_albedo_srgb, ocean)
 
     bathymetry = sample_sphere_texture(bathymetry_sampler, pos).r
-    emissive_factor = sample_sphere_texture(emissive_sampler, pos).r
-    emissive_factor = pow(emissive_factor, 2.0)*1.5
+    emissive_density = sample_sphere_texture(emissive_sampler, pos).r
+    # emissive_density = pow(emissive_density, 2.0)
+    # smooth_density = 0.5 + 0.5*smoothstep(0.5, 1.0, emissive_density)
+    # emissive_factor = speckle(17000. * clamp(emissive_density, 0.4, 1.0) * sphere_UV_map(pos.normalized()), emissive_density)
 
-    return albedo_srgb, ocean, bathymetry, emissive_factor
+    return albedo_srgb, ocean, bathymetry, emissive_density
 
 
 @ti.func
@@ -314,11 +328,11 @@ def path_tracer(path: PathParameters,
     
     ray_pos = path.ray_pos
     ray_dir = path.ray_dir
-    in_scattering = 0.0
-    throughput = 1.0
+    
     sun_power = plancks(5778.0, path.wavelength)
-    nightlights_power = plancks(2700.0, path.wavelength) * 0.00002
+    nightlights_power = plancks(2700.0, path.wavelength) * 0.0001
     sun_irradiance = sun_power * cone_angle_to_solid_angle(scene.sun_angular_radius)
+
     max_densities_rmo = vec3(volume.get_density(0.0).xy, volume.get_ozone_density(volume.ozone_peak_height))
     max_density_cloud = volume.clouds_density
 
@@ -329,7 +343,9 @@ def path_tracer(path: PathParameters,
     extinctions.w = volume.clouds_extinct
 
     primary_ray_did_not_intersect = False
-    
+
+    in_scattering = 0.0
+    throughput = 1.0
     for scatter_count in range(0, 25):
 
         if scatter_count > 9: 
@@ -364,7 +380,7 @@ def path_tracer(path: PathParameters,
 
             # Direct illumination
             # compute sunlight visibility, phase and transmittance. 
-            # no parallax heightmap shadow because its insignificant at atmosphere scale.
+            # no parallax heightmap shadow because its insignificant at atmosphere height.
             direct_visibility = rsi(interaction_pos, light_dir, volume.planet_r).y > 0.0
             direct_transmittance = 0.0
             if not direct_visibility:
@@ -452,3 +468,218 @@ def path_tracer(path: PathParameters,
 
     return in_scattering
 
+@ti.func
+def ray_march_transmittance(ray_pos: vec3, ray_dir: vec3, rmo_extinction: vec3):
+    steps = 16
+    r_steps = 1.0 / ti.cast(steps, ti.f32)
+    transmittance = 0.0
+
+    
+    visibility = land_isection = rsi(ray_pos, ray_dir, volume.planet_r).y > 0.0
+    if not visibility:
+
+        atmos_isection = rsi(ray_pos, ray_dir, volume.atmos_upper_limit)
+        
+        
+        # t_start = max(0.0, atmos_isection.x)
+        t_max = atmos_isection.y
+        if atmos_isection.y < 0.0: 
+            t_max = -1.0 # ray doesnt cross atmosphere
+
+        dd = t_max * r_steps
+        ray_step = ray_dir*dd
+
+        od = vec3(0.0)
+        for i in range(0, steps):
+            density = volume.get_density(volume.get_elevation(ray_pos))
+            od += density * dd
+
+            ray_pos += ray_step
+
+        transmittance = exp(-rmo_extinction.dot(od))
+    return transmittance
+
+@ti.func
+def ray_marh_atmos(ray_pos: vec3, 
+                   ray_dir: vec3,
+                   t_start: float,
+                   t_max: float,
+                   sun_dir: vec3,
+                   rmo_extinction: vec3,
+                   rm_scattering: vec2,
+                   clouds_sampler: ti.template()):
+    steps = 64
+    r_steps = 1.0 / (ti.cast(steps, ti.f32))
+
+    dd = (t_max - t_start) * r_steps
+    ray_step = ray_dir*dd
+    ray_pos = ray_pos + ray_dir * t_start # ray_step*(0.33)
+
+    cos_theta = ray_dir.dot(sun_dir)
+    phase = vec2(volume.rayleigh_phase(cos_theta), volume.mie_phase(cos_theta))
+
+    transmittance = 1.0
+    in_scatter = 0.0
+
+    for i in range(0, steps) :
+        h = volume.get_elevation(ray_pos)
+        density = volume.get_density(h)
+        step_optical_depth = rmo_extinction.dot(density * dd)
+        step_transmittance = saturate(exp(-step_optical_depth))
+
+        step_integral = saturate((1.0 - step_transmittance)/step_optical_depth)
+        visible_scattering = transmittance * step_integral
+
+        sun_transmittance = ray_march_transmittance(ray_pos, sun_dir, rmo_extinction)
+
+        step_scattering = rm_scattering.dot(density.xy * phase)
+        in_scatter += step_scattering * sun_transmittance * visible_scattering * dd
+
+        transmittance *= step_transmittance
+
+        ray_pos += ray_step
+
+    return in_scatter, transmittance
+
+@ti.func
+def ray_marcher(path: PathParameters,
+                scene: SceneParameters,
+                albedo_sampler: ti.template(),
+                height_sampler: ti.template(),
+                ocean_sampler: ti.template(),
+                clouds_sampler: ti.template(),
+                bathymetry_sampler: ti.template(),
+                emissive_sampler: ti.template(),
+                stars_sampler: ti.template(),
+                srgb_to_spectrum_buff: ti.template(),
+                o3_crossec_buff: ti.template()):
+    
+    ray_pos = path.ray_pos
+    ray_dir = path.ray_dir
+    
+    sun_power = plancks(5778.0, path.wavelength)
+    nightlights_power = plancks(2700.0, path.wavelength) * 0.0001
+    sun_irradiance = sun_power * cone_angle_to_solid_angle(scene.sun_angular_radius)
+
+    extinctions = vec4(0.0, 0.0, 0.0, 0.0)
+    extinctions.x = volume.spectra_extinction_rayleigh(path.wavelength)
+    extinctions.y = volume.spectra_extinction_mie(path.wavelength)
+    extinctions.z = volume.spectra_extinction_ozone(path.wavelength, o3_crossec_buff)
+    extinctions.w = volume.clouds_extinct
+
+    scattering = vec2(extinctions.x * volume.rayleigh_albedo, extinctions.y * volume.aerosol_albedo)
+
+    primary_ray_did_not_intersect = False
+
+    accum = 0.0
+    throughput = 1.0
+    for scatter_count in range(0, 3):
+
+
+        # Intersect ray
+        # TODO: Move to its own function
+        earth_intersection = intersect_land(height_sampler, ray_pos, ray_dir, scene.land_height_scale)
+        atmos_isection = rsi(ray_pos, ray_dir, volume.atmos_upper_limit)
+        t_start = max(0.0, atmos_isection.x)
+        t_max = earth_intersection if earth_intersection > 0.0 else atmos_isection.y
+        if atmos_isection.y < 0.0: 
+            # ray doesnt cross atmosphere (and thus neither the land)
+            primary_ray_did_not_intersect = scatter_count == 0
+            break
+        
+        
+        # Sample a direction to sun
+        light_dir = sample_cone_oriented(scene.sun_cos_angle, scene.light_direction)
+
+        in_scatter, transmittance = ray_marh_atmos(ray_pos, 
+                                                   ray_dir, 
+                                                   t_start, t_max, 
+                                                   light_dir, 
+                                                   extinctions.xyz, 
+                                                   scattering, 
+                                                   clouds_sampler)
+
+        accum += throughput * in_scatter
+        throughput *= transmittance
+
+
+
+        # Surface scattering
+        if earth_intersection > 0.0:
+            land_pos = ray_pos + ray_dir*earth_intersection
+            sphere_normal = land_pos.normalized()
+            land_normal = land_normal(height_sampler, land_pos, scene.land_height_scale)
+            albedo_srgb, ocean, bathymetry, emissive_factor = get_land_material(albedo_sampler, 
+                                                                                ocean_sampler, 
+                                                                                bathymetry_sampler, 
+                                                                                emissive_sampler,
+                                                                                land_pos)
+            albedo = srgb_to_spectrum(srgb_to_spectrum_buff, albedo_srgb, path.wavelength)
+
+            # Emissive term
+            accum += throughput * emissive_factor * nightlights_power
+
+            # Direct illumination
+            # compute sunlight visibility and transmittance
+            offset_pos = land_pos * (1.0 + 0.0001*scene.land_height_scale/12000.0)
+            direct_visibility = intersect_land(height_sampler, offset_pos, light_dir, scene.land_height_scale) < 0.0
+            direct_transmittance = 1.0
+            # direct_transmittance = sample_transmittance(offset_pos,
+            #                                                     light_dir,
+            #                                                     -1.0 if direct_visibility else 0.0,
+            #                                                     extinctions,
+            #                                                     max_extinction_rmo,
+            #                                                     max_extinction_cloud,
+            #                                                     clouds_sampler)
+            direct_brdf, direct_n_dot_l = surface.earth_brdf(albedo, ocean, bathymetry, -ray_dir, land_normal, light_dir)
+            accum += throughput * direct_transmittance * direct_visibility * sun_irradiance * direct_brdf * direct_n_dot_l
+
+            # Sample scattered ray direction
+            view_dir = -ray_dir
+            ray_dir = sample_hemisphere_cosine_weighted(land_normal)
+            ray_pos = offset_pos
+            brdf, _ = surface.earth_brdf(albedo, ocean, bathymetry, view_dir, land_normal, ray_dir)
+            throughput *= brdf * np.pi # NdotL and PI in denominator are cancelled due to cosine weighted PDF
+
+        # elif event == SCATTER_EVENT:
+        #     ### Volume scattering
+
+        #     interaction_pos = ray_pos + interaction_dist*ray_dir
+
+        #     # Direct illumination
+        #     # compute sunlight visibility, phase and transmittance. 
+        #     # no parallax heightmap shadow because its insignificant at atmosphere scale.
+        #     direct_visibility = rsi(interaction_pos, light_dir, volume.planet_r).y > 0.0
+        #     direct_transmittance = 0.0
+        #     if not direct_visibility:
+        #         direct_transmittance = sample_transmittance(interaction_pos,
+        #                                                     light_dir,
+        #                                                     -1.0,
+        #                                                     extinctions,
+        #                                                     max_extinction_rmo,
+        #                                                     max_extinction_cloud,
+        #                                                     clouds_sampler)
+        #     direct_phase = evaluate_phase(ray_dir, light_dir, interaction_id, scatter_count > 0)
+        #     accum += throughput * direct_transmittance * sun_irradiance * direct_phase
+
+        #     scatter_dir, phase_div_pdf = sample_phase(ray_dir, interaction_id, scatter_count > 0)
+
+        #     ray_dir = scatter_dir
+        #     ray_pos = interaction_pos
+        #     throughput *= phase_div_pdf
+
+    if primary_ray_did_not_intersect:
+        # Draw sun for primary ray
+        if scene.light_direction.dot(path.ray_dir) > scene.sun_cos_angle:
+            accum += sun_power
+
+        # Stars radiance
+        stars_srgb = sample_sphere_texture(stars_sampler, path.ray_dir).rgb
+        stars_power = srgb_to_spectrum(srgb_to_spectrum_buff, stars_srgb, path.wavelength)
+        accum += stars_power * sun_power * 0.0000001
+
+
+    if isinf(accum) or isnan(accum) or accum < 0.0:
+        accum = 0.0
+
+    return accum

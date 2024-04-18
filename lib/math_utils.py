@@ -68,6 +68,17 @@ def make_tangent_space(n: vec3):
 def spherical_direction(sin_theta: ti.f32, cos_theta: ti.f32, phi: ti.f32, x: vec3, y: vec3, z: vec3):
     return sin_theta * ti.cos(phi) * x + sin_theta * ti.sin(phi) * y + cos_theta * z
 
+@ti.func
+def hash12(p: vec2):
+    p3  = fract(vec3(p.xyx) * .1031)
+    p3 += dot(p3, p3.yzx + 19.19)
+    return fract((p3.x + p3.y) * p3.z)
+
+@ti.func
+def hash22(p: vec2):
+    p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973))
+    p3 += dot(p3, p3.yzx+19.19)
+    return fract((p3.xx+p3.yz)*p3.zy)
 
 def np_normalize(v):
     # https://stackoverflow.com/a/51512965/12003165
@@ -89,4 +100,3 @@ def np_rotate_matrix(axis, theta):
                      [2 * (bc - ad), aa + cc - bb - dd, 2 * (cd + ab), 0],
                      [2 * (bd + ac), 2 * (cd - ab), aa + dd - bb - cc, 0],
                      [0, 0, 0, 1]])
-

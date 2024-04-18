@@ -282,13 +282,13 @@ class EarthViewer:
                         current_fov = new_fov
                         self.renderer.fov[None] = current_fov
 
-                    new_aspect_scale = g.slider_float("Aspect scale", current_aspect_scale, 0.9, 1.1)
+                    new_aspect_scale = g.slider_float("Aspect scale", current_aspect_scale, 0.75, 1.25)
                     if new_aspect_scale != current_aspect_scale:
                         should_reset_framebuffer = True
                         current_aspect_scale = new_aspect_scale
                         self.renderer.aspect_scale[None] = current_aspect_scale
                     
-                    new_exposure = g.slider_float("Exposure", current_exposure, -1.0, 8.0)
+                    new_exposure = g.slider_float("Exposure", current_exposure, -1.0, 10.0)
                     if new_exposure != current_exposure:
                         current_exposure = new_exposure
                         self.renderer.exposure[None] = current_exposure
