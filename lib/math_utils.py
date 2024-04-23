@@ -7,6 +7,10 @@ eps = 1e-4
 inf = 1e10
 
 @ti.func
+def zero_if_inf_or_nan(x):
+    return ti.select(isinf(x) or isnan(x), 0.0, x)
+
+@ti.func
 def sqr(x):
     return x*x
 

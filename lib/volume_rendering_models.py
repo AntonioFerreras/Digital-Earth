@@ -36,7 +36,7 @@ atmos_height  = 110e3
 atmos_upper_limit = planet_r + atmos_height
 
 # Cloud constants
-clouds_extinct = 0.1
+clouds_extinct = 0.1*0
 clouds_density = 0.029 # 0.0175
 clouds_height = 4000.0
 clouds_thickness = 6000.0
@@ -277,3 +277,40 @@ def get_elevation(pos: vec3):
     return ti.sqrt(pos.x*pos.x + pos.y*pos.y + pos.z*pos.z) - planet_r
 
 #######################
+
+@ti.func
+def evaluate_phase(ray_dir: vec3, light_dir: vec3, interaction_id: ti.i32, reduce_peak):
+    phase = 0.0
+    cos_theta = ray_dir.dot(light_dir)
+    if interaction_id == RAYLEIGH_ID:
+        phase += rayleigh_phase(cos_theta)
+    elif interaction_id == MIE_ID:
+        phase += mie_phase(cos_theta)
+    elif interaction_id == CLOUD_ID:
+        phase += cloud_phase(cos_theta, reduce_peak)
+    elif interaction_id == ISOTROPIC_CLOUD_ID:
+        phase += 1.0 / (4.0 * pi)
+    return phase
+    
+@ti.func
+def sample_phase(ray_dir: vec3, interaction_id: ti.i32, reduce_peak):
+    sample_dir = vec3(0.0, 0.0, 0.0)
+    phase_div_pdf = 1.0
+
+    if interaction_id == RAYLEIGH_ID or interaction_id == ISOTROPIC_CLOUD_ID:
+        sample_dir = sample_sphere(vec2(ti.random(), ti.random()))
+        phase_div_pdf = evaluate_phase(ray_dir, sample_dir, interaction_id, reduce_peak) * (4.0 * np.pi)
+    elif interaction_id == MIE_ID:
+        sample_dir = sample_mie_phase(ray_dir)
+    else:
+        sample_dir = sample_cloud_phase(ray_dir, reduce_peak)
+    return sample_dir, phase_div_pdf
+
+@ti.func
+def sample_scatter_event(interaction_id: ti.i32):
+    if interaction_id == ISOTROPIC_CLOUD_ID: interaction_id = CLOUD_ID
+    scattering_albedos = ti.Vector([rayleigh_albedo, 
+                                    aerosol_albedo, 
+                                    ozone_albedo, 
+                                    cloud_albedo])
+    return ti.random() < scattering_albedos[interaction_id]

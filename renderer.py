@@ -124,6 +124,19 @@ class Renderer:
             data_array[x] = load_data[x]
         self.O3_crossec_LUT_buff.from_numpy(data_array)
 
+        self.transmittance_lut_tex = ti.Texture(ti.Format.r32f, TRANS_LUT_RES)
+        self.transmittance_lut_buff = ti.field(dtype=ti.f32, shape=TRANS_LUT_RES)
+        with open(TRANS_LUT_FILE, 'rb') as file:
+            load_data = np.fromfile(file, dtype=np.float32, count=TRANS_LUT_RES[0]*TRANS_LUT_RES[1]*TRANS_LUT_RES[2])
+        # data_array = np.zeros(shape=(TRANS_LUT_RES[0], TRANS_LUT_RES[1], TRANS_LUT_RES[2]), dtype=np.float32)
+        # for x in range (0, TRANS_LUT_RES[0]):
+        #     for y in range (0, TRANS_LUT_RES[1]):
+        #         for z in range (0, TRANS_LUT_RES[2]):
+        #             data_array[x, y, z] = load_data[x + y * TRANS_LUT_RES[0] + z * TRANS_LUT_RES[0] * TRANS_LUT_RES[1]]
+        data_array = np.fromfile(TRANS_LUT_FILE, dtype=np.float32)
+        data_array = data_array.reshape(TRANS_LUT_RES)
+        self.transmittance_lut_buff.from_numpy(data_array)
+
         # CRF
         self.crf_names = []
         data_array = self.load_crfs()
@@ -143,6 +156,7 @@ class Renderer:
         self.copy_stars_texture(self.stars_tex)
         self.copy_CIE_LUT_texture(self.CIE_LUT_tex)
         self.copy_CRF_LUT_texture(self.crf_tex)
+        self.copy_transmittance_LUT_texture(self.transmittance_lut_tex)
 
     def load_crfs(self):
         # Re-running the code with the updated directory path
@@ -222,6 +236,12 @@ class Renderer:
             tex.store(ti.Vector([i, j]), ti.Vector([val.x, val.y, val.z, 0.0]))
 
     @ti.kernel
+    def copy_transmittance_LUT_texture(self, tex: ti.types.rw_texture(num_dimensions=3, fmt=ti.Format.r32f, lod=0)):
+        for i, j, k in ti.ndrange(TRANS_LUT_RES[0], TRANS_LUT_RES[1], TRANS_LUT_RES[2]):
+            val = ti.cast(self.transmittance_lut_buff[i, j, k], ti.f32)
+            tex.store(ti.Vector([i, j, k]), ti.Vector([val, 0.0, 0.0, 0.0]))
+
+    @ti.kernel
     def set_camera_pos(self, x: ti.f32, y: ti.f32, z: ti.f32):
         self.camera_pos[None] = ti.Vector([x, y, z])
 
@@ -288,7 +308,8 @@ class Renderer:
                      bathymetry_sampler: ti.types.texture(num_dimensions=2),
                      emissive_sampler: ti.types.texture(num_dimensions=2),
                      stars_sampler: ti.types.texture(num_dimensions=2),
-                     cie_lut_sampler: ti.types.texture(num_dimensions=2)):
+                     cie_lut_sampler: ti.types.texture(num_dimensions=2),
+                     trans_lut_sampler: ti.types.texture(num_dimensions=3)):
 
         scene_params = SceneParameters()
         scene_params.land_height_scale = self.land_height_scale
@@ -324,7 +345,6 @@ class Renderer:
                                     stars_sampler,
                                     self.srgb_to_spectrum_buff,
                                     self.O3_crossec_LUT_buff)
-
             # Convert spectrum sample to sRGB and accumulate
             xyz = sample * response * wavelength_rcp_pdf
             self.color_buffer[u, v] += xyzToRGBMatrix_D65 @ xyz 
@@ -376,7 +396,8 @@ class Renderer:
                     self.bathymetry_tex, 
                     self.emissive_tex, 
                     self.stars_tex,
-                    self.CIE_LUT_tex)
+                    self.CIE_LUT_tex,
+                    self.transmittance_lut_tex)
         self.current_spp += 1
 
     def fetch_image(self):

@@ -43,7 +43,7 @@ EOTF = lin
 # Constants
 Lp = 100.0  # Lp
 gb = 0.12   # Lp exp boost
-c = 1.0     # contrast
+c = 1.4     # contrast
 fl = 0.005  # flare
 rw = 0.25   # red weight
 bw = 0.35   # blue weight
