@@ -35,6 +35,8 @@ planet_r = 6371e3
 atmos_height  = 110e3
 atmos_upper_limit = planet_r + atmos_height
 
+ground_albedo = 0.08 / pi
+
 # Cloud constants
 clouds_extinct = 0.1*0
 clouds_density = 0.029 # 0.0175

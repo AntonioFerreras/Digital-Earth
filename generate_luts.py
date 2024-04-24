@@ -18,6 +18,7 @@ transmittance_lut = ti.field(dtype=ti.f32, shape=TRANS_LUT_RES)
 multiple_scattering_lut = ti.field(dtype=ti.f32, shape=MULTISCAT_LUT_RES)
 
 transmittance_lut_tex = ti.Texture(ti.Format.r32f, TRANS_LUT_RES)
+multiple_scattering_lut_tex = ti.Texture(ti.Format.r32f, MULTISCAT_LUT_RES)
 
 O3_crossec_LUT_buff = ti.field(dtype=ti.f32, shape=(O3_CROSSEC_LUT_RES))
 with open(O3_CROSSEC_LUT_FILE, 'rb') as file:
@@ -63,7 +64,9 @@ def ray_march_scattering(ray_pos: vec3,
                             rmo_extinction: vec3,
                             rm_scattering: vec2,
                             wavelength: float,
-                            trans_lut_sampler: ti.template()):
+                            trans_lut_sampler: ti.template(),
+                            multi_lut_sampler: ti.template(),
+                            iteration: ti.i32):
     steps = 32
     r_steps = 1.0 / (ti.cast(steps, ti.f32))
 
@@ -86,12 +89,17 @@ def ray_march_scattering(ray_pos: vec3,
         step_integral = saturate((1.0 - step_transmittance)/step_optical_depth)
         visible_scattering = transmittance * step_integral
 
-        sun_visibility = not rsi(ray_pos, sun_dir, volume.planet_r).y > 0.0
-        # sun_transmittance = ray_march_transmittance(ray_pos, sun_dir, rmo_extinction)
-        sun_transmittance = lut_transmittance(sun_dir.dot(ray_pos.normalized()), h, wavelength, trans_lut_sampler)
+        if iteration == 0:
+            sun_visibility = not rsi(ray_pos, sun_dir, volume.planet_r).y > 0.0
+            # sun_transmittance = ray_march_transmittance(ray_pos, sun_dir, rmo_extinction)
+            sun_transmittance = lut_transmittance(sun_dir.dot(ray_pos.normalized()), h, wavelength, trans_lut_sampler)
 
-        step_scattering = rm_scattering.dot(density.xy * phase)
-        in_scatter += step_scattering * sun_visibility * sun_transmittance * visible_scattering * dd
+            step_scattering = rm_scattering.dot(density.xy * phase)
+            in_scatter += step_scattering * sun_visibility * sun_transmittance * visible_scattering * dd
+        else:
+            multiple_scattering = lut_multiple_scattering(ray_pos, sun_dir, wavelength, multi_lut_sampler)
+            step_scattering = rm_scattering.dot(density.xy)
+            in_scatter += step_scattering * multiple_scattering * visible_scattering * dd
 
         transmittance *= step_transmittance
 
@@ -100,12 +108,16 @@ def ray_march_scattering(ray_pos: vec3,
     return in_scatter, transmittance
 
 @ti.kernel
-def compute_multiple_scattering_lut(o3_crossec_buff: ti.template(), transmittance_lut_sampler: ti.types.texture(num_dimensions=3)):
+def compute_multiple_scattering_lut(o3_crossec_buff: ti.template(), 
+                                    transmittance_lut_sampler: ti.types.texture(num_dimensions=3), 
+                                    multiple_scattering_lut_sampler: ti.types.texture(num_dimensions=3), 
+                                    multiple_scattering_lut_writer: ti.types.rw_texture(num_dimensions=3, fmt=ti.Format.r32f, lod=0),
+                                    iterations: ti.i32):
     for x, y, z in multiple_scattering_lut:
-        wavelength = 390.0 + z
+        wavelength = 390.0 + z + 0.5
 
-        sun_angle_coordinate = ti.cast(x, ti.f32) / ti.cast(MULTISCAT_LUT_RES[0] - 1, ti.f32)
-        view_height_coordinate = ti.cast(y, ti.f32) / ti.cast(MULTISCAT_LUT_RES[1] - 1, ti.f32)
+        sun_angle_coordinate = (ti.cast(x, ti.f32) + 0.5) / ti.cast(MULTISCAT_LUT_RES[0], ti.f32)
+        view_height_coordinate = (ti.cast(y, ti.f32) + 0.5) / ti.cast(MULTISCAT_LUT_RES[1], ti.f32)
 
         view_height = volume.atmos_height * pow(view_height_coordinate, 2.0)
 
@@ -122,10 +134,25 @@ def compute_multiple_scattering_lut(o3_crossec_buff: ti.template(), transmittanc
 
         scattering = vec2(extinctions.x * volume.rayleigh_albedo, extinctions.y * volume.aerosol_albedo)
 
+        
+
         accum = 0.0
-        MS_SAMPLE_COUNT = 4000
+        MS_SAMPLE_COUNT = 512
+        dphi = pi / ti.cast(MS_SAMPLE_COUNT, ti.f32)
+        dtheta = pi / ti.cast(MS_SAMPLE_COUNT, ti.f32)
         for i in range(0, MS_SAMPLE_COUNT):
-            sample_dir = sample_sphere(vec2(ti.random(), ti.random())) # golden_spiral_sample(i, MS_SAMPLE_COUNT)
+            sample_dir = golden_spiral_sample(i, MS_SAMPLE_COUNT) 
+            # sample_dir += sample_sphere(vec2(ti.random(), ti.random())) * ti.random() * 0.
+            # sample_dir = sample_dir.normalized()
+            # theta = (i + 0.5) * dtheta
+            # cos_theta = cos(theta)
+            # sin_theta = sin(theta)
+            # for j in range(0, 2*MS_SAMPLE_COUNT):
+            #     phi = (j + 0.5) * dphi
+            #     cos_phi = cos(phi)
+            #     sin_phi = sin(phi)
+            #     sample_dir = vec3(cos(phi) * sin_theta, sin(phi) * sin_theta, cos_theta)
+            #     domega_i = (dtheta) * (dphi) * sin(theta)
 
             earth_intersection = rsi(ray_pos, sample_dir, volume.planet_r).x
             atmos_isection = rsi(ray_pos, sample_dir, volume.atmos_upper_limit)
@@ -134,17 +161,32 @@ def compute_multiple_scattering_lut(o3_crossec_buff: ti.template(), transmittanc
             # cos_theta = sample_dir.dot(sun_dir)
             # phase = vec2(volume.rayleigh_phase(cos_theta), volume.mie_phase(cos_theta))
 
-            sample, _ = ray_march_scattering(ray_pos, 
-                                            sample_dir, 
-                                            0.0, t_max, 
-                                            sun_dir, 
-                                            extinctions, 
-                                            scattering, 
-                                            wavelength, 
-                                            transmittance_lut_sampler)
-            accum += sample
+            in_scatter, transmittance = ray_march_scattering(ray_pos, 
+                                                            sample_dir, 
+                                                            0.0, t_max, 
+                                                            sun_dir, 
+                                                            extinctions, 
+                                                            scattering, 
+                                                            wavelength, 
+                                                            transmittance_lut_sampler,
+                                                            multiple_scattering_lut_sampler,
+                                                            iterations)
+            accum += in_scatter
+            if iterations == 0:
+                # ground albedo
+                ground_pos = ray_pos + sample_dir * t_max
+                ground_normal = ground_pos.normalized()
+                sun_transmittance = lut_transmittance(sun_dir.dot(ground_pos.normalized()), 0.0, wavelength, transmittance_lut_sampler)
+                ground_irradiance = volume.ground_albedo * max(ground_normal.dot(sun_dir), 0.0) * sun_transmittance
+
+                accum += ground_irradiance * transmittance
+
+
         accum *= 1.0 / ti.cast(MS_SAMPLE_COUNT, ti.f32) 
-        multiple_scattering_lut[x, y, z] = accum
+        prev = multiple_scattering_lut[x, y, z] if iterations > 0 else 0.0
+        multiple_scattering_lut[x, y, z] = prev + accum
+        multiple_scattering_lut_writer.store(ti.Vector([x, y, z]), ti.Vector([prev + accum, 0.0, 0.0, 0.0]))
+
 
 
         
@@ -152,7 +194,13 @@ def compute_multiple_scattering_lut(o3_crossec_buff: ti.template(), transmittanc
 
 
 compute_transmittance_lut(O3_crossec_LUT_buff, transmittance_lut_tex)
-compute_multiple_scattering_lut(O3_crossec_LUT_buff, transmittance_lut_tex)
+for i in range(0, 4):
+    compute_multiple_scattering_lut(O3_crossec_LUT_buff, 
+                                    transmittance_lut_tex, 
+                                    multiple_scattering_lut_tex, 
+                                    multiple_scattering_lut_tex, 
+                                    i)
+    print(f"Iteration {i} done.")
 
 array = transmittance_lut.to_numpy()
 array.tofile('LUT/transmittance_lut.dat')
@@ -176,6 +224,6 @@ array.tofile('LUT/multiple_scattering_lut.dat')
 
 
 slice_000 = array[:, :, 200]
-image = Image.fromarray((slice_000 * 255*10).astype(np.uint8))
+image = Image.fromarray((slice_000 * 255 * 10).astype(np.uint8))
 image.save('slice_000.png')
 
