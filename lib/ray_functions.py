@@ -214,3 +214,15 @@ def lut_transmittance(cos_theta: ti.f32, h: ti.f32, wavelength: ti.f32, transmit
 
     return 0.0 if cos_theta < -0.19 else transmittance_lut.sample_lod(lookup_uvw, 
                                              0.0).x
+
+@ti.func
+def lut_multiple_scattering(ray_pos: vec3, sun_dir: vec3, wavelength: ti.f32, multiple_scattering_lut: ti.template()):
+    h = volume.get_elevation(ray_pos)
+    cos_theta = ray_pos.normalized().dot(sun_dir)
+
+    lookup_uvw = vec3(0.0)
+    lookup_uvw.x = saturate(0.5 * sign(cos_theta) * sqrt(abs(cos_theta)) + 0.5)
+    lookup_uvw.y = saturate(sqrt(max(h, 0.0) / volume.atmos_height))
+    lookup_uvw.z = (wavelength-390.0)/441.0
+
+    return multiple_scattering_lut.sample_lod(lookup_uvw, 0.0).x

@@ -128,14 +128,17 @@ class Renderer:
         self.transmittance_lut_buff = ti.field(dtype=ti.f32, shape=TRANS_LUT_RES)
         with open(TRANS_LUT_FILE, 'rb') as file:
             load_data = np.fromfile(file, dtype=np.float32, count=TRANS_LUT_RES[0]*TRANS_LUT_RES[1]*TRANS_LUT_RES[2])
-        # data_array = np.zeros(shape=(TRANS_LUT_RES[0], TRANS_LUT_RES[1], TRANS_LUT_RES[2]), dtype=np.float32)
-        # for x in range (0, TRANS_LUT_RES[0]):
-        #     for y in range (0, TRANS_LUT_RES[1]):
-        #         for z in range (0, TRANS_LUT_RES[2]):
-        #             data_array[x, y, z] = load_data[x + y * TRANS_LUT_RES[0] + z * TRANS_LUT_RES[0] * TRANS_LUT_RES[1]]
         data_array = np.fromfile(TRANS_LUT_FILE, dtype=np.float32)
         data_array = data_array.reshape(TRANS_LUT_RES)
         self.transmittance_lut_buff.from_numpy(data_array)
+
+        self.multi_scatter_lut_tex = ti.Texture(ti.Format.r32f, MULTISCAT_LUT_RES)
+        self.multi_scatter_lut_buff = ti.field(dtype=ti.f32, shape=MULTISCAT_LUT_RES)
+        with open(MULTISCAT_LUT_FILE, 'rb') as file:
+            load_data = np.fromfile(file, dtype=np.float32, count=MULTISCAT_LUT_RES[0]*MULTISCAT_LUT_RES[1]*MULTISCAT_LUT_RES[2])
+        data_array = np.fromfile(MULTISCAT_LUT_FILE, dtype=np.float32)
+        data_array = data_array.reshape(MULTISCAT_LUT_RES)
+        self.multi_scatter_lut_buff.from_numpy(data_array)
 
         # CRF
         self.crf_names = []
@@ -157,6 +160,7 @@ class Renderer:
         self.copy_CIE_LUT_texture(self.CIE_LUT_tex)
         self.copy_CRF_LUT_texture(self.crf_tex)
         self.copy_transmittance_LUT_texture(self.transmittance_lut_tex)
+        self.copy_multiple_scattering_LUT_texture(self.multi_scatter_lut_tex)
 
     def load_crfs(self):
         # Re-running the code with the updated directory path
@@ -242,6 +246,12 @@ class Renderer:
             tex.store(ti.Vector([i, j, k]), ti.Vector([val, 0.0, 0.0, 0.0]))
 
     @ti.kernel
+    def copy_multiple_scattering_LUT_texture(self, tex: ti.types.rw_texture(num_dimensions=3, fmt=ti.Format.r32f, lod=0)):
+        for i, j, k in ti.ndrange(MULTISCAT_LUT_RES[0], MULTISCAT_LUT_RES[1], MULTISCAT_LUT_RES[2]):
+            val = ti.cast(self.multi_scatter_lut_buff[i, j, k], ti.f32)
+            tex.store(ti.Vector([i, j, k]), ti.Vector([val, 0.0, 0.0, 0.0]))
+
+    @ti.kernel
     def set_camera_pos(self, x: ti.f32, y: ti.f32, z: ti.f32):
         self.camera_pos[None] = ti.Vector([x, y, z])
 
@@ -309,7 +319,8 @@ class Renderer:
                      emissive_sampler: ti.types.texture(num_dimensions=2),
                      stars_sampler: ti.types.texture(num_dimensions=2),
                      cie_lut_sampler: ti.types.texture(num_dimensions=2),
-                     trans_lut_sampler: ti.types.texture(num_dimensions=3)):
+                     trans_lut_sampler: ti.types.texture(num_dimensions=3),
+                     multi_scatter_lut_sampler: ti.types.texture(num_dimensions=3)):
 
         scene_params = SceneParameters()
         scene_params.land_height_scale = self.land_height_scale
@@ -335,7 +346,7 @@ class Renderer:
             path_params.ray_pos = self.camera_pos[None]
 
             # Sample incoming radiance for path
-            sample = pt.path_tracer(path_params, scene_params, 
+            sample = pt.ray_marcher(path_params, scene_params, 
                                     albedo_sampler, 
                                     height_sampler, 
                                     ocean_sampler, 
@@ -343,6 +354,8 @@ class Renderer:
                                     bathymetry_sampler,
                                     emissive_sampler,
                                     stars_sampler,
+                                    trans_lut_sampler,
+                                    multi_scatter_lut_sampler,
                                     self.srgb_to_spectrum_buff,
                                     self.O3_crossec_LUT_buff)
             # Convert spectrum sample to sRGB and accumulate
@@ -397,7 +410,8 @@ class Renderer:
                     self.emissive_tex, 
                     self.stars_tex,
                     self.CIE_LUT_tex,
-                    self.transmittance_lut_tex)
+                    self.transmittance_lut_tex,
+                    self.multi_scatter_lut_tex)
         self.current_spp += 1
 
     def fetch_image(self):

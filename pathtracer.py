@@ -176,9 +176,10 @@ def ray_march_rmo(ray_pos: vec3,
                   rmo_extinction: vec3,
                   rm_scattering: vec2,
                   wavelength: float,
-                  clouds_sampler: ti.template(),
-                  trans_lut_sampler: ti.template()):
-    steps = 64
+                  trans_lut_sampler: ti.template(),
+                  multi_scatter_lut_sampler: ti.template(),
+                  clouds_sampler: ti.template()):
+    steps = 32
     r_steps = 1.0 / (ti.cast(steps, ti.f32))
 
     dd = (t_max - t_start) * r_steps
@@ -203,9 +204,13 @@ def ray_march_rmo(ray_pos: vec3,
         sun_visibility = not rsi(ray_pos, sun_dir, volume.planet_r).y > 0.0
         # sun_transmittance = ray_march_transmittance(ray_pos, sun_dir, rmo_extinction)
         sun_transmittance = lut_transmittance(sun_dir.dot(ray_pos.normalized()), h, wavelength, trans_lut_sampler)
+        # sun_transmittance = 1.0
+        multiple_scattering = lut_multiple_scattering(ray_pos, sun_dir, wavelength, multi_scatter_lut_sampler)
 
-        step_scattering = rm_scattering.dot(density.xy * phase)
-        in_scatter += step_scattering * sun_visibility * sun_transmittance * visible_scattering * dd
+        step_single_scattering = rm_scattering.dot(density.xy * phase)
+        step_multi_scattering = rm_scattering.dot(density.xy)
+        in_scatter += step_single_scattering * sun_visibility * sun_transmittance * visible_scattering * dd
+        in_scatter += step_multi_scattering * multiple_scattering * visible_scattering * dd
 
         transmittance *= step_transmittance
 
@@ -224,6 +229,7 @@ def ray_marcher(path: PathParameters,
                 emissive_sampler: ti.template(),
                 stars_sampler: ti.template(),
                 trans_lut_sampler: ti.template(),
+                multi_scatter_lut_sampler: ti.template(),
                 srgb_to_spectrum_buff: ti.template(),
                 o3_crossec_buff: ti.template()):
     
@@ -271,8 +277,9 @@ def ray_marcher(path: PathParameters,
                                                   extinctions.xyz, 
                                                   scattering, 
                                                   path.wavelength,
-                                                  clouds_sampler,
-                                                  trans_lut_sampler)
+                                                  trans_lut_sampler,
+                                                  multi_scatter_lut_sampler,
+                                                  clouds_sampler)
 
         accum += throughput * in_scatter * sun_irradiance
         throughput *= transmittance

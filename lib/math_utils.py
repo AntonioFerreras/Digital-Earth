@@ -84,6 +84,16 @@ def hash22(p: vec2):
     p3 += dot(p3, p3.yzx+19.19)
     return fract((p3.xx+p3.yz)*p3.zy)
 
+@ti.func
+def get_unit_vec(rand):
+    rand.x *= np.pi * 2.0; rand.y = rand.y * 2.0 - 1.0
+    ground = vec2(sin(rand.x), cos(rand.x)) * sqrt(1.0 - rand.y * rand.y)
+    return vec3(ground.x, ground.y, rand.y).normalized()
+
+@ti.func
+def golden_spiral_sample(i: ti.i32, n: ti.i32):
+    return get_unit_vec(vec2((i + 0.5) / ti.cast(n, ti.f32), fract(i * 1.618033988749)))
+
 def np_normalize(v):
     # https://stackoverflow.com/a/51512965/12003165
     return v / np.sqrt(np.sum(v**2))
