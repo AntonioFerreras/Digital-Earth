@@ -224,8 +224,8 @@ array.tofile('LUT/multiple_scattering_lut.dat')
 #     print("The shapes do not match.")
 
 
-slice_000 = array[:, :, 200]
-image = Image.fromarray((slice_000 * 255 * 10).astype(np.uint8))
-image.save('slice_000.png')
+# slice_000 = array[:, :, 200]
+# image = Image.fromarray((slice_000 * 255 * 10).astype(np.uint8))
+# image.save('slice_000.png')
 
 print("Done")

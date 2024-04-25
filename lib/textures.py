@@ -7,7 +7,7 @@ TEX_RES_21K = (21600, 10800)
 CIE_LUT_RES = (441, 2)
 O3_CROSSEC_LUT_RES = 441
 TRANS_LUT_RES = (64, 64, 441)
-MULTISCAT_LUT_RES = (256, 256, 441)
+MULTISCAT_LUT_RES = (128, 128, 441)
 
 ALBEDO_4K = 'textures/earth_color_4K.png'
 ALBEDO_10K = 'textures/earth_color_10K.png'
