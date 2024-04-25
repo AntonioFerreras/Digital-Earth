@@ -99,7 +99,7 @@ def ray_march_scattering(ray_pos: vec3,
             in_scatter += step_scattering * sun_visibility * sun_transmittance * visible_scattering
         else:
             multiple_scattering = lut_multiple_scattering(ray_pos, sun_dir, wavelength, multi_lut_sampler)
-            step_scattering = rm_scattering.dot(density.xy) * dd
+            step_scattering = rm_scattering.dot(density.xy * phase) * dd
             multipleScatteringEnergy = 1.0
             in_scatter += multipleScatteringEnergy * step_scattering * multiple_scattering * visible_scattering
 
@@ -140,9 +140,7 @@ def compute_multiple_scattering_lut(o3_crossec_buff: ti.template(),
         
 
         accum = 0.0
-        MS_SAMPLE_COUNT = 1024
-        dphi = pi / ti.cast(MS_SAMPLE_COUNT, ti.f32)
-        dtheta = pi / ti.cast(MS_SAMPLE_COUNT, ti.f32)
+        MS_SAMPLE_COUNT = 512
         for i in range(0, MS_SAMPLE_COUNT):
             sample_dir = golden_spiral_sample(i, MS_SAMPLE_COUNT) 
 
@@ -163,17 +161,17 @@ def compute_multiple_scattering_lut(o3_crossec_buff: ti.template(),
                                                             multiple_scattering_lut_read,
                                                             iterations)
             accum += in_scatter
-            # if iterations == 0:
-            #     # ground albedo
-            #     ground_pos = ray_pos + sample_dir * t_max
-            #     ground_normal = ground_pos.normalized()
-            #     sun_transmittance = lut_transmittance(sun_dir.dot(ground_pos.normalized()), 0.0, wavelength, transmittance_lut_sampler)
-            #     ground_irradiance = volume.ground_albedo * max(ground_normal.dot(sun_dir), 0.0) * sun_transmittance
+            if iterations == 0:
+                # ground albedo
+                ground_pos = ray_pos + sample_dir * t_max
+                ground_normal = ground_pos.normalized()
+                sun_transmittance = lut_transmittance(sun_dir.dot(ground_pos.normalized()), 0.0, wavelength, transmittance_lut_sampler)
+                ground_irradiance = volume.ground_albedo * max(ground_normal.dot(sun_dir), 0.0) * sun_transmittance
 
-            #     accum += ground_irradiance * transmittance
+                accum += ground_irradiance * transmittance
 
 
-        accum *= 1.0 / ti.cast(MS_SAMPLE_COUNT, ti.f32) 
+        accum /= ti.cast(MS_SAMPLE_COUNT, ti.f32)
         prev = multiple_scattering_lut[x, y, z] if iterations > 0 else 0.0
         multiple_scattering_lut[x, y, z] = prev + accum
         multiple_scattering_lut_write.store(ti.Vector([x, y, z]), ti.Vector([prev + accum, 0.0, 0.0, 0.0]))
@@ -185,7 +183,8 @@ def compute_multiple_scattering_lut(o3_crossec_buff: ti.template(),
 
 
 compute_transmittance_lut(O3_crossec_LUT_buff, transmittance_lut_tex)
-for i in range(0, 20):
+SCATTER_EVENTS = 15
+for i in range(0, SCATTER_EVENTS):
     write_to_0 = i % 2 == 0
     last_percent = 0
     for z in range(0, MULTISCAT_LUT_RES[2]):
@@ -196,10 +195,12 @@ for i in range(0, 20):
                                         z,
                                         i)
         percent = int((z / MULTISCAT_LUT_RES[2]) * 100)
+        if percent == 99:
+            percent = 100
 
         ti.sync()
-        if (percent % 25 == 0 or percent == 99) and percent != last_percent:
-            print(f"iteration {i} {percent}%")
+        if percent % 25 == 0 and percent != last_percent:
+            print(f"iteration {i+1}/{SCATTER_EVENTS} {percent}%")
             last_percent = percent
 
 array = transmittance_lut.to_numpy()
