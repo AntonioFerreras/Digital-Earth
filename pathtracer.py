@@ -179,7 +179,7 @@ def ray_march_rmo(ray_pos: vec3,
                   trans_lut_sampler: ti.template(),
                   multi_scatter_lut_sampler: ti.template(),
                   clouds_sampler: ti.template()):
-    steps = 32
+    steps = 64
     r_steps = 1.0 / (ti.cast(steps, ti.f32))
 
     dd = (t_max - t_start) * r_steps
@@ -207,10 +207,12 @@ def ray_march_rmo(ray_pos: vec3,
         # sun_transmittance = 1.0
         multiple_scattering = lut_multiple_scattering(ray_pos, sun_dir, wavelength, multi_scatter_lut_sampler)
 
-        step_single_scattering = rm_scattering.dot(density.xy * phase)
-        step_multi_scattering = rm_scattering.dot(density.xy)
-        in_scatter += step_single_scattering * sun_visibility * sun_transmittance * visible_scattering * dd
-        in_scatter += step_multi_scattering * multiple_scattering * visible_scattering * dd
+        step_single_scattering = rm_scattering.dot(density.xy * phase) * dd
+        step_multi_scattering = rm_scattering.dot(density.xy) * dd
+
+        multipleScatteringEnergy = 1.0
+        in_scatter += step_single_scattering * sun_visibility * sun_transmittance * visible_scattering
+        in_scatter += multipleScatteringEnergy * step_multi_scattering * multiple_scattering * visible_scattering
 
         transmittance *= step_transmittance
 
