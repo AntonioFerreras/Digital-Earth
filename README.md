@@ -7,6 +7,7 @@ Demo shots             |  1080p
 
 ## Overview
 A renderer that generates highly realistic images of the Earth from outer space. 
+(Note: Requires a beefy GPU to run, RTX 3070 or above)
 
 Rendering is done with Path Tracing in participating media. 
 + Uses measured data for density and light response (extinction coeficients and scattering functions) of atmospheric gases.
