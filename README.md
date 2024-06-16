@@ -31,7 +31,7 @@ pip install -r requirements.txt
 2. Then download textures from [here (google drive)](https://drive.google.com/drive/folders/1RPspOXGj9JEV4nX78C5mGNWEgzic9dsv?usp=sharing)
 and drag them into the `textures` folder.
 
-3. Finally, to run Earth Viewer,
+3. Finally, to run Digital Earth,
 ```bash
 python main.py
 ```
