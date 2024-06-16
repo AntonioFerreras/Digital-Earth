@@ -14,9 +14,10 @@ Rendering is done with Path Tracing in participating media.
   + Rayleigh scatterers: Nitrogen (N2), Oxygen (O2),  Carbon Dioxide (CO2)
   + Mie scatterers: Water vapour
   + Other absorbers: Ozone (O3)
-+ Uses textures from NASA for ground albedo, water bodies, topology, clouds.
-+ Uses spectral rendering to get an accurate representation of colours. 
-+ Uses importance sampling in the form of direct light (sun) sampling and phase function pdf.
++ Textures from NASA for ground albedo, water bodies, topology, clouds.
++ Spectral rendering to get an accurate representation of colours.
++ OpenDRT for conversion from HDR->SDR (https://github.com/jedypod/open-display-transform)
++ Camera Response Function for filmic look
 
 **Taichi Lang documentation:** https://docs.taichi-lang.org/
 
