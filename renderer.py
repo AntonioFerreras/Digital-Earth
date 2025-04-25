@@ -9,6 +9,7 @@ from lib.parameters import PathParameters, SceneParameters
 from lib.OpenDRT import openDR_transform
 import lib.AgX as agx
 import pathtracer as pt
+import lib.bruneton_mappings as bruneton
 
 
 
@@ -304,31 +305,32 @@ class Renderer:
         ti.loop_config(block_dim=256)
         for u, v in self.color_buffer:
             
-            
-            
-            # Sample a path from sensor
-            wavelength, response, wavelength_rcp_pdf = spectrum_sample(cie_lut_sampler, CIE_LUT_RES[0])
-            path_params = PathParameters()
-            path_params.wavelength = wavelength
-            path_params.ray_dir = self.get_cast_dir(u, v)
-            path_params.ray_pos = self.camera_pos[None]
+            spp = 32.0
+            for i in range(spp):
+                # Sample a path from sensor
+                wavelength, response, wavelength_rcp_pdf = spectrum_sample(cie_lut_sampler, CIE_LUT_RES[0])
+                path_params = PathParameters()
+                path_params.wavelength = wavelength
+                path_params.ray_dir = self.get_cast_dir(u, v)
+                path_params.ray_pos = self.camera_pos[None]
 
-            # Sample incoming radiance for path
-            sample = pt.path_tracer(path_params, scene_params, 
-                                    albedo_sampler, 
-                                    height_sampler, 
-                                    ocean_sampler, 
-                                    clouds_sampler, 
-                                    bathymetry_sampler,
-                                    emissive_sampler,
-                                    stars_sampler,
-                                    self.srgb_to_spectrum_buff,
-                                    self.O3_crossec_LUT_buff)
+                # Sample incoming radiance for path
+                sample = pt.path_tracer(path_params, scene_params, 
+                                        albedo_sampler, 
+                                        height_sampler, 
+                                        ocean_sampler, 
+                                        clouds_sampler, 
+                                        bathymetry_sampler,
+                                        emissive_sampler,
+                                        stars_sampler,
+                                        self.srgb_to_spectrum_buff,
+                                        self.O3_crossec_LUT_buff)
 
-            # Convert spectrum sample to sRGB and accumulate
-            xyz = sample * response * wavelength_rcp_pdf
-            self.color_buffer[u, v] += xyzToRGBMatrix_D65 @ xyz 
+                # Convert spectrum sample to sRGB and accumulate
+                xyz = sample * response * wavelength_rcp_pdf
+                self.color_buffer[u, v] += (xyzToRGBMatrix_D65 @ xyz )/spp
 
+    
 
     @ti.func
     def camera_response(self, crf_sampler: ti.template(), tristimulus: vec3):
@@ -399,3 +401,73 @@ class Renderer:
         for i in ti.static(range(3)):
             r[i] = ti.cast(c[i], ti.f32) / 255.0
         return r
+
+    @ti.kernel
+    def batch_path_trace(self, 
+                    uvwz: ti.types.vector(4, ti.f32),
+                    albedo_sampler: ti.types.texture(num_dimensions=2),
+                    height_sampler: ti.types.texture(num_dimensions=2),
+                    ocean_sampler: ti.types.texture(num_dimensions=2),
+                    clouds_sampler: ti.types.texture(num_dimensions=2),
+                    bathymetry_sampler: ti.types.texture(num_dimensions=2),
+                    emissive_sampler: ti.types.texture(num_dimensions=2),
+                    stars_sampler: ti.types.texture(num_dimensions=2),
+                    cie_lut_sampler: ti.types.texture(num_dimensions=2)) -> ti.types.vector(3, ti.f32):
+        
+        scene_params = SceneParameters()
+        scene_params.land_height_scale = self.land_height_scale
+
+        # Sun parameters
+        sun_radius   = 6.95e8
+        sun_distance = 1.4959e11
+        scene_params.sun_angular_radius = sun_radius / sun_distance
+        scene_params.sun_cos_angle      = ti.cos(scene_params.sun_angular_radius)
+        
+        # Convert uvwz to position and directions
+        # Use a fixed phi angle for consistency
+        phi = 0.0
+        position, view_dir, sun_dir = bruneton.BrunetonToRayParams(uvwz.x, uvwz.y, uvwz.z, uvwz.w)
+        
+        # Set the sun direction for the scene
+        scene_params.light_direction = sun_dir
+        
+        # Initialize accumulator for the final result
+        final_result = ti.Vector([0.0, 0.0, 0.0])
+        
+        # Total number of samples (batch_size * samples_per_batch)
+        total_samples = 512 * 32 
+        
+        # Use a single loop for better parallelization
+        ti.loop_config(block_dim=256)
+        for i in range(total_samples):
+            # Sample a wavelength for spectral rendering
+            wavelength, response, wavelength_rcp_pdf = spectrum_sample(cie_lut_sampler, CIE_LUT_RES[0])
+            
+            # Setup path parameters
+            path_params = PathParameters()
+            path_params.wavelength = wavelength
+            path_params.ray_dir = view_dir
+            path_params.ray_pos = position
+            
+            # Sample incoming radiance for path
+            sample = pt.path_tracer(path_params, scene_params, 
+                                    albedo_sampler, 
+                                    height_sampler, 
+                                    ocean_sampler, 
+                                    clouds_sampler, 
+                                    bathymetry_sampler,
+                                    emissive_sampler,
+                                    stars_sampler,
+                                    self.srgb_to_spectrum_buff,
+                                    self.O3_crossec_LUT_buff)
+            
+            # Convert spectrum sample to sRGB and accumulate
+            xyz = sample * response * wavelength_rcp_pdf
+            rgb = xyzToRGBMatrix_D65 @ xyz
+            
+            # Atomic add to the final result
+            ti.atomic_add(final_result[0], rgb[0] / total_samples)
+            ti.atomic_add(final_result[1], rgb[1] / total_samples)
+            ti.atomic_add(final_result[2], rgb[2] / total_samples)
+        
+        return final_result

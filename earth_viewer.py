@@ -96,6 +96,12 @@ class Camera:
             pressed = True
             new_up = np.array((0.0, 1.0, 0.0))
             self.set_up(new_up)
+        if win.is_pressed('r'):
+            pressed = True
+            # make camera be 100m above planet 
+            new_up = np_normalize(self._camera_pos)
+            self.set_up(new_up)
+            self._camera_pos = self._up * (planet_r + 100.0)
 
         if win.is_pressed('i'):
             f = open("config.txt", "w")
@@ -185,6 +191,7 @@ class EarthViewer:
         gui = self.window.get_gui()
         spp = 1
         elapsed_time = 1.0
+        accumulated_samples = 0  # Track total accumulated samples
 
         # GUI
         enable_gui = True
@@ -209,6 +216,7 @@ class EarthViewer:
                 up = self.camera._up
                 self.renderer.set_up(*up)
                 should_reset_framebuffer = True
+                accumulated_samples = 0  # Reset sample count when camera changes
 
             if self.window.is_pressed('i'):
                 f = open("config.txt", "a")
@@ -240,6 +248,7 @@ class EarthViewer:
             t = time.time()
             for _ in range(spp):
                 self.renderer.accumulate()
+            accumulated_samples += spp  # Increment sample count
             img = self.renderer.fetch_image()
             if self.window.is_pressed('p'):
                 timestamp = datetime.today().strftime('%Y-%m-%d-%H%M%S')
@@ -263,6 +272,7 @@ class EarthViewer:
             if enable_gui:
                 with gui.sub_window("Settings", x=0.025, y=0.025, width=0.25, height=0.3) as g:
                     g.text("Press G to show/hide GUI")
+                    g.text(f"Samples: {accumulated_samples}")  # Display sample count
 
                     g.text("\nWorld")
                     new_sun_angle = np.deg2rad(g.slider_float("Sun angle", np.rad2deg(current_sun_angle), 0.0, 360.0))
@@ -315,5 +325,6 @@ class EarthViewer:
 
             if should_reset_framebuffer:
                 self.renderer.reset_framebuffer()
+                accumulated_samples = 0  # Reset sample count when framebuffer resets
                 
             self.window.show()

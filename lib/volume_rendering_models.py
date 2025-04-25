@@ -14,9 +14,9 @@ ozone_peak_height = 25000.0 # peak density at 25km
 
 
 
-mie_g = 0.75
+mie_g = 0.8
 mie_asymmetry = 3000.0
-turbidity = 1.06
+turbidity = 1.03 # 1.06
 
 RAYLEIGH_ID = 0
 MIE_ID = 1
@@ -36,7 +36,7 @@ atmos_height  = 110e3
 atmos_upper_limit = planet_r + atmos_height
 
 # Cloud constants
-clouds_extinct = 0.1
+clouds_extinct = 0.1*0
 clouds_density = 0.029 # 0.0175
 clouds_height = 4000.0
 clouds_thickness = 6000.0
@@ -63,12 +63,12 @@ def rayleigh_phase(cos_theta: ti.f32):
     return 3.0/(16.0*np.pi)*(1.0 + cos_theta*cos_theta)
 
 @ti.func
-def mie_phase(cos_theta: ti.f32):
-    return klein_nishina_phase(cos_theta, mie_asymmetry)
+def mie_phase(cos_theta: ti.f32, reduce_peak):
+    return hg_phase(cos_theta, mie_g) if reduce_peak else klein_nishina_phase(cos_theta, mie_asymmetry)
 
 @ti.func
-def sample_mie_phase(view: vec3):
-    return sample_klein_nishina_phase(view, mie_asymmetry)
+def sample_mie_phase(view: vec3, reduce_peak):
+    return sample_hg_phase(view, mie_g) if reduce_peak else sample_klein_nishina_phase(view, mie_asymmetry)
 
 @ti.func
 def hg_phase(cos_theta: ti.f32, g: ti.f32):
@@ -248,7 +248,7 @@ def get_ozone_density(h: ti.f32):
 @ti.func
 def get_rayl_density(h: ti.f32):
     # Gaussian curve fit to US standard atmosphere
-    density_sea_level = 1.225
+    density_sea_level = 1.220554684
     return 3.68082 * exp( -pow(h + 24239.99, 2.0)/532307548.4168 ) / density_sea_level
 
 @ti.func
@@ -277,3 +277,5 @@ def get_elevation(pos: vec3):
     return ti.sqrt(pos.x*pos.x + pos.y*pos.y + pos.z*pos.z) - planet_r
 
 #######################
+
+

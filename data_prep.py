@@ -1,0 +1,94 @@
+import taichi as ti
+import numpy as np
+import time
+import os
+from renderer import Renderer
+
+# Initialize Taichi
+ti.init(arch=ti.vulkan)
+
+# Create output directory if it doesn't exist
+output_dir = "uvwz_rgb_data"
+os.makedirs(output_dir, exist_ok=True)
+
+# Initialize renderer
+image_res = (1920, 1080)
+up = (0, 1, 0)
+renderer = Renderer(image_res, up)
+renderer.copy_textures()  # Make sure textures are loaded
+
+# Parameters
+num_samples = 2 ** 22  # Total number of samples to generate
+batch_size = 2 ** 16   # Number of samples per file
+buffer = []            # Buffer to store results before writing to file
+file_counter = 0       # Counter for sequential filenames
+
+def generate_sequential_filename():
+    """Generate a sequential filename with padded zeros"""
+    global file_counter
+    filename = f"{file_counter:08d}.txt"
+    file_counter += 1
+    return filename
+
+def write_buffer_to_file(buffer_data):
+    """Write the buffer data to a file with a sequential name"""
+    filename = os.path.join(output_dir, generate_sequential_filename())
+    with open(filename, 'w') as f:
+        for line in buffer_data:
+            f.write(line + '\n')
+    print(f"Wrote {len(buffer_data)} samples to {filename}")
+    return []  # Return empty buffer
+
+# Main sampling loop
+start_time = time.time()
+samples_processed = 0
+
+print(f"Starting to generate {num_samples} samples...")
+
+for i in range(num_samples):
+    # Generate random uvwz in [0,1]
+    uvwz = ti.Vector([np.random.random(), np.random.random(), 
+                      np.random.random(), np.random.random()])
+    
+    # Call batch path trace
+    rgb = renderer.batch_path_trace(
+        uvwz,
+        renderer.albedo_tex,
+        renderer.topography_tex,
+        renderer.ocean_tex,
+        renderer.clouds_tex,
+        renderer.bathymetry_tex,
+        renderer.emissive_tex,
+        renderer.stars_tex,
+        renderer.CIE_LUT_tex
+    )
+    
+    # Convert to numpy arrays for easier handling
+    uvwz_np = uvwz.to_numpy()
+    rgb_np = rgb.to_numpy()
+    
+    # Format the line: uvwz (space-separated) followed by rgb (space-separated)
+    line = f"{uvwz_np[0]:.8f} {uvwz_np[1]:.8f} {uvwz_np[2]:.8f} {uvwz_np[3]:.8f} {rgb_np[0]:.8f} {rgb_np[1]:.8f} {rgb_np[2]:.8f}"
+    buffer.append(line)
+    
+    # Write to file when buffer is full
+    if len(buffer) >= batch_size:
+        buffer = write_buffer_to_file(buffer)
+    
+    # Update progress
+    samples_processed += 1
+    if samples_processed % 100 == 0:
+        elapsed_time = time.time() - start_time
+        samples_per_second = samples_processed / elapsed_time
+        estimated_total_time = num_samples / samples_per_second
+        remaining_time = estimated_total_time - elapsed_time
+        
+        print(f"Progress: {samples_processed}/{num_samples} ({samples_processed/num_samples*100:.2f}%)")
+        print(f"Speed: {samples_per_second:.2f} samples/second")
+        print(f"Estimated time remaining: {remaining_time/60:.2f} minutes")
+
+# Write any remaining samples
+if buffer:
+    write_buffer_to_file(buffer)
+
+print(f"Completed generating {num_samples} samples in {(time.time() - start_time)/60:.2f} minutes")

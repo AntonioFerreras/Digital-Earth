@@ -32,8 +32,8 @@ def earth_brdf(albedo: ti.f32, oceanness: ti.f32, bathymetry: ti.f32, v: vec3, n
     ocean_specular = mix(ocean_specular_beckmann, ocean_specular_ggx, clamp(smoothstep(0.2, 0.95, n_dot_v), 0.05, 0.94)) # pow(n_dot_v, 0.75)
 
     specular_blender = smoothstep(0.6, 1.0, oceanness)
-    brdf = albedo*diffuse*DIFFUSE_FACTOR + mix(land_specular, ocean_specular, specular_blender)*SPECULAR_FACTOR
-
+    # brdf = albedo*diffuse*DIFFUSE_FACTOR + mix(land_specular, ocean_specular, specular_blender)*SPECULAR_FACTOR
+    brdf = albedo / np.pi*0.5
     return brdf, n_dot_l
 
 @ti.func
