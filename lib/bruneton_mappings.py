@@ -37,6 +37,15 @@ def DistanceToTopAtmosphereBoundary(r, mu):
     discriminant = r * r * (mu * mu - 1.0) + volume.atmos_upper_limit * volume.atmos_upper_limit
     return ClampDistance(-r * mu + SafeSqrt(discriminant))
 
+@ti.func
+def DistanceToBottomAtmosphereBoundary(r, mu):
+    discriminant = r * r * (mu * mu - 1.0) + volume.planet_r * volume.planet_r
+    return ClampDistance(-r * mu - SafeSqrt(discriminant))
+
+@ti.func
+def RayIntersectsGround(r, mu):
+    return mu < 0.0 and r * r * (mu * mu - 1.0) + volume.planet_r * volume.planet_r >= 0.0
+
 mu_s_min = -0.2
 
 SCATTERING_TEXTURE_R_SIZE = 4096
@@ -143,26 +152,13 @@ def GetRMuMuSNuFromScatteringTextureUvwz(uvwz):
 
     nu = ClampCosine(uvwz.x * 2.0 - 1.0)
 
+    # Clamp nu to its valid range of values, given mu and mu_s.
+    nu = clamp(nu, mu * mu_s - sqrt((1.0 - mu * mu) * (1.0 - mu_s * mu_s)),
+        mu * mu_s + sqrt((1.0 - mu * mu) * (1.0 - mu_s * mu_s)))
+
     return r, mu, mu_s, nu, ray_r_mu_intersects_ground
 
 # Ray Position/Direction to Bruneton Parameters Conversion Functions
-
-@ti.func
-def RayIntersectsGround(r, mu):
-    """Determines if a ray intersects the ground.
-    
-    Args:
-        r: Distance from the planet center
-        mu: Cosine of the angle between the ray direction and zenith direction
-        
-    Returns:
-        bool: True if the ray intersects the ground
-    """
-    # Compute the discriminant of the quadratic equation for ray-sphere intersection
-    discriminant = r * r * (mu * mu - 1.0) + volume.planet_r * volume.planet_r
-    
-    # Ray intersects ground if discriminant is non-negative and ray is pointing downward
-    return discriminant >= 0.0 and mu < 0.0
 
 
 @ti.func
@@ -181,7 +177,7 @@ def BrunetonToRayParams(r, mu, mu_s, nu):
         sun_dir: Direction of sun (normalized)
     """
     # Ray position (on y-up sphere of radius r)
-    ray_pos = vec3(0.0, mix(volume.planet_r, volume.atmos_upper_limit, r), 0.0)  # Start with point on y axis
+    ray_pos = vec3(0.0, r, 0.0)  # Start with point on y axis
     
     # Ray direction
     # First, start with direction based on mu (angle from y axis)
@@ -230,16 +226,16 @@ def RayParamsToBruneton(ray_pos, ray_dir, sun_dir):
         nu: Cosine of angle between ray and sun directions
     """
     # r is simply the distance from origin
-    r = (length(ray_pos) - volume.planet_r) / (volume.atmos_height)
+    r = length(ray_pos)
     
     # mu is dot product of ray direction with zenith (y axis)
-    mu = ray_dir.y * 0.5 + 0.5
+    mu = dot(ray_pos, ray_dir) / r
     
     # mu_s is dot product of sun direction with zenith (y axis)
-    mu_s = sun_dir.y * 0.5 + 0.5
+    mu_s = dot(ray_pos, sun_dir) / r
     
     # nu is dot product of ray and sun directions
-    nu = dot(ray_dir, sun_dir) * 0.5 + 0.5
+    nu = dot(ray_dir, sun_dir)
     
     return r, mu, mu_s, nu
 
@@ -265,7 +261,7 @@ def RayParamsToUvwz(ray_pos, ray_dir, sun_dir):
     # Convert to texture coordinates
     uvwz = GetScatteringTextureUvwzFromRMuMuSNu(r, mu, mu_s, nu, ray_r_mu_intersects_ground)
     
-    return uvwz, ray_r_mu_intersects_ground
+    return uvwz
 
 @ti.func
 def UvwzToRayParams(uvwz):
