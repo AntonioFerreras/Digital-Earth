@@ -181,9 +181,6 @@ def BrunetonToRayParams(r, mu, mu_s, nu):
     
     # Ray direction
     # First, start with direction based on mu (angle from y axis)
-    mu = mu * 2.0 - 1.0
-    mu_s = mu_s * 2.0 - 1.0
-    nu = nu * 2.0 - 1.0
     sin_theta = SafeSqrt(1.0 - mu * mu)  # sin of angle with y axis
     ray_dir = vec3(sin_theta, mu, 0.0)  # Initial direction in xy plane
     
@@ -196,7 +193,7 @@ def BrunetonToRayParams(r, mu, mu_s, nu):
     # the correct angle (nu) between ray_dir and sun_dir
     # We'll rotate ray_dir
     cos_phi = 0.0
-    if sin_theta > 1e-8 and sin_theta_s > 1e-8:  # Avoid division by zero
+    if abs(sin_theta) > 1e-8 and abs(sin_theta_s) > 1e-8:  # Avoid division by zero
         cos_phi = (nu - mu * mu_s) / (sin_theta * sin_theta_s)
         cos_phi = clamp(cos_phi, -1.0, 1.0)
     sin_phi = SafeSqrt(1.0 - cos_phi * cos_phi)

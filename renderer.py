@@ -426,7 +426,7 @@ class Renderer:
         # Convert uvwz to position and directions
         # Use a fixed phi angle for consistency
         phi = 0.0
-        position, view_dir, sun_dir = bruneton.BrunetonToRayParams(uvwz.x, uvwz.y, uvwz.z, uvwz.w)
+        position, view_dir, sun_dir = bruneton.UvwzToRayParams(uvwz.x, uvwz.y, uvwz.z, uvwz.w)
         
         # Set the sun direction for the scene
         scene_params.light_direction = sun_dir
