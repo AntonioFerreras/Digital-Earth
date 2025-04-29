@@ -17,6 +17,18 @@ HELP_MSG = '''
 Camera:
 * Drag with your left mouse button to rotate
 * Press W/A/S/D/Q/E to move
+
+Rendering:
+* Press G to toggle the settings UI
+* MLP inference provides faster rendering but might 
+  be less accurate than path tracing
+* When outside the atmosphere, rays that don't 
+  intersect the atmosphere will render as black
+
+Controls:
+* Press I to save configuration
+* Press O to load configuration
+* Press P to take a screenshot
 ====================================================
 '''
 
@@ -24,7 +36,7 @@ class Camera:
     def __init__(self, window, up):
         self._window = window
         self._lookat_pos = np.array((0.0, 0.0, 0.0))
-        self._camera_pos = np.array((-15000000., 0.0, 15000000.))
+        self._camera_pos = np.array((-15000000., 0.0, 0000000.))
         self._up = np_normalize(np.array(up))
         self._last_mouse_pos = None
 
@@ -204,6 +216,10 @@ class EarthViewer:
 
         current_sun_angle = self.renderer.sun_angle[None]
         current_sun_path_rot = self.renderer.sun_path_rot[None]
+        
+        # MLP toggle - initialize as false (path tracing)
+        use_mlp = False
+        self.renderer.toggle_mlp(use_mlp)
         ##########
 
         while self.window.running:
@@ -226,7 +242,8 @@ class EarthViewer:
                 f.write(str(selected_crf) + "\n")
                 f.write(str(current_gamma) + "\n")
                 f.write(str(current_sun_angle) + "\n")
-                f.write(str(current_sun_path_rot))
+                f.write(str(current_sun_path_rot) + "\n")
+                f.write(str(int(use_mlp)))  # Save MLP setting (0 or 1)
                 f.close()
 
             if self.window.is_pressed('o'):
@@ -241,6 +258,12 @@ class EarthViewer:
                 current_gamma = float(f.readline())
                 current_sun_angle = float(f.readline())
                 current_sun_path_rot = float(f.readline())
+                try:
+                    # Try to read MLP setting (might not exist in older config files)
+                    use_mlp = bool(int(f.readline()))
+                    self.renderer.toggle_mlp(use_mlp)
+                except:
+                    pass  # Ignore if setting doesn't exist
                 f.close()
 
             
@@ -275,6 +298,17 @@ class EarthViewer:
                     g.text(f"Samples: {accumulated_samples}")  # Display sample count
 
                     g.text("\nWorld")
+                    
+                    # Add MLP toggle checkbox in the World section
+                    old_use_mlp = use_mlp
+                    use_mlp = g.checkbox("Use MLP Inference", use_mlp)
+                    if use_mlp != old_use_mlp:
+                        self.renderer.toggle_mlp(use_mlp)
+                        should_reset_framebuffer = True
+                        # Display which rendering method is being used
+                        method = "MLP inference" if use_mlp else "path tracing"
+                        print(f"Switched to {method}")
+                    
                     new_sun_angle = np.deg2rad(g.slider_float("Sun angle", np.rad2deg(current_sun_angle), 0.0, 360.0))
                     if new_sun_angle != current_sun_angle:
                         should_reset_framebuffer = True

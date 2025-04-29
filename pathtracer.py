@@ -347,9 +347,11 @@ def path_tracer(path: PathParameters,
     primary_ray_did_not_intersect = False
 
     # test bruneton mapping or seeing if mapping then inverse is identity
-    r, mu, mu_s, nu = bruneton.RayParamsToBruneton(ray_pos, ray_dir, scene.light_direction)
-    ray_pos, ray_dir, scene.light_direction = bruneton.BrunetonToRayParams(r, mu, mu_s, nu)
-
+    # r, mu, mu_s, nu = bruneton.RayParamsToBruneton(ray_pos, ray_dir, scene.light_direction)
+    # ray_pos, ray_dir, scene.light_direction = bruneton.BrunetonToRayParams(r, mu, mu_s, nu)
+    # uvzw = bruneton.RayParamsToUvwz(ray_pos, ray_dir, scene.light_direction)
+    # ray_pos, ray_dir, scene.light_direction = bruneton.UvwzToRayParams(uvzw)
+    
     in_scattering = 0.0
     throughput = 1.0
     for scatter_count in range(0, 10):

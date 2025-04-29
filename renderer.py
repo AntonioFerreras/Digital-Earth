@@ -9,7 +9,10 @@ from lib.parameters import PathParameters, SceneParameters
 from lib.OpenDRT import openDR_transform
 import lib.AgX as agx
 import pathtracer as pt
+import lib.volume_rendering_models as volume
 import lib.bruneton_mappings as bruneton
+import torch
+from model import MLP
 
 
 
@@ -22,6 +25,9 @@ class Renderer:
         self.vignette_radius = 0.0
         self.vignette_center = [0.5, 0.5]
         self.current_spp = 0
+        
+        # Flag to switch between path tracing and MLP inference
+        self.use_mlp = False
 
         self.color_buffer = ti.Vector.field(3, dtype=ti.f32)
         self.bbox = ti.Vector.field(3, dtype=ti.f32, shape=2)
@@ -33,6 +39,9 @@ class Renderer:
         self.crf_count = ti.field(dtype=ti.i32, shape=())
         self.gamma = ti.field(dtype=ti.f32, shape=())
 
+        # Buffers for MLP inference
+        self.uvwz_buffer = ti.Vector.field(4, dtype=ti.f32, shape=image_res)
+        self.rgb_buffer = ti.Vector.field(3, dtype=ti.f32, shape=image_res)
 
         self.sun_angle = ti.field(dtype=ti.f32, shape=())
         self.sun_path_rot = ti.field(dtype=ti.f32, shape=())
@@ -133,6 +142,9 @@ class Renderer:
         self.crf_buff = ti.Vector.field(3, dtype=ti.f32, shape=self.crf_lut_res)
         self.crf_buff.from_numpy(data_array)
         self.set_crf_count(self.crf_lut_res[1])
+
+        # Load the MLP model
+        self.load_mlp_model()
 
     def copy_textures(self):
         self.copy_albedo_texture(self.albedo_tex)
@@ -371,14 +383,31 @@ class Renderer:
         self.color_buffer.fill(0)
 
     def accumulate(self):
-        self.render(self.albedo_tex, 
-                    self.topography_tex, 
-                    self.ocean_tex, 
-                    self.clouds_tex, 
-                    self.bathymetry_tex, 
-                    self.emissive_tex, 
-                    self.stars_tex,
-                    self.CIE_LUT_tex)
+        """Accumulate rendered image, using either path tracer or MLP inference"""
+        if self.use_mlp and self.mlp_loaded:
+            # Use MLP inference for rendering
+            self.render_with_mlp(self.albedo_tex, 
+                        self.topography_tex, 
+                        self.ocean_tex, 
+                        self.clouds_tex, 
+                        self.bathymetry_tex, 
+                        self.emissive_tex, 
+                        self.stars_tex,
+                        self.CIE_LUT_tex)
+            
+            # Call the MLP inference in Python scope
+            self.mlp_inference_batch()
+        else:
+            # Use path tracing (original method)
+            self.render(self.albedo_tex, 
+                        self.topography_tex, 
+                        self.ocean_tex, 
+                        self.clouds_tex, 
+                        self.bathymetry_tex, 
+                        self.emissive_tex, 
+                        self.stars_tex,
+                        self.CIE_LUT_tex)
+        
         self.current_spp += 1
 
     def fetch_image(self):
@@ -426,7 +455,7 @@ class Renderer:
         # Convert uvwz to position and directions
         # Use a fixed phi angle for consistency
         phi = 0.0
-        position, view_dir, sun_dir = bruneton.UvwzToRayParams(uvwz.x, uvwz.y, uvwz.z, uvwz.w)
+        position, view_dir, sun_dir = bruneton.UvwzToRayParams(uvwz)
         
         # Set the sun direction for the scene
         scene_params.light_direction = sun_dir
@@ -464,10 +493,158 @@ class Renderer:
             # Convert spectrum sample to sRGB and accumulate
             xyz = sample * response * wavelength_rcp_pdf
             rgb = xyzToRGBMatrix_D65 @ xyz
-            
             # Atomic add to the final result
             ti.atomic_add(final_result[0], rgb[0] / total_samples)
             ti.atomic_add(final_result[1], rgb[1] / total_samples)
             ti.atomic_add(final_result[2], rgb[2] / total_samples)
         
         return final_result
+
+    def load_mlp_model(self):
+        """Load the MLP model from the saved state dict file"""
+        try:
+            # Create the model
+            self.mlp_model = MLP()
+            
+            # Load the checkpoint (which contains model_state_dict, not just the weights)
+            checkpoint = torch.load("mlp_best.pth")
+            
+            # Extract just the model weights from the checkpoint
+            if 'model_state_dict' in checkpoint:
+                # This is a full checkpoint with optimizer state etc.
+                self.mlp_model.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                # This is just a model state dict
+                self.mlp_model.load_state_dict(checkpoint)
+                
+            self.mlp_model.eval()  # Set to evaluation mode
+            
+            # Move to GPU if available
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.mlp_model = self.mlp_model.to(self.device)
+            
+            print(f"MLP model loaded successfully on {self.device}")
+            self.mlp_loaded = True
+        except Exception as e:
+            print(f"Error loading MLP model: {e}")
+            self.mlp_loaded = False
+
+    @ti.kernel
+    def render_with_mlp(self, albedo_sampler: ti.types.texture(num_dimensions=2),
+                     height_sampler: ti.types.texture(num_dimensions=2),
+                     ocean_sampler: ti.types.texture(num_dimensions=2),
+                     clouds_sampler: ti.types.texture(num_dimensions=2),
+                     bathymetry_sampler: ti.types.texture(num_dimensions=2),
+                     emissive_sampler: ti.types.texture(num_dimensions=2),
+                     stars_sampler: ti.types.texture(num_dimensions=2),
+                     cie_lut_sampler: ti.types.texture(num_dimensions=2)):
+        """Render using MLP inference instead of path tracing"""
+        
+        scene_params = SceneParameters()
+        scene_params.land_height_scale = self.land_height_scale
+
+        # Sun parameters
+        sun_radius   = 6.95e8
+        sun_distance = 1.4959e11
+        scene_params.sun_angular_radius = sun_radius / sun_distance
+        scene_params.sun_cos_angle      = ti.cos(scene_params.sun_angular_radius)
+        sun_rot = vec2(-sin(self.sun_path_rot[None]), cos(self.sun_path_rot[None]))
+        scene_params.light_direction = vec3(-sin(self.sun_angle[None]), cos(self.sun_angle[None]) * sun_rot)
+
+        # Flag to track whether camera is outside atmosphere
+        camera_outside_atmosphere = length(self.camera_pos[None]) > volume.atmos_upper_limit
+
+        # Calculate uvwz values for each pixel
+        for u, v in self.uvwz_buffer:
+            # Calculate primary ray position and direction (same as path tracer)
+            ray_dir = self.get_cast_dir(u, v)
+            ray_pos = self.camera_pos[None]
+            
+            if camera_outside_atmosphere:
+                # Check for intersection with atmosphere using ray-sphere intersection
+                # rsi returns (t_min, t_max) where t_min is distance to entry point, t_max is distance to exit point
+                hit_info = rsi(ray_pos, ray_dir, volume.atmos_upper_limit)
+                
+                if hit_info.x > 0:  # Ray intersects the atmosphere
+                    # Move ray origin to the intersection point with the top of the atmosphere
+                    ray_pos = ray_pos + hit_info.x * ray_dir
+                else:
+                    # Ray doesn't hit atmosphere, set a flag in uvwz to indicate black output
+                    # We use a special value (negative w component) to signal this
+                    self.uvwz_buffer[u, v] = vec4(0.0, 0.0, 0.0, -1.0)
+                    continue
+            
+            # Convert ray parameters to uvwz values
+            uvwz = bruneton.RayParamsToUvwz(ray_pos, ray_dir, scene_params.light_direction)
+            
+            # Store uvwz values for batch processing
+            self.uvwz_buffer[u, v] = uvwz
+
+    @ti.kernel
+    def update_color_buffer_from_rgb(self):
+        """Update the color buffer with RGB values from the rgb_buffer"""
+        for u, v in self.color_buffer:
+            self.color_buffer[u, v] += self.rgb_buffer[u, v]
+
+    def mlp_inference_batch(self):
+        """Perform batch inference with MLP model in Python scope"""
+        if not self.mlp_loaded:
+            print("MLP model not loaded, skipping inference")
+            return
+        
+        # Convert Taichi field to NumPy array
+        uvwz_np = self.uvwz_buffer.to_numpy()
+        
+        # Create RGB array for results
+        rgb_np = np.zeros((self.image_res[0], self.image_res[1], 3), dtype=np.float32)
+        
+        # Create a mask for points that hit the atmosphere (w >= 0)
+        valid_mask = uvwz_np[..., 3] >= 0
+        
+        if np.any(valid_mask):  # Only run inference if there are valid points
+            # Extract valid uvwz points
+            valid_indices = np.where(valid_mask)
+            valid_uvwz = uvwz_np[valid_indices]
+            
+            # Convert to PyTorch tensor
+            uvwz_tensor = torch.tensor(valid_uvwz, dtype=torch.float32, device=self.device)
+            
+            # Process in smaller batches to avoid CUDA out of memory issues
+            batch_size = 1024  # Adjust based on available memory
+            rgb_flat = torch.zeros((valid_uvwz.shape[0], 3), dtype=torch.float32, device=self.device)
+            
+            with torch.no_grad():
+                for i in range(0, valid_uvwz.shape[0], batch_size):
+                    end_idx = min(i + batch_size, valid_uvwz.shape[0])
+                    batch = uvwz_tensor[i:end_idx]
+                    rgb_flat[i:end_idx] = self.mlp_model(batch)
+            
+            # Convert back to NumPy
+            valid_rgb = rgb_flat.cpu().numpy()
+            
+            # Put the results back into the full array
+            rgb_np[valid_indices] = valid_rgb
+            
+        # Update the RGB buffer (includes zeros for points that didn't hit atmosphere)
+        self.rgb_buffer.from_numpy(rgb_np)
+        
+        # Update the color buffer using the kernel
+        self.update_color_buffer_from_rgb()
+
+    def toggle_mlp(self, enabled=None):
+        """Toggle between MLP inference and path tracing"""
+        if enabled is not None:
+            self.use_mlp = enabled
+        else:
+            self.use_mlp = not self.use_mlp
+        
+        # Reset framebuffer when switching rendering methods
+        self.reset_framebuffer()
+        
+        if self.use_mlp:
+            method = "MLP inference" if self.mlp_loaded else "MLP (model not loaded, falling back to path tracing)"
+        else:
+            method = "path tracing"
+            
+        print(f"Rendering method: {method}")
+        return self.use_mlp

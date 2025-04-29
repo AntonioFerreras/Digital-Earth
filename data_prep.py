@@ -2,6 +2,7 @@ import taichi as ti
 import numpy as np
 import time
 import os
+import random  # Add this import for random number generation
 from renderer import Renderer
 
 # Initialize Taichi
@@ -21,18 +22,16 @@ renderer.copy_textures()  # Make sure textures are loaded
 num_samples = 2 ** 22  # Total number of samples to generate
 batch_size = 2 ** 16   # Number of samples per file
 buffer = []            # Buffer to store results before writing to file
-file_counter = 0       # Counter for sequential filenames
 
-def generate_sequential_filename():
-    """Generate a sequential filename with padded zeros"""
-    global file_counter
-    filename = f"{file_counter:08d}.txt"
-    file_counter += 1
+def generate_random_filename():
+    """Generate a random filename with 8 digits"""
+    random_number = random.randint(0, 99999999)
+    filename = f"{random_number:08d}.txt"
     return filename
 
 def write_buffer_to_file(buffer_data):
-    """Write the buffer data to a file with a sequential name"""
-    filename = os.path.join(output_dir, generate_sequential_filename())
+    """Write the buffer data to a file with a random name"""
+    filename = os.path.join(output_dir, generate_random_filename())
     with open(filename, 'w') as f:
         for line in buffer_data:
             f.write(line + '\n')
@@ -66,6 +65,9 @@ for i in range(num_samples):
     # Convert to numpy arrays for easier handling
     uvwz_np = uvwz.to_numpy()
     rgb_np = rgb.to_numpy()
+
+    # avoid negative rgb values
+    rgb_np = np.maximum(rgb_np, 0.0)
     
     # Format the line: uvwz (space-separated) followed by rgb (space-separated)
     line = f"{uvwz_np[0]:.8f} {uvwz_np[1]:.8f} {uvwz_np[2]:.8f} {uvwz_np[3]:.8f} {rgb_np[0]:.8f} {rgb_np[1]:.8f} {rgb_np[2]:.8f}"
