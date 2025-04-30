@@ -24,7 +24,7 @@ class MLP(nn.Module):
         out_dim: int = 3,
     ):
         super().__init__()
-        layers: List[nn.Module] = [256, 256, 256, 256]
+        layers: List[nn.Module] = [64, 64, 64, 64]
         self.activation = nn.GELU
         self.linear_layers = nn.ModuleList([nn.Linear(in_dim, layers[0])])
         for i in range(1, len(layers)):
