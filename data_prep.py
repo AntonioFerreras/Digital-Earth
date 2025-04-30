@@ -19,7 +19,7 @@ renderer = Renderer(image_res, up)
 renderer.copy_textures()  # Make sure textures are loaded
 
 # Parameters
-num_samples = 2 ** 22  # Total number of samples to generate
+num_samples = 2 ** 23  # Total number of samples to generate
 batch_size = 2 ** 16   # Number of samples per file
 buffer = []            # Buffer to store results before writing to file
 

@@ -205,7 +205,7 @@ def BrunetonToRayParams(r, mu, mu_s, nu):
         ray_dir.x * sin_phi
     )
     
-    return ray_pos, ray_dir, sun_dir
+    return ray_pos, ray_dir.normalized(), sun_dir.normalized()
 
 @ti.func
 def RayParamsToBruneton(ray_pos, ray_dir, sun_dir):

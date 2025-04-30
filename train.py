@@ -25,8 +25,10 @@ from typing import List, Sequence
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
 from model import MLP
 ################################################################################
@@ -73,7 +75,7 @@ class HDRTextDataset(Dataset):
 # Training helpers
 ################################################################################
 
-def step_epoch(model, loader, optimizer, criterion, device, scheduler=None, train=True):
+def step_epoch(model, loader, optimizer, criterion, device, scheduler=None, train=True, max_grad_norm=1.0):
     if train:
         model.train()
     else:
@@ -93,6 +95,8 @@ def step_epoch(model, loader, optimizer, criterion, device, scheduler=None, trai
                 loss = criterion(preds, y)
             if train:
                 loss.backward()
+                # Apply gradient clipping
+                clip_grad_norm_(model.parameters(), max_grad_norm)
                 optimizer.step()
                 
                 # Step the scheduler after each batch if provided
@@ -147,6 +151,9 @@ def main(cfg):
 
     # ---------- model + optim ----------
     model = MLP().to(device)
+    
+    model = torch.compile(model)
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     
     # Calculate the total number of batches for 25 epochs
@@ -163,10 +170,11 @@ def main(cfg):
     print(f"  Initial LR: {cfg.lr}")
     print(f"  Min LR: {min_lr}")
     print(f"  LR will decay over {total_batches} batches ({25} epochs)")
+    print(f"  Gradient clipping enabled with max_norm=1.0")
 
     best_val = float("inf")
     for epoch in range(1, cfg.epochs + 1):
-        train_loss = step_epoch(model, train_loader, optimizer, criterion, device, scheduler=scheduler, train=True)
+        train_loss = step_epoch(model, train_loader, optimizer, criterion, device, scheduler=scheduler, train=True, max_grad_norm=1.0)
         val_loss = step_epoch(model, val_loader, optimizer, criterion, device, train=False)
         
         # Get the current learning rate
@@ -190,7 +198,7 @@ if __name__ == "__main__":
     p.add_argument("--data_dir", default="./uvwz_rgb_data", help="Directory with .txt data files")
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--batch_size", type=int, default=2048)
-    p.add_argument("--lr", type=float, default=3e-3)
+    p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=0.0)
     p.add_argument("--val_split", type=float, default=0.1, help="Fraction of data for validation")
     p.add_argument("--num_workers", type=int, default=4)

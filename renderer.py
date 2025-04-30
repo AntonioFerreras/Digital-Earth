@@ -512,16 +512,35 @@ class Renderer:
             # Extract just the model weights from the checkpoint
             if 'model_state_dict' in checkpoint:
                 # This is a full checkpoint with optimizer state etc.
-                self.mlp_model.load_state_dict(checkpoint['model_state_dict'])
+                state_dict = checkpoint['model_state_dict']
             else:
                 # This is just a model state dict
-                self.mlp_model.load_state_dict(checkpoint)
+                state_dict = checkpoint
+            
+            # Check if keys have "_orig_mod." prefix and fix them
+            if all("_orig_mod." in key for key in state_dict.keys()):
+                print("Detected '_orig_mod.' prefix in state dict keys, removing prefix...")
+                # Create a new state dict with corrected keys
+                fixed_state_dict = {}
+                for key, value in state_dict.items():
+                    new_key = key.replace("_orig_mod.", "")
+                    fixed_state_dict[new_key] = value
+                state_dict = fixed_state_dict
                 
+            self.mlp_model.load_state_dict(state_dict)
             self.mlp_model.eval()  # Set to evaluation mode
             
             # Move to GPU if available
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             self.mlp_model = self.mlp_model.to(self.device)
+            
+            # Use torch.compile if available (PyTorch 2.0+)
+            if hasattr(torch, 'compile'):
+                try:
+                    self.mlp_model = torch.compile(self.mlp_model)
+                    print("Using torch.compile for improved performance")
+                except Exception as e:
+                    print(f"Could not use torch.compile: {e}")
             
             print(f"MLP model loaded successfully on {self.device}")
             self.mlp_loaded = True
@@ -559,6 +578,7 @@ class Renderer:
             # Calculate primary ray position and direction (same as path tracer)
             ray_dir = self.get_cast_dir(u, v)
             ray_pos = self.camera_pos[None]
+            light_dir = scene_params.light_direction
             
             if camera_outside_atmosphere:
                 # Check for intersection with atmosphere using ray-sphere intersection
@@ -575,7 +595,9 @@ class Renderer:
                     continue
             
             # Convert ray parameters to uvwz values
-            uvwz = bruneton.RayParamsToUvwz(ray_pos, ray_dir, scene_params.light_direction)
+            r, mu, mu_s, nu = bruneton.RayParamsToBruneton(ray_pos, ray_dir, light_dir)
+            ray_pos, ray_dir, light_dir = bruneton.BrunetonToRayParams(r, mu, mu_s, nu)
+            uvwz = bruneton.RayParamsToUvwz(ray_pos, ray_dir, light_dir)
             
             # Store uvwz values for batch processing
             self.uvwz_buffer[u, v] = uvwz
@@ -610,7 +632,7 @@ class Renderer:
             uvwz_tensor = torch.tensor(valid_uvwz, dtype=torch.float32, device=self.device)
             
             # Process in smaller batches to avoid CUDA out of memory issues
-            batch_size = 1024  # Adjust based on available memory
+            batch_size = 4096*4  # Adjust based on available memory
             rgb_flat = torch.zeros((valid_uvwz.shape[0], 3), dtype=torch.float32, device=self.device)
             
             with torch.no_grad():
