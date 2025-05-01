@@ -52,13 +52,6 @@ for i in range(num_samples):
     # Call batch path trace
     rgb = renderer.batch_path_trace(
         uvwz,
-        renderer.albedo_tex,
-        renderer.topography_tex,
-        renderer.ocean_tex,
-        renderer.clouds_tex,
-        renderer.bathymetry_tex,
-        renderer.emissive_tex,
-        renderer.stars_tex,
         renderer.CIE_LUT_tex
     )
     
