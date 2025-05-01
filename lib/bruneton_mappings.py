@@ -180,7 +180,7 @@ def GetRMuMuSNuFromScatteringTextureUvwz(uvwz):
     H = sqrt(volume.atmos_upper_limit * volume.atmos_upper_limit -
         volume.planet_r * volume.planet_r)
     # Distance to the horizon.
-    rho = H * uvwz.u
+    rho = H * uvwz.x
     r = sqrt(rho * rho + volume.planet_r * volume.planet_r)
     mu = uvwz.y * 2.0 - 1.0
     mu_s = inverse_mu_s_mapping(uvwz.z)
