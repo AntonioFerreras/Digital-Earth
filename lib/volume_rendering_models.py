@@ -6,10 +6,10 @@ from lib.math_utils import *
 from lib.sampling import *
 
 # Atmos Constants
-air_num_density       = 2.5035422e25
-ozone_peak = 8e-6
-ozone_num_density     = air_num_density * 0.012588 * ozone_peak
-ozone_cross_sec      = vec3(4.51103766177301e-21, 3.2854797958699e-21, 1.96774621921165e-22) * 0.0001
+air_num_density   = 2.5035422e25
+ozone_peak        = 8e-6
+ozone_num_density = air_num_density * 0.012588 * ozone_peak
+ozone_cross_sec   = vec3(4.51103766177301e-21, 3.2854797958699e-21, 1.96774621921165e-22) * 0.0001
 ozone_peak_height = 25000.0 # peak density at 25km
 
 

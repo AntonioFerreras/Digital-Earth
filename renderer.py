@@ -67,42 +67,6 @@ class Renderer:
 
         self.land_height_scale = 7800.0
 
-        # Load Textures
-        self.albedo_tex = ti.Texture(ti.Format.rgba8, ALBEDO_TEX_RES)
-        self.albedo_buff = ti.Vector.field(3, dtype=ti.u8, shape=ALBEDO_TEX_RES)
-        load_image = ti.tools.imread(ALBEDO_TEX_FILE)
-        self.albedo_buff.from_numpy(load_image)
-
-        self.topography_tex = ti.Texture(ti.Format.r8, TOPOGRAPHY_TEX_RES)
-        self.topography_buff = ti.field(dtype=ti.u8, shape=TOPOGRAPHY_TEX_RES)
-        load_image = ti.tools.imread(TOPOGRAPHY_TEX_FILE)[:, :, 0]
-        self.topography_buff.from_numpy(load_image)
-
-        self.ocean_tex = ti.Texture(ti.Format.r8, OCEAN_TEX_RES)
-        self.ocean_buff = ti.field(dtype=ti.u8, shape=OCEAN_TEX_RES)
-        load_image = ti.tools.imread(OCEAN_TEX_FILE)[:, :, 0]
-        self.ocean_buff.from_numpy(load_image)
-
-        self.clouds_tex = ti.Texture(ti.Format.r8, CLOUDS_TEX_RES)
-        self.clouds_buff = ti.field(dtype=ti.u8, shape=CLOUDS_TEX_RES)
-        load_image = ti.tools.imread(CLOUDS_TEX_FILE)[:, :, 0]
-        self.clouds_buff.from_numpy(load_image)
-
-        self.bathymetry_tex = ti.Texture(ti.Format.r8, BATHYMETRY_TEX_RES)
-        self.bathymetry_buff = ti.field(dtype=ti.u8, shape=BATHYMETRY_TEX_RES)
-        load_image = ti.tools.imread(BATHYMETRY_TEX_FILE)[:, :, 0]
-        self.bathymetry_buff.from_numpy(load_image)
-
-        self.emissive_tex = ti.Texture(ti.Format.r8, EMISSIVE_TEX_RES)
-        self.emissive_buff = ti.field(dtype=ti.u8, shape=EMISSIVE_TEX_RES)
-        load_image = ti.tools.imread(EMISSIVE_TEX_FILE)[:, :, 0]
-        self.emissive_buff.from_numpy(load_image)
-
-        self.stars_tex = ti.Texture(ti.Format.rgba8, STARS_TEX_RES)
-        self.stars_buff = ti.Vector.field(3, dtype=ti.u8, shape=STARS_TEX_RES)
-        load_image = ti.tools.imread(STARS_TEX_FILE)
-        self.stars_buff.from_numpy(load_image)
-
         # LUTS
         self.CIE_LUT_tex = ti.Texture(ti.Format.rgba16f, CIE_LUT_RES)
         self.CIE_LUT_buff = ti.Vector.field(3, dtype=ti.f32, shape=CIE_LUT_RES)
@@ -147,13 +111,6 @@ class Renderer:
         self.load_mlp_model()
 
     def copy_textures(self):
-        self.copy_albedo_texture(self.albedo_tex)
-        self.copy_topography_texture(self.topography_tex)
-        self.copy_ocean_texture(self.ocean_tex)
-        self.copy_clouds_texture(self.clouds_tex)
-        self.copy_bathymetry_texture(self.bathymetry_tex)
-        self.copy_emissive_texture(self.emissive_tex)
-        self.copy_stars_texture(self.stars_tex)
         self.copy_CIE_LUT_texture(self.CIE_LUT_tex)
         self.copy_CRF_LUT_texture(self.crf_tex)
 
@@ -179,48 +136,6 @@ class Renderer:
         crf_array = np.array(crf_data, dtype=np.float32).transpose(1, 0, 2)
         return crf_array
 
-
-    @ti.kernel
-    def copy_albedo_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.rgba8, lod=0)):
-        for i, j in ti.ndrange(ALBEDO_TEX_RES[0], ALBEDO_TEX_RES[1]):
-            val = ti.cast(self.albedo_buff[i, j], ti.f32) / 255.0
-            tex.store(ti.Vector([i, j]), ti.Vector([val.x, val.y, val.z, 0.0]))
-
-    @ti.kernel
-    def copy_topography_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.r8, lod=0)):
-        for i, j in ti.ndrange(TOPOGRAPHY_TEX_RES[0], TOPOGRAPHY_TEX_RES[1]):
-            val = ti.cast(self.topography_buff[i, j], ti.f32) / 255.0
-            tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
-
-    @ti.kernel
-    def copy_ocean_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.r8, lod=0)):
-        for i, j in ti.ndrange(OCEAN_TEX_RES[0], OCEAN_TEX_RES[1]):
-            val = ti.cast(self.ocean_buff[i, j], ti.f32) / 255.0
-            tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
-    
-    @ti.kernel
-    def copy_clouds_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.r8, lod=0)):
-        for i, j in ti.ndrange(CLOUDS_TEX_RES[0], CLOUDS_TEX_RES[1]):
-            val = ti.cast(self.clouds_buff[i, j], ti.f32) / 255.0
-            tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
-
-    @ti.kernel
-    def copy_bathymetry_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.r8, lod=0)):
-        for i, j in ti.ndrange(BATHYMETRY_TEX_RES[0], BATHYMETRY_TEX_RES[1]):
-            val = ti.cast(self.bathymetry_buff[i, j], ti.f32) / 255.0
-            tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
-
-    @ti.kernel
-    def copy_emissive_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.r8, lod=0)):
-        for i, j in ti.ndrange(EMISSIVE_TEX_RES[0], EMISSIVE_TEX_RES[1]):
-            val = ti.cast(self.emissive_buff[i, j], ti.f32) / 255.0
-            tex.store(ti.Vector([i, j]), ti.Vector([val, 0.0, 0.0, 0.0]))
-
-    @ti.kernel
-    def copy_stars_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.rgba8, lod=0)):
-        for i, j in ti.ndrange(STARS_TEX_RES[0], STARS_TEX_RES[1]):
-            val = ti.cast(self.stars_buff[i, j], ti.f32) / 255.0
-            tex.store(ti.Vector([i, j]), ti.Vector([val.x, val.y, val.z, 0.0]))
 
     @ti.kernel
     def copy_CIE_LUT_texture(self, tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.rgba16f, lod=0)):
@@ -294,14 +209,7 @@ class Renderer:
     
 
     @ti.kernel
-    def render(self, albedo_sampler: ti.types.texture(num_dimensions=2),
-                     height_sampler: ti.types.texture(num_dimensions=2),
-                     ocean_sampler: ti.types.texture(num_dimensions=2),
-                     clouds_sampler: ti.types.texture(num_dimensions=2),
-                     bathymetry_sampler: ti.types.texture(num_dimensions=2),
-                     emissive_sampler: ti.types.texture(num_dimensions=2),
-                     stars_sampler: ti.types.texture(num_dimensions=2),
-                     cie_lut_sampler: ti.types.texture(num_dimensions=2)):
+    def render(self, cie_lut_sampler: ti.types.texture(num_dimensions=2)):
 
         scene_params = SceneParameters()
         scene_params.land_height_scale = self.land_height_scale
@@ -328,13 +236,6 @@ class Renderer:
 
                 # Sample incoming radiance for path
                 sample = pt.path_tracer(path_params, scene_params, 
-                                        albedo_sampler, 
-                                        height_sampler, 
-                                        ocean_sampler, 
-                                        clouds_sampler, 
-                                        bathymetry_sampler,
-                                        emissive_sampler,
-                                        stars_sampler,
                                         self.srgb_to_spectrum_buff,
                                         self.O3_crossec_LUT_buff)
 
@@ -386,27 +287,13 @@ class Renderer:
         """Accumulate rendered image, using either path tracer or MLP inference"""
         if self.use_mlp and self.mlp_loaded:
             # Use MLP inference for rendering
-            self.render_with_mlp(self.albedo_tex, 
-                        self.topography_tex, 
-                        self.ocean_tex, 
-                        self.clouds_tex, 
-                        self.bathymetry_tex, 
-                        self.emissive_tex, 
-                        self.stars_tex,
-                        self.CIE_LUT_tex)
+            self.render_with_mlp(self.CIE_LUT_tex)
             
             # Call the MLP inference in Python scope
             self.mlp_inference_batch()
         else:
             # Use path tracing (original method)
-            self.render(self.albedo_tex, 
-                        self.topography_tex, 
-                        self.ocean_tex, 
-                        self.clouds_tex, 
-                        self.bathymetry_tex, 
-                        self.emissive_tex, 
-                        self.stars_tex,
-                        self.CIE_LUT_tex)
+            self.render(self.CIE_LUT_tex)
         
         self.current_spp += 1
 
@@ -434,13 +321,6 @@ class Renderer:
     @ti.kernel
     def batch_path_trace(self, 
                     uvwz: ti.types.vector(4, ti.f32),
-                    albedo_sampler: ti.types.texture(num_dimensions=2),
-                    height_sampler: ti.types.texture(num_dimensions=2),
-                    ocean_sampler: ti.types.texture(num_dimensions=2),
-                    clouds_sampler: ti.types.texture(num_dimensions=2),
-                    bathymetry_sampler: ti.types.texture(num_dimensions=2),
-                    emissive_sampler: ti.types.texture(num_dimensions=2),
-                    stars_sampler: ti.types.texture(num_dimensions=2),
                     cie_lut_sampler: ti.types.texture(num_dimensions=2)) -> ti.types.vector(3, ti.f32):
         
         scene_params = SceneParameters()
@@ -480,13 +360,6 @@ class Renderer:
             
             # Sample incoming radiance for path
             sample = pt.path_tracer(path_params, scene_params, 
-                                    albedo_sampler, 
-                                    height_sampler, 
-                                    ocean_sampler, 
-                                    clouds_sampler, 
-                                    bathymetry_sampler,
-                                    emissive_sampler,
-                                    stars_sampler,
                                     self.srgb_to_spectrum_buff,
                                     self.O3_crossec_LUT_buff)
             
@@ -549,14 +422,7 @@ class Renderer:
             self.mlp_loaded = False
 
     @ti.kernel
-    def render_with_mlp(self, albedo_sampler: ti.types.texture(num_dimensions=2),
-                     height_sampler: ti.types.texture(num_dimensions=2),
-                     ocean_sampler: ti.types.texture(num_dimensions=2),
-                     clouds_sampler: ti.types.texture(num_dimensions=2),
-                     bathymetry_sampler: ti.types.texture(num_dimensions=2),
-                     emissive_sampler: ti.types.texture(num_dimensions=2),
-                     stars_sampler: ti.types.texture(num_dimensions=2),
-                     cie_lut_sampler: ti.types.texture(num_dimensions=2)):
+    def render_with_mlp(self, cie_lut_sampler: ti.types.texture(num_dimensions=2)):
         """Render using MLP inference instead of path tracing"""
         
         scene_params = SceneParameters()
