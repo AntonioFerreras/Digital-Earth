@@ -85,7 +85,7 @@ def step_epoch(model, loader, optimizer, criterion, device, scheduler=None, trai
     total_samples = 0
     batch_count = 0
     
-    with torch.cuda.amp.autocast(enabled=not train):
+    with torch.amp.autocast(enabled=False, device_type='cuda', dtype=torch.bfloat16):
         for x, y in loader:
             x, y = x.to(device), y.to(device)
             if train:
