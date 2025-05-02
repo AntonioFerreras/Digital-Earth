@@ -55,20 +55,16 @@ SCATTERING_TEXTURE_NU_SIZE = 4096
 
 @ti.func
 def mu_s_mapping(x: float) -> float:
-    return (x - mu_s_min) / (1.0 - mu_s_min) # pow((x - mu_s_min) / (1.0 - mu_s_min), 0.65)
+    return pow((x - mu_s_min) / (1.0 - mu_s_min), 0.65)
 
 @ti.func
-def inverse_mu_s_mapping(y: float, tol: float = 1e-12) -> float:
-    return mu_s_min + (1.0 - mu_s_min) * y # pow(y, 1.0 / 0.65)
+def inverse_mu_s_mapping(y: float) -> float:
+    return mu_s_min + (1.0 - mu_s_min) * pow(y, 1.0 / 0.65)
 
 
 @ti.func
 def GetScatteringTextureUvwzFromRMuMuSNu(r, mu, mu_s, nu, ray_r_mu_intersects_ground):
-    H = sqrt(volume.atmos_upper_limit * volume.atmos_upper_limit -
-        volume.planet_r * volume.planet_r)
-    # Distance to the horizon.
-    rho = SafeSqrt(r * r - volume.planet_r * volume.planet_r)
-    u = rho / H
+    u = (r - volume.planet_r) / volume.atmos_height
     v = mu * 0.5 + 0.5
     z = mu_s_mapping(mu_s)
     w = nu * 0.5 + 0.5
@@ -177,11 +173,7 @@ def GetRMuMuSNuFromScatteringTextureUvwz(uvwz):
     # return r, mu, mu_s, nu, ray_r_mu_intersects_ground
 
     # Distance to top atmosphere boundary for a horizontal ray at ground level.
-    H = sqrt(volume.atmos_upper_limit * volume.atmos_upper_limit -
-        volume.planet_r * volume.planet_r)
-    # Distance to the horizon.
-    rho = H * uvwz.x
-    r = sqrt(rho * rho + volume.planet_r * volume.planet_r)
+    r = volume.planet_r + volume.atmos_height * uvwz.x
     mu = uvwz.y * 2.0 - 1.0
     mu_s = inverse_mu_s_mapping(uvwz.z)
     nu = uvwz.w * 2.0 - 1.0
