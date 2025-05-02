@@ -55,11 +55,11 @@ SCATTERING_TEXTURE_NU_SIZE = 4096
 
 @ti.func
 def mu_s_mapping(x: float) -> float:
-    return pow((x - mu_s_min) / (1.0 - mu_s_min), 0.65)
+    return (x - mu_s_min) / (1.0 - mu_s_min) # pow((x - mu_s_min) / (1.0 - mu_s_min), 0.65)
 
 @ti.func
 def inverse_mu_s_mapping(y: float, tol: float = 1e-12) -> float:
-    return mu_s_min + (1.0 - mu_s_min) * pow(y, 1.0 / 0.65)
+    return mu_s_min + (1.0 - mu_s_min) * y # pow(y, 1.0 / 0.65)
 
 
 @ti.func
