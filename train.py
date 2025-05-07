@@ -181,7 +181,7 @@ def main(cfg):
         current_lr = optimizer.param_groups[0]['lr']
         print(f"[Epoch {epoch:3d}/{cfg.epochs}] train={train_loss:.6f} | val={val_loss:.6f} | lr={current_lr:.8f}")
 
-        if val_loss < best_val:
+        if val_loss < best_val or True:
             best_val = val_loss
             if cfg.out:
                 torch.save(model.state_dict(), cfg.out)

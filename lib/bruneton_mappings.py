@@ -55,70 +55,76 @@ SCATTERING_TEXTURE_NU_SIZE = 4096
 
 @ti.func
 def mu_s_mapping(x: float) -> float:
-    return pow((x - mu_s_min) / (1.0 - mu_s_min), 0.65)
+    # Add safeguards but keep the power function
+    normalized = clamp((x - mu_s_min) / (1.0 - mu_s_min), 0.0, 1.0)
+    # Avoid exact zeros that might cause issues elsewhere
+    if normalized < 1e-6:
+        normalized = 1e-6
+    return pow(normalized, 0.85)
 
 @ti.func
 def inverse_mu_s_mapping(y: float) -> float:
-    return mu_s_min + (1.0 - mu_s_min) * pow(y, 1.0 / 0.65)
+    # Add similar safeguards for the inverse
+    y_safe = clamp(y, 1e-6, 1.0)
+    return mu_s_min + (1.0 - mu_s_min) * pow(y_safe, 1.0 / 0.85)
 
 
 @ti.func
 def GetScatteringTextureUvwzFromRMuMuSNu(r, mu, mu_s, nu, ray_r_mu_intersects_ground):
-    u = (r - volume.planet_r) / volume.atmos_height
-    v = mu * 0.5 + 0.5
-    z = mu_s_mapping(mu_s)
-    w = nu * 0.5 + 0.5
-    return vec4(u, v, z, w)
-    # # Assert statements
+    # u = (r - volume.planet_r) / volume.atmos_height
+    # v = mu * 0.5 + 0.5
+    # z = mu_s_mapping(mu_s)
+    # w = nu * 0.5 + 0.5
+    # return vec4(u, v, z, w)
 
-    # # Distance to top atmosphere boundary for a horizontal ray at ground level.
-    # H = sqrt(volume.atmos_upper_limit * volume.atmos_upper_limit -
-    #     volume.planet_r * volume.planet_r)
-    # # Distance to the horizon.
-    # rho = SafeSqrt(r * r - volume.planet_r * volume.planet_r)
-    # u_r = GetTextureCoordFromUnitRange(rho / H, SCATTERING_TEXTURE_R_SIZE)
+    # Distance to top atmosphere boundary for a horizontal ray at ground level.
+    H = sqrt(volume.atmos_upper_limit * volume.atmos_upper_limit -
+        volume.planet_r * volume.planet_r)
+    # Distance to the horizon.
+    rho = SafeSqrt(r * r - volume.planet_r * volume.planet_r)
+    u_r = GetTextureCoordFromUnitRange(rho / H, SCATTERING_TEXTURE_R_SIZE)
 
-    # # Discriminant of the quadratic equation for the intersections of the ray
-    # # (r,mu) with the ground (see RayIntersectsGround).
-    # r_mu = r * mu
-    # discriminant = r_mu * r_mu - r * r + volume.planet_r * volume.planet_r
-    # u_mu = 0.0
+    # Discriminant of the quadratic equation for the intersections of the ray
+    # (r,mu) with the ground (see RayIntersectsGround).
+    r_mu = r * mu
+    discriminant = r_mu * r_mu - r * r + volume.planet_r * volume.planet_r
+    u_mu = 0.0
     
-    # if ray_r_mu_intersects_ground:
-    #     # Distance to the ground for the ray (r,mu), and its minimum and maximum
-    #     # values over all mu - obtained for (r,-1) and (r,mu_horizon).
-    #     d = -r_mu - SafeSqrt(discriminant)
-    #     d_min = r - volume.planet_r
-    #     d_max = rho
-    #     u_mu = 0.5 - 0.5 * GetTextureCoordFromUnitRange(
-    #         0.0 if d_max == d_min else (d - d_min) / (d_max - d_min), 
-    #         SCATTERING_TEXTURE_MU_SIZE / 2)
-    # else:
-    #     # Distance to the top atmosphere boundary for the ray (r,mu), and its
-    #     # minimum and maximum values over all mu - obtained for (r,1) and
-    #     # (r,mu_horizon).
-    #     d = -r_mu + SafeSqrt(discriminant + H * H)
-    #     d_min = volume.atmos_upper_limit - r
-    #     d_max = rho + H
-    #     u_mu = 0.5 + 0.5 * GetTextureCoordFromUnitRange(
-    #         (d - d_min) / (d_max - d_min), SCATTERING_TEXTURE_MU_SIZE / 2)
+    if ray_r_mu_intersects_ground:
+        # Distance to the ground for the ray (r,mu), and its minimum and maximum
+        # values over all mu - obtained for (r,-1) and (r,mu_horizon).
+        d = -r_mu - SafeSqrt(discriminant)
+        d_min = r - volume.planet_r
+        d_max = rho
+        u_mu = 0.5 - 0.5 * GetTextureCoordFromUnitRange(
+            0.0 if d_max == d_min else (d - d_min) / (d_max - d_min), 
+            SCATTERING_TEXTURE_MU_SIZE / 2)
+    else:
+        # Distance to the top atmosphere boundary for the ray (r,mu), and its
+        # minimum and maximum values over all mu - obtained for (r,1) and
+        # (r,mu_horizon).
+        d = -r_mu + SafeSqrt(discriminant + H * H)
+        d_min = volume.atmos_upper_limit - r
+        d_max = rho + H
+        u_mu = 0.5 + 0.5 * GetTextureCoordFromUnitRange(
+            (d - d_min) / (d_max - d_min), SCATTERING_TEXTURE_MU_SIZE / 2)
 
-    # d = DistanceToTopAtmosphereBoundary(volume.planet_r, mu_s)
-    # d_min = volume.atmos_upper_limit - volume.planet_r
-    # d_max = H
-    # a = (d - d_min) / (d_max - d_min)
-    # D = DistanceToTopAtmosphereBoundary(volume.planet_r, mu_s_min)
-    # A = (D - d_min) / (d_max - d_min)
+    d = DistanceToTopAtmosphereBoundary(volume.planet_r, mu_s)
+    d_min = volume.atmos_upper_limit - volume.planet_r
+    d_max = H
+    a = (d - d_min) / (d_max - d_min)
+    D = DistanceToTopAtmosphereBoundary(volume.planet_r, mu_s_min)
+    A = (D - d_min) / (d_max - d_min)
     
-    # # An ad-hoc function equal to 0 for mu_s = mu_s_min (because then d = D and
-    # # thus a = A), equal to 1 for mu_s = 1 (because then d = d_min and thus
-    # # a = 0), and with a large slope around mu_s = 0, to get more texture 
-    # # samples near the horizon.
-    # u_mu_s = GetTextureCoordFromUnitRange(
-    #     max(1.0 - a / A, 0.0) / (1.0 + a), SCATTERING_TEXTURE_MU_S_SIZE)
+    # An ad-hoc function equal to 0 for mu_s = mu_s_min (because then d = D and
+    # thus a = A), equal to 1 for mu_s = 1 (because then d = d_min and thus
+    # a = 0), and with a large slope around mu_s = 0, to get more texture 
+    # samples near the horizon.
+    u_mu_s = GetTextureCoordFromUnitRange(
+        max(1.0 - a / A, 0.0) / (1.0 + a), SCATTERING_TEXTURE_MU_S_SIZE)
 
-    # u_nu = (nu + 1.0) / 2.0
-    # return vec4(u_nu, u_mu_s, u_mu, u_r)
+    u_nu = (nu + 1.0) / 2.0
+    return vec4(u_nu, u_mu_s, u_mu, u_r)
 
 
 
@@ -126,58 +132,58 @@ def GetScatteringTextureUvwzFromRMuMuSNu(r, mu, mu_s, nu, ray_r_mu_intersects_gr
 def GetRMuMuSNuFromScatteringTextureUvwz(uvwz):
 
     # Distance to top atmosphere boundary for a horizontal ray at ground level.
-    # H = sqrt(volume.atmos_upper_limit * volume.atmos_upper_limit -
-    #     volume.planet_r * volume.planet_r)
-    # # Distance to the horizon.
-    # rho = H * GetUnitRangeFromTextureCoord(uvwz.w, SCATTERING_TEXTURE_R_SIZE)
-    # r = sqrt(rho * rho + volume.planet_r * volume.planet_r)
+    H = sqrt(volume.atmos_upper_limit * volume.atmos_upper_limit -
+        volume.planet_r * volume.planet_r)
+    # Distance to the horizon.
+    rho = H * GetUnitRangeFromTextureCoord(uvwz.w, SCATTERING_TEXTURE_R_SIZE)
+    r = sqrt(rho * rho + volume.planet_r * volume.planet_r)
 
-    # ray_r_mu_intersects_ground = False
-    # mu = 0.0
-    # if uvwz.z < 0.5:
-    #     # Distance to the ground for the ray (r,mu), and its minimum and maximum
-    #     # values over all mu - obtained for (r,-1) and (r,mu_horizon) - from which
-    #     # we can recover mu:
-    #     d_min = r - volume.planet_r
-    #     d_max = rho
-    #     d = d_min + (d_max - d_min) * GetUnitRangeFromTextureCoord(
-    #         1.0 - 2.0 * uvwz.z, SCATTERING_TEXTURE_MU_SIZE / 2)
-    #     mu = -1.0 if d == 0.0 else ClampCosine(-(rho * rho + d * d) / (2.0 * r * d))
-    #     ray_r_mu_intersects_ground = True
-    # else:
-    #     # Distance to the top atmosphere boundary for the ray (r,mu), and its
-    #     # minimum and maximum values over all mu - obtained for (r,1) and
-    #     # (r,mu_horizon) - from which we can recover mu:
-    #     d_min = volume.atmos_upper_limit - r
-    #     d_max = rho + H
-    #     d = d_min + (d_max - d_min) * GetUnitRangeFromTextureCoord(
-    #         2.0 * uvwz.z - 1.0, SCATTERING_TEXTURE_MU_SIZE / 2)
-    #     mu = 1.0 if d == 0.0 else ClampCosine((H * H - rho * rho - d * d) / (2.0 * r * d))
-    #     ray_r_mu_intersects_ground = False
+    ray_r_mu_intersects_ground = False
+    mu = 0.0
+    if uvwz.z < 0.5:
+        # Distance to the ground for the ray (r,mu), and its minimum and maximum
+        # values over all mu - obtained for (r,-1) and (r,mu_horizon) - from which
+        # we can recover mu:
+        d_min = r - volume.planet_r
+        d_max = rho
+        d = d_min + (d_max - d_min) * GetUnitRangeFromTextureCoord(
+            1.0 - 2.0 * uvwz.z, SCATTERING_TEXTURE_MU_SIZE / 2)
+        mu = -1.0 if d == 0.0 else ClampCosine(-(rho * rho + d * d) / (2.0 * r * d))
+        ray_r_mu_intersects_ground = True
+    else:
+        # Distance to the top atmosphere boundary for the ray (r,mu), and its
+        # minimum and maximum values over all mu - obtained for (r,1) and
+        # (r,mu_horizon) - from which we can recover mu:
+        d_min = volume.atmos_upper_limit - r
+        d_max = rho + H
+        d = d_min + (d_max - d_min) * GetUnitRangeFromTextureCoord(
+            2.0 * uvwz.z - 1.0, SCATTERING_TEXTURE_MU_SIZE / 2)
+        mu = 1.0 if d == 0.0 else ClampCosine((H * H - rho * rho - d * d) / (2.0 * r * d))
+        ray_r_mu_intersects_ground = False
 
-    # x_mu_s = GetUnitRangeFromTextureCoord(uvwz.y, SCATTERING_TEXTURE_MU_S_SIZE)
-    # d_min = volume.atmos_upper_limit - volume.planet_r
-    # d_max = H
-    # D = DistanceToTopAtmosphereBoundary(volume.planet_r, mu_s_min)
-    # A = (D - d_min) / (d_max - d_min)
-    # a = (A - x_mu_s * A) / (1.0 + x_mu_s * A)
-    # d = d_min + min(a, A) * (d_max - d_min)
-    # mu_s = 1.0 if d == 0.0 else ClampCosine((H * H - d * d) / (2.0 * volume.planet_r * d))
+    x_mu_s = GetUnitRangeFromTextureCoord(uvwz.y, SCATTERING_TEXTURE_MU_S_SIZE)
+    d_min = volume.atmos_upper_limit - volume.planet_r
+    d_max = H
+    D = DistanceToTopAtmosphereBoundary(volume.planet_r, mu_s_min)
+    A = (D - d_min) / (d_max - d_min)
+    a = (A - x_mu_s * A) / (1.0 + x_mu_s * A)
+    d = d_min + min(a, A) * (d_max - d_min)
+    mu_s = 1.0 if d == 0.0 else ClampCosine((H * H - d * d) / (2.0 * volume.planet_r * d))
 
-    # nu = ClampCosine(uvwz.x * 2.0 - 1.0)
+    nu = ClampCosine(uvwz.x * 2.0 - 1.0)
 
-    # # Clamp nu to its valid range of values, given mu and mu_s.
-    # nu = clamp(nu, mu * mu_s - sqrt((1.0 - mu * mu) * (1.0 - mu_s * mu_s)),
-    #     mu * mu_s + sqrt((1.0 - mu * mu) * (1.0 - mu_s * mu_s)))
+    # Clamp nu to its valid range of values, given mu and mu_s.
+    nu = clamp(nu, mu * mu_s - sqrt((1.0 - mu * mu) * (1.0 - mu_s * mu_s)),
+        mu * mu_s + sqrt((1.0 - mu * mu) * (1.0 - mu_s * mu_s)))
 
-    # return r, mu, mu_s, nu, ray_r_mu_intersects_ground
+    return r, mu, mu_s, nu, ray_r_mu_intersects_ground
 
-    # Distance to top atmosphere boundary for a horizontal ray at ground level.
-    r = volume.planet_r + volume.atmos_height * uvwz.x
-    mu = uvwz.y * 2.0 - 1.0
-    mu_s = inverse_mu_s_mapping(uvwz.z)
-    nu = uvwz.w * 2.0 - 1.0
-    return r, mu, mu_s, nu, RayIntersectsGround(r, mu)
+    # # Distance to top atmosphere boundary for a horizontal ray at ground level.
+    # r = volume.planet_r + volume.atmos_height * uvwz.x
+    # mu = uvwz.y * 2.0 - 1.0
+    # mu_s = inverse_mu_s_mapping(uvwz.z)
+    # nu = uvwz.w * 2.0 - 1.0
+    # return r, mu, mu_s, nu, RayIntersectsGround(r, mu)
 
 # Ray Position/Direction to Bruneton Parameters Conversion Functions
 

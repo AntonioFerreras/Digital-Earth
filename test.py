@@ -1,136 +1,156 @@
-# import numpy as np
-
-# def SafeSqrt(x):
-#     return np.sqrt(np.maximum(x, 0.0))
-
-# def clamp(x, a, b):
-#     return np.minimum(np.maximum(x, a), b)
-
-# def test_reconstruction_with_rotation():
-#     EPSILON = 1e-5
-
-#     # Step 1: Random values in [0, 1]
-#     r = np.random.uniform(6371000.0, 6471000.0)
-#     mu = np.random.uniform(-1.0, 1.0)
-#     mu_s = np.random.uniform(-1.0, 1.0)
-#     nu = np.random.uniform(-1.0, 1.0)
-#     nu = clamp(nu, mu * mu_s - SafeSqrt((1.0 - mu * mu) * (1.0 - mu_s * mu_s)),
-#         mu * mu_s + SafeSqrt((1.0 - mu * mu) * (1.0 - mu_s * mu_s)))
-
-#     # Step 3: Construct initial vectors
-#     ray_pos = np.array([0.0, r, 0.0])
-
-#     sin_theta = SafeSqrt(1.0 - mu * mu)
-#     ray_dir = np.array([sin_theta, mu, 0.0])
-
-#     sin_theta_s = SafeSqrt(1.0 - mu_s * mu_s)
-#     sun_dir = np.array([sin_theta_s, mu_s, 0.0])
-
-#     # Step 4: Adjust ray_dir to match desired nu
-#     cos_phi = 0.0
-#     cos_phi = (nu - mu * mu_s) / (sin_theta * sin_theta_s)
-#     cos_phi = clamp(cos_phi, -1.0, 1.0)
-#     sin_phi = SafeSqrt(1.0 - cos_phi * cos_phi)
-
-#     ray_dir = np.array([
-#         ray_dir[0] * cos_phi,
-#         ray_dir[1],
-#         ray_dir[0] * sin_phi
-#     ])
-#     ray_dir /= np.linalg.norm(ray_dir)
-    
-#     sun_dir /= np.linalg.norm(sun_dir)
-
-#     # Step 5: Recompute quantities
-#     r_prime = np.linalg.norm(ray_pos)
-#     mu_prime = np.dot(ray_pos, ray_dir) / r_prime
-#     mu_s_prime = np.dot(ray_pos, sun_dir) / r_prime
-#     nu_prime = np.dot(ray_dir, sun_dir)
-
-#     print(f"Original r = {r}, Reconstructed r = {r_prime}")
-#     print(f"Original mu = {mu}, Reconstructed mu = {mu_prime}")
-#     print(f"Original mu_s = {mu_s}, Reconstructed mu_s = {mu_s_prime}")
-#     print(f"Original nu = {nu}, Reconstructed nu = {nu_prime}")
-
-#     assert abs(r - r_prime) < EPSILON
-#     assert abs(mu - mu_prime) < EPSILON
-#     assert abs(mu_s - mu_s_prime) < EPSILON
-#     assert abs(nu - nu_prime) < EPSILON
-
-# test_reconstruction_with_rotation()
-
 import numpy as np
+import matplotlib.pyplot as plt
 
-# ---------- forward map ------------------------------------------------------
-def biased_smooth_map(x: float) -> float:
-    """
-    Smooth, strictly-increasing mapping from [-0.2, 1.0] to [0, 1].
+# Constants from volume_rendering_models.py
+planet_r = 6371e3
+atmos_height = 110e3
+atmos_upper_limit = planet_r + atmos_height
 
-       [-0.2, 0.1]  → [0.0, 0.4]
-       (0.1,  1.0]  → (0.4, 1.0]
-    """
-    if not -0.2 <= x <= 1.0:
-        raise ValueError("x must be in [-0.2, 1.0]")
+# Constants from bruneton_mappings.py
+mu_s_min = -0.2
+SCATTERING_TEXTURE_R_SIZE = 4096
+SCATTERING_TEXTURE_MU_SIZE = 4096
+SCATTERING_TEXTURE_MU_S_SIZE = 4096
+SCATTERING_TEXTURE_NU_SIZE = 4096
 
-    t     = (x + 0.2) / 1.2           # affine → t∈[0,1]
-    split = 0.25                      # t for x = 0.1
+# Helper functions converted from Taichi to Python
+def clamp(x, min_val, max_val):
+    return max(min(x, max_val), min_val)
 
-    def S(s: float) -> float:         # cubic C¹ smooth-step
-        return (3*s - 2*s*s) * s      # = 3s² − 2s³
+def ClampCosine(mu):
+    return clamp(mu, -1.0, 1.0)
 
-    if t <= split:                    # first segment
-        s = t / split
-        return 0.4 * S(s)
-    else:                             # second segment
-        s = (t - split) / (1 - split)
-        return 0.4 + 0.6 * S(s)
+def ClampDistance(d):
+    return max(d, 0.0)
 
-# ---------- inverse map ------------------------------------------------------
-def inverse_biased_smooth_map(y: float, tol: float = 1e-12) -> float:
-    """
-    Inverse of biased_smooth_map on [0,1] → [-0.2, 1.0].
+def ClampRadius(r):
+    return clamp(r, planet_r, atmos_upper_limit)
 
-    Uses bisection (monotone cubic ⇒ one root in [0,1]).
-    """
-    if not 0.0 <= y <= 1.0:
-        raise ValueError("y must be in [0, 1]")
+def SafeSqrt(a):
+    return np.sqrt(max(a, 0.0))
 
-    split = 0.25
+def GetTextureCoordFromUnitRange(x, texture_size):
+    return 0.5 / float(texture_size) + x * (1.0 - 1.0 / float(texture_size))
 
-    def S(s: float) -> float:
-        return (3*s - 2*s*s) * s      # same cubic
+def GetUnitRangeFromTextureCoord(u, texture_size):
+    return (u - 0.5 / float(texture_size)) / (1.0 - 1.0 / float(texture_size))
 
-    # helper: invert S(s)=v by bisection on s∈[0,1]
-    def inv_S(v: float) -> float:
-        lo, hi = 0.0, 1.0
-        while hi - lo > tol:
-            mid = (lo + hi) / 2.0
-            (lo, hi) = (mid, hi) if S(mid) < v else (lo, mid)
-        return (lo + hi) / 2.0
+def DistanceToTopAtmosphereBoundary(r, mu):
+    discriminant = r * r * (mu * mu - 1.0) + atmos_upper_limit * atmos_upper_limit
+    return ClampDistance(-r * mu + SafeSqrt(discriminant))
 
-    if y <= 0.4:                      # came from first segment
-        v = y / 0.4
-        s = inv_S(v)
-        t = s * split
-    else:                             # came from second segment
-        v = (y - 0.4) / 0.6
-        s = inv_S(v)
-        t = split + s * (1 - split)
+def DistanceToBottomAtmosphereBoundary(r, mu):
+    discriminant = r * r * (mu * mu - 1.0) + planet_r * planet_r
+    return ClampDistance(-r * mu - SafeSqrt(discriminant))
 
-    return t * 1.2 - 0.2              # back to x
+def RayIntersectsGround(r, mu):
+    return mu < 0.0 and r * r * (mu * mu - 1.0) + planet_r * planet_r >= 0.0
 
-# ---------- round-trip tests -------------------------------------------------
-xs = np.linspace(-0.2, 1.0, 2001)
-ys = np.array([biased_smooth_map(float(x)) for x in xs])
+def mu_s_mapping(x):
+    # Add safeguards but keep the power function
+    normalized = clamp((x - mu_s_min) / (1.0 - mu_s_min), 0.0, 1.0)
+    # Avoid exact zeros that might cause issues elsewhere
+    if normalized < 1e-6:
+        normalized = 1e-6
+    return pow(normalized, 0.85)
 
-err_forward_then_inverse = np.max(
-    np.abs([inverse_biased_smooth_map(float(y)) for y in ys] - xs)
-)
+def inverse_mu_s_mapping(y):
+    # Add similar safeguards for the inverse
+    y_safe = clamp(y, 1e-6, 1.0)
+    return mu_s_min + (1.0 - mu_s_min) * pow(y_safe, 1.0 / 0.85)
 
-ys_grid = np.linspace(0.0, 1.0, 2001)
-err_inverse_then_forward = np.max(
-    np.abs([biased_smooth_map(inverse_biased_smooth_map(float(y))) for y in ys_grid] - ys_grid)
-)
+def GetScatteringTextureUvwzFromRMuMuSNu(r, mu, mu_s, nu, ray_r_mu_intersects_ground):
+    # Distance to top atmosphere boundary for a horizontal ray at ground level.
+    H = np.sqrt(atmos_upper_limit * atmos_upper_limit - planet_r * planet_r)
+    
+    # Distance to the horizon.
+    rho = SafeSqrt(r * r - planet_r * planet_r)
+    u_r = GetTextureCoordFromUnitRange(rho / H, SCATTERING_TEXTURE_R_SIZE)
 
-print(f"max |inv(f(x)) − x|  : {err_forward_then_inverse:.2e}")
-print(f"max |f(inv(y)) − y| : {err_inverse_then_forward:.2e}")
+    # Discriminant of the quadratic equation for the intersections of the ray
+    # (r,mu) with the ground (see RayIntersectsGround).
+    r_mu = r * mu
+    discriminant = r_mu * r_mu - r * r + planet_r * planet_r
+    u_mu = 0.0
+    
+    if ray_r_mu_intersects_ground:
+        # Distance to the ground for the ray (r,mu), and its minimum and maximum
+        # values over all mu - obtained for (r,-1) and (r,mu_horizon).
+        d = -r_mu - SafeSqrt(discriminant)
+        d_min = r - planet_r
+        d_max = rho
+        u_mu = 0.5 - 0.5 * GetTextureCoordFromUnitRange(
+            0.0 if d_max == d_min else (d - d_min) / (d_max - d_min), 
+            SCATTERING_TEXTURE_MU_SIZE / 2)
+    else:
+        # Distance to the top atmosphere boundary for the ray (r,mu), and its
+        # minimum and maximum values over all mu - obtained for (r,1) and
+        # (r,mu_horizon).
+        d = -r_mu + SafeSqrt(discriminant + H * H)
+        d_min = atmos_upper_limit - r
+        d_max = rho + H
+        u_mu = 0.5 + 0.5 * GetTextureCoordFromUnitRange(
+            (d - d_min) / (d_max - d_min), SCATTERING_TEXTURE_MU_SIZE / 2)
+
+    # This is the part that maps mu_s to texture coordinate uvwz.y
+    d = DistanceToTopAtmosphereBoundary(planet_r, mu_s)
+    d_min = atmos_upper_limit - planet_r
+    d_max = H
+    a = (d - d_min) / (d_max - d_min)
+    D = DistanceToTopAtmosphereBoundary(planet_r, mu_s_min)
+    A = (D - d_min) / (d_max - d_min)
+    
+    # An ad-hoc function equal to 0 for mu_s = mu_s_min (because then d = D and
+    # thus a = A), equal to 1 for mu_s = 1 (because then d = d_min and thus
+    # a = 0), and with a large slope around mu_s = 0, to get more texture 
+    # samples near the horizon.
+    u_mu_s = GetTextureCoordFromUnitRange(
+        max(1.0 - a / A, 0.0) / (1.0 + a), SCATTERING_TEXTURE_MU_S_SIZE)
+
+    u_nu = (nu + 1.0) / 2.0
+    
+    # Return a list instead of vec4 since we're not using Taichi
+    return [u_nu, u_mu_s, u_mu, u_r]
+
+# Test the function with various mu_s values
+def test_uvwz_y_for_mu_s():
+    # Fixed parameters for testing
+    r = planet_r + 1000.0  # 1km above ground
+    mu = 0.5               # Looking upward at an angle
+    nu = 0.0               # Perpendicular to sun
+    ray_intersects_ground = RayIntersectsGround(r, mu)
+    
+    # Test a range of mu_s values from mu_s_min to 1.0
+    mu_s_values = np.linspace(mu_s_min, 1.0, 100)
+    uvwz_y_values = []
+    
+    print(f"Testing mu_s mapping to uvwz.y (texture coordinate for sun zenith angle)")
+    print(f"{'mu_s':<10} | {'uvwz.y':<10}")
+    print("-" * 23)
+    
+    for mu_s in mu_s_values:
+        uvwz = GetScatteringTextureUvwzFromRMuMuSNu(r, mu, mu_s, nu, ray_intersects_ground)
+        uvwz_y = uvwz[1]  # The y component of uvwz
+        uvwz_y_values.append(uvwz_y)
+        
+        # Print values at regular intervals
+        if len(uvwz_y_values) % 10 == 1:
+            print(f"{mu_s:<10.4f} | {uvwz_y:<10.6f}")
+    
+    # Plot the results
+    plt.figure(figsize=(10, 6))
+    plt.plot(mu_s_values, uvwz_y_values)
+    plt.title('Mapping of mu_s to uvwz.y (Texture Coordinate)')
+    plt.xlabel('mu_s (cosine of sun zenith angle)')
+    plt.ylabel('uvwz.y (texture coordinate)')
+    plt.grid(True)
+    plt.axvline(x=0.0, color='r', linestyle='--', label='Horizon (mu_s = 0)')
+    plt.legend()
+    plt.savefig('mu_s_mapping.png')
+    print("\nGraph saved as 'mu_s_mapping.png'")
+    
+    return mu_s_values, uvwz_y_values
+
+# Run the test
+if __name__ == '__main__':
+    mu_s_values, uvwz_y_values = test_uvwz_y_for_mu_s()

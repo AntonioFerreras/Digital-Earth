@@ -3,7 +3,14 @@ import numpy as np
 import time
 import os
 import random  # Add this import for random number generation
+import argparse  # Add this import for command-line argument parsing
 from renderer import Renderer
+
+# Parse command-line arguments
+parser = argparse.ArgumentParser(description='Generate uvwz_rgb data samples.')
+parser.add_argument('--sample-sunset', action='store_true', default=False,
+                    help='Sample sunset scenarios (limits y values to 0.5)')
+args = parser.parse_args()
 
 # Initialize Taichi
 ti.init(arch=ti.vulkan)
@@ -44,11 +51,19 @@ samples_processed = 0
 
 print(f"Starting to generate {num_samples} samples...")
 
+# Use the command-line argument instead of hardcoded value
+sample_sunset = args.sample_sunset
+
+print(f"Sampling with {'sunset mode' if sample_sunset else 'full range'}")
+
 for i in range(num_samples):
     # Generate random uvwz in [0,1]
     uvwz = ti.Vector([np.random.random(), np.random.random(), 
                       np.random.random(), np.random.random()])
     
+    if sample_sunset:
+        uvwz.y *= 0.5;
+
     # Call batch path trace
     rgb = renderer.batch_path_trace(
         uvwz,
