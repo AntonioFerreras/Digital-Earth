@@ -36,30 +36,50 @@ from model import MLP
 ################################################################################
 
 class HDRTextDataset(Dataset):
-    """Lazy-loads every line from every *.txt* file in *root_dir* into memory."""
+    """Loads all data from *.txt* files in *root_dir* into memory at initialization time."""
 
     def __init__(self, root_dir: str, dtype: torch.dtype = torch.float32):
         self.root_dir = Path(root_dir)
         if not self.root_dir.is_dir():
             raise FileNotFoundError(f"{root_dir} is not a directory")
 
-        self.samples = []  # will hold [ [7 floats], ... ]
-        for path in self.root_dir.iterdir():
-            if path.is_file() and path.suffix in {"", ".txt"}:
-                with path.open("r") as f:
-                    for line_no, line in enumerate(f, 1):
-                        parts = line.strip().split()
-                        if len(parts) != 7:
-                            raise ValueError(
-                                f"{path} L{line_no}: expected 7 floats, got {len(parts)}"  # noqa: E501
-                            )
-                        self.samples.append([float(x) for x in parts])
-
-        if not self.samples:
-            raise RuntimeError("No samples found—check --data_dir path")
-
-        self.tensor = torch.tensor(self.samples, dtype=dtype)
-        del self.samples  # free list − everything lives in one contiguous tensor
+        # Get list of all data files
+        data_files = [path for path in self.root_dir.iterdir() 
+                    if path.is_file() and path.suffix in {"", ".txt"}]
+        
+        if not data_files:
+            raise RuntimeError(f"No data files found in {root_dir}")
+        
+        print(f"Found {len(data_files)} data files in {root_dir}")
+        
+        # Count total lines for progress bar
+        total_lines = 0
+        for file in tqdm(data_files, desc="Counting lines"):
+            with open(file, 'r') as f:
+                total_lines += sum(1 for _ in f)
+        
+        print(f"Loading {total_lines} samples into memory...")
+        
+        # Load all samples with progress bar
+        samples = []
+        processed_lines = 0
+        
+        for path in tqdm(data_files, desc="Reading files"):
+            with path.open("r") as f:
+                for line_no, line in enumerate(f, 1):
+                    parts = line.strip().split()
+                    if len(parts) != 7:
+                        raise ValueError(
+                            f"{path} L{line_no}: expected 7 floats, got {len(parts)}"
+                        )
+                    samples.append([float(x) for x in parts])
+                    
+                    processed_lines += 1
+                    if processed_lines % 100000 == 0:
+                        print(f"  Loaded {processed_lines}/{total_lines} samples ({processed_lines/total_lines*100:.1f}%)")
+        
+        print(f"Successfully loaded {len(samples)} samples into memory")
+        self.tensor = torch.tensor(samples, dtype=dtype)
 
     def __len__(self):
         return self.tensor.size(0)
@@ -68,7 +88,6 @@ class HDRTextDataset(Dataset):
         row = self.tensor[idx]
         x, y = row[:4], row[4:]
         return x, y
-
 
 
 ################################################################################
@@ -181,7 +200,7 @@ def main(cfg):
         current_lr = optimizer.param_groups[0]['lr']
         print(f"[Epoch {epoch:3d}/{cfg.epochs}] train={train_loss:.6f} | val={val_loss:.6f} | lr={current_lr:.8f}")
 
-        if val_loss < best_val or True:
+        if val_loss < best_val:
             best_val = val_loss
             if cfg.out:
                 torch.save(model.state_dict(), cfg.out)

@@ -78,7 +78,7 @@ for i in range(num_samples):
     rgb_np = np.maximum(rgb_np, 0.0)
     
     # Format the line: uvwz (space-separated) followed by rgb (space-separated)
-    line = f"{uvwz_np[0]:.8f} {uvwz_np[1]:.8f} {uvwz_np[2]:.8f} {uvwz_np[3]:.8f} {rgb_np[0]:.8f} {rgb_np[1]:.8f} {rgb_np[2]:.8f}"
+    line = f"{uvwz_np[0]:.15e} {uvwz_np[1]:.15e} {uvwz_np[2]:.15e} {uvwz_np[3]:.15e} {rgb_np[0]:.15e} {rgb_np[1]:.15e} {rgb_np[2]:.15e}"
     buffer.append(line)
     
     # Write to file when buffer is full
