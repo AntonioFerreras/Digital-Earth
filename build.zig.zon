@@ -1,0 +1,13 @@
+.{
+    .name = .digital_earth,
+    .version = "0.1.0",
+    .fingerprint = 0xad1f2360d095dd54,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .stb = .{
+            .url = "https://github.com/nothings/stb/archive/2c980bb59875b0d32144a71867fbdebb2f77cd20.tar.gz",
+            .hash = "N-V-__8AAPJDTgBMvhz_RoGlqYS1cMahRQ6Q5GVqYKny36gQ",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "shaders", "native" },
+}

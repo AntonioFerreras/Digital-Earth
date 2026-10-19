@@ -1,0 +1,14 @@
+.{
+    .camera = .{
+        .position = .{ -2934133.9643838936, 4676500.483115482, -4516871.822380028 },
+        .forward = .{ 0.42557700013620775, 0.21592682531544558, 0.8787831490557038 },
+        .up = .{ 0.0, 1.0, 0.0 },
+        .vertical_fov_degrees = 24.325881803269386,
+        .aspect_scale = 1.0,
+    },
+    .sun = .{ .angle_degrees = 355.1679992675781, .path_rotation_degrees = -38.65800094604492 },
+    .preset = .textured,
+    .exposure = 1.996999979019165,
+    .gamma = 1.0,
+    .camera_response = "Neutral",
+}

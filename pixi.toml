@@ -1,0 +1,49 @@
+[workspace]
+name = "digital-earth"
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-arm64", "win-64"]
+
+[dependencies]
+zig = "==0.17.0"
+cmake = ">=3.25"
+ninja = "*"
+cxx-compiler = "*"
+sdl3 = "==3.4.18"
+libvulkan-loader = ">=1.4.357"
+libvulkan-headers = ">=1.4.357"
+
+[target.linux-64.dependencies]
+xorg-libx11 = "*"
+vulkan-validation-layers = ">=1.4.357"
+vulkan-tools = ">=1.4.357"
+
+[target.linux-64.activation.env]
+VK_ADD_LAYER_PATH = "$CONDA_PREFIX/share/vulkan/explicit_layer.d"
+
+[tasks]
+build = "zig build"
+run = "zig build run --"
+test = "zig build test"
+shaders = "zig build shaders"
+fmt = "zig fmt build.zig src"
+
+[feature.py.dependencies]
+python = "3.12.*"
+numpy = "*"
+# python/study plots the encoding study's Pareto fronts.
+matplotlib = "*"
+
+[feature.py.pypi-dependencies]
+torch = "*"
+tqdm = "*"
+# python/goldens.py evaluates the original Taichi functions for the shader goldens.
+taichi = "==1.7.4"
+
+[feature.py.tasks]
+goldens = "python python/goldens.py"
+convert-training-data = { cmd = "python python/convert_text_data.py", description = "Convert text training data to .edgn files" }
+train = { cmd = "python python/train.py", description = "Train the MLP on .edgn or text training data" }
+export-weights = { cmd = "python python/export_weights.py", description = "Export a training checkpoint to the renderer's EMLP blob" }
+
+[environments]
+py = { features = ["py"], no-default-feature = true }

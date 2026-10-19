@@ -1,0 +1,10 @@
+/* Exactly the C ABI: earth_native.h (en_*) and the dcimgui API (unmangled Im*, cImGui*). */
+{
+  global:
+    en_*;
+    Im*;
+    cImGui*;
+    DearBindings_*;
+  local:
+    *;
+};
