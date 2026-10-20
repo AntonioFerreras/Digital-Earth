@@ -33,6 +33,8 @@ gamma: f64 = 1,
 camera_response: []const u8 = "Neutral",
 /// Off removes the cloud shell from presets that have one.
 clouds: bool = true,
+/// The surface from the cube-face tiles, when they are baked; off uses the Earth maps.
+tiles: bool = true,
 gui_visible: bool = true,
 
 const log = std.log.scoped(.config);

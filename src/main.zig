@@ -334,6 +334,8 @@ fn view(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
     // Without baked maps the viewer still runs the presets that need none.
     var cache_dir: ?Io.Dir = openCacheDir(io, data_root) catch null;
     defer if (cache_dir) |*dir| dir.close(io);
+    var tile_files = openTileFiles(io, data_root);
+    defer if (tile_files) |*files| files.close(io);
     const shader_paths: ShaderPaths = try .init(gpa, io);
     defer shader_paths.deinit(gpa);
     var earth_viewer: viewer.Viewer = try .init(gpa, io, .{
@@ -345,6 +347,7 @@ fn view(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
         .earth_map_cache = if (cache_dir) |dir| .{ .io = io, .dir = dir } else null,
         .network = modeInput(io, data_root, arguments.weights_path, assets.Network.default_path),
         .lut4d = modeInput(io, data_root, arguments.lut_path, assets.Lut4d.default_path),
+        .tile_files = if (tile_files) |*files| files else null,
     });
     defer earth_viewer.deinit();
     try earth_viewer.run();
@@ -364,6 +367,8 @@ fn renderImage(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
     const start = Io.Timestamp.now(io, .awake);
     const device = try initHeadlessDevice(gpa, io, arguments);
     defer device.deinit();
+    var tile_files = openTileFiles(io, data_root);
+    defer if (tile_files) |*files| files.close(io);
     var renderer = init: {
         var lut_dir = try data_root.openSubdir(io, .lut, .{});
         defer lut_dir.close(io);
@@ -384,6 +389,8 @@ fn renderImage(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
             .earth_map_cache = if (cache_dir) |dir| .{ .io = io, .dir = dir } else null,
             .network = modeInput(io, data_root, arguments.weights_path, assets.Network.default_path),
             .lut4d = modeInput(io, data_root, arguments.lut_path, assets.Lut4d.default_path),
+            .tile_files = if (tile_files) |*files| files else null,
+            .tiles = config.tiles,
         });
     };
     defer renderer.deinit();
@@ -528,6 +535,17 @@ fn openCacheDir(io: Io, data_root: assets.DataRoot) Io.Dir.OpenError!Io.Dir {
     return data_root.openSubdir(io, .cache, .{}) catch |err| {
         log.err("bake the Earth maps with `earth bake-textures`", .{});
         return err;
+    };
+}
+
+/// The cube-face tile files under `<data>/tiles`, or null when there are none; broken
+/// files are logged and left out.
+fn openTileFiles(io: Io, data_root: assets.DataRoot) ?render.TilePool.Files {
+    var dir = data_root.dir.openDir(io, assets.DataRoot.Subdir.tiles.path(), .{}) catch return null;
+    defer dir.close(io);
+    return render.TilePool.Files.open(io, dir) catch |err| {
+        log.err("tile files under {s}: {t}; rendering with the Earth maps", .{ assets.DataRoot.Subdir.tiles.path(), err });
+        return null;
     };
 }
 

@@ -16,6 +16,7 @@ import earth.brdf;
 import earth.map_bounds;
 import earth.maps;
 import earth.material;
+import earth.tiles;
 import shared.earth_bindings;
 import shared.uniforms;
 import spectral.planck;
@@ -132,8 +133,10 @@ public SurfaceSample sample_surface(float3 position, SceneUniforms scene)
     if ((scene.config.x & SCENE_EARTH_MAPS) != 0)
     {
         float2 uv = sphere_uv(up);
-        s.ocean = sample_tiled(earth_ocean_mask, earth_maps.ocean_mask, uv);
-        s.albedo_srgb = grade_albedo(sample_tiled(earth_albedo, earth_maps.albedo, uv).rgb, s.ocean);
+        bool tiles = (scene.config.x & SCENE_TILES) != 0;
+        s.ocean = tiles ? tile_water(up, TILE_LEVEL_FINEST) : sample_tiled(earth_ocean_mask, earth_maps.ocean_mask, uv);
+        float3 albedo = tiles ? tile_albedo(up, TILE_LEVEL_FINEST) : sample_tiled(earth_albedo, earth_maps.albedo, uv).rgb;
+        s.albedo_srgb = grade_albedo(albedo, s.ocean);
         s.bathymetry = sample_tiled(earth_bathymetry, earth_maps.bathymetry, uv);
         s.emissive = sample_tiled(earth_night_lights, earth_maps.night_lights, uv);
     }

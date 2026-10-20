@@ -107,6 +107,8 @@ pub fn draw(panel: Panel, gpa: std.mem.Allocator, config: *Config, networks: *Ne
 
     c.ImGui_SeparatorText("world");
     _ = c.ImGui_Checkbox("clouds", &config.clouds);
+    c.ImGui_SameLine();
+    _ = c.ImGui_Checkbox("tiles", &config.tiles);
     slider("sun angle", &config.sun.angle_degrees, ranges.sun_angle_degrees);
     slider("sun path rotation", &config.sun.path_rotation_degrees, ranges.sun_path_rotation_degrees);
 

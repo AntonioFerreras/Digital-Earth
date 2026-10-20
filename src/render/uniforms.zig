@@ -18,7 +18,9 @@ pub const SceneFlags = packed struct(u32) {
     earth_maps: bool = false,
     canonicalize: bool = false,
     single_scattering: bool = false,
-    _: u25 = 0,
+    /// Surface albedo and water from the cube-face tiles instead of the Earth maps.
+    tiles: bool = false,
+    _: u24 = 0,
 };
 
 pub const SceneUniforms = extern struct {

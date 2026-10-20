@@ -50,6 +50,15 @@ pub fn singleScattering(scene_uniforms: uniforms.SceneUniforms) uniforms.SceneUn
     return result;
 }
 
+/// `scene_uniforms` with the surface from the cube-face tiles.
+pub fn withTiles(scene_uniforms: uniforms.SceneUniforms) uniforms.SceneUniforms {
+    var flags: uniforms.SceneFlags = @bitCast(scene_uniforms.config[0]);
+    flags.tiles = true;
+    var result = scene_uniforms;
+    result.config[0] = @bitCast(flags);
+    return result;
+}
+
 /// `scene_uniforms` without the cloud shell.
 pub fn withoutClouds(scene_uniforms: uniforms.SceneUniforms) uniforms.SceneUniforms {
     var flags: uniforms.SceneFlags = @bitCast(scene_uniforms.config[0]);

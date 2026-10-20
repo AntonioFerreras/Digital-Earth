@@ -128,6 +128,25 @@ pub const Files = struct {
 
 pub const LoadError = Files.OpenError || TileSet.DecodeError || gpu.Error || error{ OutOfMemory, BaseTileMissing };
 
+/// One flat tile per face and layer at sea level, black and dry, for kernels that
+/// declare the tiles while no tile files are loaded.
+pub fn placeholder(gpa: std.mem.Allocator, device: gpu.Device) (gpu.Error || error{OutOfMemory})!TilePool {
+    var pool: TilePool = try .init(gpa, device, .initFill(0), TileResidency.face_count);
+    errdefer pool.deinit(gpa);
+    const scratch = try gpa.create(Scratch);
+    defer gpa.destroy(scratch);
+    @memset(&scratch.height.height, 0);
+    @memset(&scratch.height.water, 0);
+    @memset(&scratch.rgba, 0);
+    for (0..TileResidency.face_count) |face| {
+        const tile: TileResidency.Tile = .{ .face = @intCast(face), .key = .{ .level = 0, .x = 0, .y = 0 } };
+        try pool.insert(device, @intCast(face), tile, .{ .height = &scratch.height });
+        try pool.insert(device, @intCast(face), tile, .{ .surface = &scratch.rgba });
+    }
+    try pool.uploadIndirection(device);
+    return pool;
+}
+
 /// A pool with levels 0 to `base_last_level` of every face of `files` resident.
 pub fn load(gpa: std.mem.Allocator, device: gpu.Device, files: *const Files) LoadError!TilePool {
     var pool: TilePool = try .init(gpa, device, files.lastLevels(), slot_count_max);

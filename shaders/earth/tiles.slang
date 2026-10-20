@@ -20,6 +20,8 @@ public Texture2DArray<float4> earth_tile_surface;
 public SamplerState earth_tile_sampler;
 
 static const uint INDIRECTION_LEVEL_BITS = 4;
+// Asks for the finest level a layer has; lookups clamp it to the layer's last level.
+public static const uint TILE_LEVEL_FINEST = (1u << INDIRECTION_LEVEL_BITS) - 1;
 static const uint TILE_INTERVALS = 192;
 static const uint TILE_BORDER = 2;
 static const uint HEIGHT_SIDE = TILE_INTERVALS + 1 + 2 * TILE_BORDER;

@@ -30,6 +30,8 @@ public static const uint SCENE_CANONICALIZE = 1u << 5;
 // Light scatters once only (with `config.y` = 1): the ray marcher drops its
 // multiple-scattering table. For accuracy studies of the modes against each other.
 public static const uint SCENE_SINGLE_SCATTERING = 1u << 6;
+// With SCENE_EARTH_MAPS: albedo and water from the cube-face tiles (earth/tiles.slang).
+public static const uint SCENE_TILES = 1u << 7;
 
 public struct SceneUniforms {
     // x: SCENE_* flags, y: max bounces, z: first bounce with Russian roulette, w: unused.

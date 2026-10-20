@@ -34,10 +34,13 @@ const Fixture = struct {
             .network = null,
             .lut4d = null,
             .earth_maps = undefined,
+            .tiles = undefined,
         };
         errdefer shared.luts.deinit(testing.allocator);
         shared.earth_maps = try .placeholder(device);
         errdefer shared.earth_maps.deinit();
+        shared.tiles = try .placeholder(testing.allocator, device);
+        errdefer shared.tiles.deinit(testing.allocator);
         var mode: RayMarcher = try .init(testing.allocator, &shared);
         errdefer mode.deinit(testing.allocator);
 
@@ -52,6 +55,7 @@ const Fixture = struct {
 
     fn deinit(fixture: *Fixture) void {
         fixture.mode.deinit(testing.allocator);
+        fixture.shared.tiles.deinit(testing.allocator);
         fixture.shared.earth_maps.deinit();
         fixture.shared.luts.deinit(testing.allocator);
         fixture.device.deinit();

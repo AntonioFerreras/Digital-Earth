@@ -20,6 +20,8 @@ pub const Subdir = enum {
     screenshots,
     /// Shipped and user configs, loaded with `--config`.
     presets,
+    /// Cube-face tile files that python/tiles/bake.py writes.
+    tiles,
 
     pub fn path(subdir: Subdir) []const u8 {
         return switch (subdir) {
@@ -28,6 +30,7 @@ pub const Subdir = enum {
             .cache => "cache",
             .screenshots => "screenshots",
             .presets => "presets",
+            .tiles => "tiles",
         };
     }
 };

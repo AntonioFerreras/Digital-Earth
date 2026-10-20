@@ -18,12 +18,17 @@ shared_params: std.EnumArray(SharedParam, gpu.Kernel.Param),
 /// Null when the kernel does not import shared/earth_bindings.slang.
 earth_params: ?EarthParams,
 
-/// `earth_maps`, the map textures `earth_<role>`, and `earth_bounds`.
+/// `earth_maps`, the map textures `earth_<role>`, `earth_bounds`, and the tile globals
+/// of shaders/earth/tiles.slang.
 const EarthParams = struct {
     layouts: gpu.Kernel.Param,
     maps: std.EnumArray(EarthMaps.Role, gpu.Kernel.Param),
     bounds: gpu.Kernel.Param,
+    tiles: std.EnumArray(TileParam, gpu.Kernel.Param),
 };
+
+/// The globals of shaders/earth/tiles.slang, named `earth_<tag>`.
+const TileParam = enum { tiles, tile_indirection, tile_heights, tile_water, tile_surface, tile_sampler };
 
 /// The globals of shaders/shared/bindings.slang, named exactly as declared there.
 pub const SharedParam = enum {
@@ -44,7 +49,7 @@ pub const group_size = 8;
 
 /// Room left for a mode's own bindings after the shared and Earth-map ones.
 pub const mode_bindings_max = gpu.CommandList.bindings_max - std.enums.values(SharedParam).len -
-    2 - std.enums.values(EarthMaps.Role).len;
+    2 - std.enums.values(EarthMaps.Role).len - std.enums.values(TileParam).len;
 
 /// Compiles `entry` of `module`, which must import `shared.bindings`, specialized with
 /// `generic_args` as `gpu.Kernel.init` describes.
@@ -68,7 +73,12 @@ fn findEarthParams(kernel: gpu.Kernel) gpu.Kernel.LayoutError!?EarthParams {
     inline for (comptime std.enums.values(EarthMaps.Role)) |role| {
         maps.set(role, try kernel.param("earth_" ++ @tagName(role)));
     }
-    return .{ .layouts = layouts, .maps = maps, .bounds = try kernel.param("earth_bounds") };
+    try kernel.checkLayout(uniforms.TileUniforms, "earth_tiles");
+    var tiles: std.EnumArray(TileParam, gpu.Kernel.Param) = undefined;
+    inline for (comptime std.enums.values(TileParam)) |name| {
+        tiles.set(name, try kernel.param("earth_" ++ @tagName(name)));
+    }
+    return .{ .layouts = layouts, .maps = maps, .bounds = try kernel.param("earth_bounds"), .tiles = tiles };
 }
 
 pub fn deinit(mode_kernel: ModeKernel) void {
@@ -125,6 +135,18 @@ pub fn dispatchGroups(
             bindings.appendAssumeCapacity(.{ .param = earth_params.maps.get(role), .resource = .{ .texture = earth_maps.textures.get(role) } });
         }
         bindings.appendAssumeCapacity(.{ .param = earth_params.bounds, .resource = .{ .texture = earth_maps.bounds } });
+        const tiles = &shared.tiles;
+        inline for (comptime std.enums.values(TileParam)) |name| {
+            const resource: gpu.CommandList.Binding.Resource = switch (name) {
+                .tiles => .{ .data = std.mem.asBytes(&tiles.layout) },
+                .tile_indirection => .{ .buffer = tiles.indirection },
+                .tile_heights => .{ .texture = tiles.heights },
+                .tile_water => .{ .texture = tiles.water },
+                .tile_surface => .{ .texture = tiles.surface },
+                .tile_sampler => .{ .sampler = shared.luts.linear_clamp },
+            };
+            bindings.appendAssumeCapacity(.{ .param = earth_params.tiles.get(name), .resource = resource });
+        }
     }
     bindings.appendSliceAssumeCapacity(mode_bindings);
     try command_list.dispatch(mode_kernel.kernel, bindings.items, groups);

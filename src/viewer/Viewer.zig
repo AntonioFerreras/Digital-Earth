@@ -10,6 +10,7 @@ const DataRoot = @import("../assets/DataRoot.zig");
 const Image = @import("../assets/Image.zig");
 const Luts = @import("../assets/Luts.zig");
 const GpuEarthMaps = @import("../render/GpuEarthMaps.zig");
+const TilePool = @import("../render/TilePool.zig");
 const Renderer = @import("../render/Renderer.zig");
 const Post = @import("../render/Post.zig");
 const Window = @import("../platform/Window.zig");
@@ -51,6 +52,8 @@ pub const Options = struct {
     network: ?Renderer.InputFile,
     /// The bruneton mode's table; the path is copied.
     lut4d: ?Renderer.InputFile,
+    /// Must outlive the viewer.
+    tile_files: ?*const TilePool.Files,
 };
 
 pub const Error = Window.Error || gpu.Error || Luts.LoadError || Renderer.InitError ||
@@ -100,6 +103,8 @@ pub fn init(gpa: std.mem.Allocator, io: Io, options: Options) Error!Viewer {
         .mode = config.mode,
         .preset = config.preset,
         .clouds = config.clouds,
+        .tile_files = options.tile_files,
+        .tiles = config.tiles,
         .texture_quality = config.texture_quality,
         .earth_map_cache = options.earth_map_cache,
         .network = options.network,
@@ -211,6 +216,7 @@ fn applySelections(viewer: *Viewer) void {
         viewer.config.preset = viewer.renderer.preset;
     };
     viewer.renderer.setClouds(viewer.config.clouds);
+    viewer.renderer.setTiles(viewer.config.tiles);
     viewer.renderer.setTextureQuality(viewer.config.texture_quality) catch |err| {
         log.err("switching to Earth maps {t} failed: {t}", .{ viewer.config.texture_quality, err });
         viewer.config.texture_quality = viewer.renderer.texture_quality;

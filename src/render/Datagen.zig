@@ -18,6 +18,7 @@ const uniforms = @import("uniforms.zig");
 const scene = @import("scene.zig");
 const GpuLuts = @import("GpuLuts.zig");
 const GpuEarthMaps = @import("GpuEarthMaps.zig");
+const TilePool = @import("TilePool.zig");
 const ModeKernel = @import("ModeKernel.zig");
 const Renderer = @import("Renderer.zig");
 
@@ -92,6 +93,8 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, luts: *const Luts, optio
     errdefer gpu_luts.deinit(gpa);
     var earth_maps: GpuEarthMaps = try .placeholder(device);
     errdefer earth_maps.deinit();
+    var tiles: TilePool = try .placeholder(gpa, device);
+    errdefer tiles.deinit(gpa);
     const kernel: ModeKernel = try .init(device, "modes/datagen", "datagen_main", &.{});
     errdefer kernel.deinit();
     assert(std.mem.eql(u32, &kernel.kernel.thread_group_size, &.{ group_threads, 1, 1 }));
@@ -130,7 +133,7 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, luts: *const Luts, optio
     const datagen_param = try kernel.kernel.param("datagen");
     const points_param = try kernel.kernel.param("points");
     return .{
-        .shared = .{ .device = device, .luts = gpu_luts, .network = null, .lut4d = null, .earth_maps = earth_maps },
+        .shared = .{ .device = device, .luts = gpu_luts, .network = null, .lut4d = null, .earth_maps = earth_maps, .tiles = tiles },
         .kernel = kernel,
         .datagen_param = datagen_param,
         .points_param = points_param,
@@ -152,6 +155,7 @@ pub fn deinit(datagen: *Datagen, gpa: std.mem.Allocator) void {
     datagen.accum.deinit();
     datagen.points.deinit();
     datagen.kernel.deinit();
+    datagen.shared.tiles.deinit(gpa);
     datagen.shared.earth_maps.deinit();
     datagen.shared.luts.deinit(gpa);
     datagen.* = undefined;

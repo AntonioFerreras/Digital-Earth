@@ -69,6 +69,7 @@ const RayMarcher = @import("RayMarcher.zig");
 const NeuralMode = @import("NeuralMode.zig");
 const BrunetonMode = @import("BrunetonMode.zig");
 const GpuEarthMaps = @import("GpuEarthMaps.zig");
+const TilePool = @import("TilePool.zig");
 const GpuLuts = @import("GpuLuts.zig");
 const ModeKernel = @import("ModeKernel.zig");
 const Post = @import("Post.zig");
@@ -84,6 +85,9 @@ preset: scene.Preset,
 single_scattering: bool,
 /// Off renders `scene.withoutClouds` of the preset.
 clouds: bool,
+/// On renders `scene.withTiles` of the preset; only with `tiles_loaded`.
+tiles: bool,
+tiles_loaded: bool,
 /// The Earth map set asked for, uploaded to `shared.earth_maps` once the active mode
 /// samples the maps under the active preset.
 texture_quality: EarthMaps.Quality,
@@ -107,6 +111,8 @@ pub const Shared = struct {
     /// Placeholders (`quality == null`) until a mode samples the maps under a preset
     /// that needs them; an upload then stays bound across mode and preset changes.
     earth_maps: GpuEarthMaps,
+    /// The base levels of the tile files, or a placeholder without them.
+    tiles: TilePool,
 };
 
 /// What one `record` call renders.
@@ -190,10 +196,14 @@ pub const Options = struct {
     network: ?InputFile = null,
     /// For the `bruneton` mode, which fails to start without it; the path is copied.
     lut4d: ?InputFile = null,
+    /// With them, scenes with the Earth maps take their surface from the tiles while
+    /// `tiles` is on.
+    tile_files: ?*const TilePool.Files = null,
+    tiles: bool = true,
 };
 
-pub const InitError = GpuEarthMaps.LoadError || gpu.Kernel.LayoutError || NeuralMode.InitError ||
-    BrunetonMode.InitError || error{EarthMapsMissing};
+pub const InitError = GpuEarthMaps.LoadError || TilePool.LoadError || gpu.Kernel.LayoutError ||
+    NeuralMode.InitError || BrunetonMode.InitError || error{EarthMapsMissing};
 
 /// Compiles the display and mode kernels, uploads `luts`, which the caller may free
 /// afterwards, and uploads the Earth maps of `options.texture_quality` if the mode
@@ -206,9 +216,11 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, luts: *const Luts, optio
     errdefer freeInputFile(gpa, network);
     const lut4d = try copyInputFile(gpa, options.lut4d);
     errdefer freeInputFile(gpa, lut4d);
-    var shared: Shared = .{ .device = device, .luts = gpu_luts, .network = network, .lut4d = lut4d, .earth_maps = undefined };
+    var shared: Shared = .{ .device = device, .luts = gpu_luts, .network = network, .lut4d = lut4d, .earth_maps = undefined, .tiles = undefined };
     shared.earth_maps = try .placeholder(device);
     errdefer shared.earth_maps.deinit();
+    shared.tiles = if (options.tile_files) |files| try .load(gpa, device, files) else try .placeholder(gpa, device);
+    errdefer shared.tiles.deinit(gpa);
     const post: Post = try .init(device);
     errdefer post.deinit();
     var mode: Mode = try .init(options.mode, gpa, &shared, options.preset);
@@ -225,6 +237,8 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, luts: *const Luts, optio
         .preset = options.preset,
         .single_scattering = options.single_scattering,
         .clouds = options.clouds,
+        .tiles = options.tiles and options.tile_files != null,
+        .tiles_loaded = options.tile_files != null,
         .texture_quality = options.texture_quality,
         .earth_map_cache = options.earth_map_cache,
         .accum = accum,
@@ -240,6 +254,7 @@ pub fn deinit(renderer: *Renderer) void {
     renderer.accum.deinit();
     renderer.mode.deinit(renderer.gpa);
     renderer.post.deinit();
+    renderer.shared.tiles.deinit(renderer.gpa);
     renderer.shared.earth_maps.deinit();
     freeInputFile(renderer.gpa, renderer.shared.lut4d);
     freeInputFile(renderer.gpa, renderer.shared.network);
@@ -335,6 +350,15 @@ pub fn setPreset(renderer: *Renderer, preset: scene.Preset) (error{EarthMapsMiss
     renderer.restart();
 }
 
+/// Takes the surface from the tiles or from the Earth maps; without tile files the maps
+/// stay.
+pub fn setTiles(renderer: *Renderer, tiles: bool) void {
+    const effective = tiles and renderer.tiles_loaded;
+    if (renderer.tiles == effective) return;
+    renderer.tiles = effective;
+    renderer.restart();
+}
+
 /// Turns the cloud shell on or off; scenes without clouds are unaffected.
 pub fn setClouds(renderer: *Renderer, clouds: bool) void {
     if (renderer.clouds == clouds) return;
@@ -346,6 +370,7 @@ pub fn setClouds(renderer: *Renderer, clouds: bool) void {
 fn sceneUniforms(renderer: *const Renderer) uniforms.SceneUniforms {
     var result = renderer.preset.sceneUniforms();
     if (!renderer.clouds) result = scene.withoutClouds(result);
+    if (renderer.tiles) result = scene.withTiles(result);
     if (renderer.single_scattering) result = scene.singleScattering(result);
     return result;
 }
