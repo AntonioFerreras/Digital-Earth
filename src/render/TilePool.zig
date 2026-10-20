@@ -28,21 +28,23 @@ layout: uniforms.TileUniforms,
 /// Levels resident from load to exit.
 pub const base_last_level = 3;
 /// The array layer limit every Vulkan device supports.
-pub const slot_count = 2048;
+pub const slot_count_max = 2048;
 
-/// The tile pools for layers whose last levels are `last_levels`, all slots free.
-pub fn init(gpa: std.mem.Allocator, device: gpu.Device, last_levels: std.EnumArray(TileSet.Layer, u32)) (gpu.Error || error{OutOfMemory})!TilePool {
+/// The tile pools for layers whose last levels are `last_levels`, `slot_count` free slots
+/// each.
+pub fn init(gpa: std.mem.Allocator, device: gpu.Device, last_levels: std.EnumArray(TileSet.Layer, u32), slot_count: u32) (gpu.Error || error{OutOfMemory})!TilePool {
+    assert(slot_count <= slot_count_max);
     var residency: std.EnumArray(TileSet.Layer, TileResidency) = .initUndefined();
     residency.set(.height, try .init(gpa, last_levels.get(.height), slot_count));
     errdefer residency.getPtr(.height).deinit(gpa);
     residency.set(.surface, try .init(gpa, last_levels.get(.surface), slot_count));
     errdefer residency.getPtr(.surface).deinit(gpa);
 
-    const heights = try initArray(device, .r16_sint, TileSet.height_side, "tile heights");
+    const heights = try initArray(device, .r16_sint, TileSet.height_side, slot_count, "tile heights");
     errdefer heights.deinit();
-    const water = try initArray(device, .r8_unorm, TileSet.height_side, "tile water");
+    const water = try initArray(device, .r8_unorm, TileSet.height_side, slot_count, "tile water");
     errdefer water.deinit();
-    const surface = try initArray(device, .rgba8_unorm, TileSet.surface_side, "tile surface");
+    const surface = try initArray(device, .rgba8_unorm, TileSet.surface_side, slot_count, "tile surface");
     errdefer surface.deinit();
     const height_entries = residency.get(.height).indirection.len;
     const indirection: gpu.Buffer = try .init(device, .{
@@ -74,7 +76,7 @@ pub fn deinit(pool: *TilePool, gpa: std.mem.Allocator) void {
     pool.* = undefined;
 }
 
-fn initArray(device: gpu.Device, format: gpu.Texture.Format, side: u32, label: [*:0]const u8) gpu.Error!gpu.Texture {
+fn initArray(device: gpu.Device, format: gpu.Texture.Format, side: u32, slot_count: u32, label: [*:0]const u8) gpu.Error!gpu.Texture {
     return .init(device, .{
         .kind = .@"2d_array",
         .format = format,
@@ -85,6 +87,106 @@ fn initArray(device: gpu.Device, format: gpu.Texture.Format, side: u32, label: [
         .label = label,
     });
 }
+
+/// The tile files of both layers, one per face, as `python/tiles/bake.py` writes them
+/// under `<data>/tiles/`.
+pub const Files = struct {
+    sets: std.EnumArray(TileSet.Layer, [TileResidency.face_count]TileSet),
+
+    pub const OpenError = TileSet.OpenError || error{TileSetsDisagree};
+
+    pub fn open(io: Io, tiles_dir: Io.Dir) OpenError!Files {
+        var files: Files = .{ .sets = .initUndefined() };
+        var opened: usize = 0;
+        errdefer for (0..opened) |index| files.sets.values[index / TileResidency.face_count][index % TileResidency.face_count].close(io);
+        for (std.enums.values(TileSet.Layer)) |layer| {
+            for (files.sets.getPtr(layer), 0..) |*set, face| {
+                var path_buffer: [32]u8 = undefined;
+                const path = std.fmt.bufPrint(&path_buffer, "{t}/face{d}.tiles", .{ layer, face }) catch unreachable;
+                set.* = try .open(io, tiles_dir, path, layer);
+                opened += 1;
+                if (set.header.face != face or set.header.last_level != files.sets.get(layer)[0].header.last_level) {
+                    return error.TileSetsDisagree;
+                }
+            }
+        }
+        return files;
+    }
+
+    pub fn close(files: *Files, io: Io) void {
+        for (&files.sets.values) |*faces| for (faces) |*set| set.close(io);
+        files.* = undefined;
+    }
+
+    pub fn lastLevels(files: Files) std.EnumArray(TileSet.Layer, u32) {
+        return .init(.{
+            .height = files.sets.get(.height)[0].header.last_level,
+            .surface = files.sets.get(.surface)[0].header.last_level,
+        });
+    }
+};
+
+pub const LoadError = Files.OpenError || TileSet.DecodeError || gpu.Error || error{ OutOfMemory, BaseTileMissing };
+
+/// A pool with levels 0 to `base_last_level` of every face of `files` resident.
+pub fn load(gpa: std.mem.Allocator, device: gpu.Device, files: *const Files) LoadError!TilePool {
+    var pool: TilePool = try .init(gpa, device, files.lastLevels(), slot_count_max);
+    errdefer pool.deinit(gpa);
+    const scratch = try gpa.create(Scratch);
+    defer gpa.destroy(scratch);
+    var slot: u32 = 0;
+    for (std.enums.values(TileSet.Layer)) |layer| {
+        for (files.sets.get(layer), 0..) |set, face| {
+            for (0..@min(base_last_level, set.header.last_level) + 1) |level| {
+                const side = @as(u32, 1) << @intCast(level);
+                for (0..side * side) |morton| {
+                    const key = keyOf(@intCast(level), morton);
+                    const tile = set.entry(key) orelse return error.BaseTileMissing;
+                    try pool.insert(device, slot, .{ .face = @intCast(face), .key = key }, try scratch.decode(layer, set.payload(tile)));
+                    slot += 1;
+                }
+            }
+        }
+        slot = 0;
+    }
+    try pool.uploadIndirection(device);
+    return pool;
+}
+
+/// The key at Morton position `morton` of `level`.
+fn keyOf(level: u32, morton: usize) TileSet.Key {
+    var x: u32 = 0;
+    var y: u32 = 0;
+    for (0..level) |bit| {
+        x |= @intCast(((morton >> @intCast(2 * bit)) & 1) << @intCast(bit));
+        y |= @intCast(((morton >> @intCast(2 * bit + 1)) & 1) << @intCast(bit));
+    }
+    return .{ .level = level, .x = x, .y = y };
+}
+
+/// Decode buffers for one tile of either layer.
+pub const Scratch = struct {
+    planes: [3 * TileSet.height_side * TileSet.height_side]u8,
+    height: TileSet.HeightTile,
+    rgb: [TileSet.surface_side * TileSet.surface_side * 3]u8,
+    rgba: [TileSet.surface_side * TileSet.surface_side * 4]u8,
+
+    pub fn decode(scratch: *Scratch, layer: TileSet.Layer, payload: []const u8) TileSet.DecodeError!TileData {
+        switch (layer) {
+            .height => {
+                try TileSet.decodeHeight(payload, &scratch.planes, &scratch.height);
+                return .{ .height = &scratch.height };
+            },
+            .surface => {
+                try TileSet.decodeSurface(payload, &scratch.rgb);
+                for (0..scratch.rgb.len / 3) |at| {
+                    scratch.rgba[4 * at ..][0..4].* = .{ scratch.rgb[3 * at], scratch.rgb[3 * at + 1], scratch.rgb[3 * at + 2], 255 };
+                }
+                return .{ .surface = &scratch.rgba };
+            },
+        }
+    }
+};
 
 /// A decoded tile of either layer.
 pub const TileData = union(TileSet.Layer) {
@@ -123,4 +225,14 @@ pub fn uploadIndirection(pool: TilePool, device: gpu.Device) gpu.Error!void {
     const height = pool.residency.get(.height).indirection;
     try pool.indirection.upload(device, 0, std.mem.sliceAsBytes(height));
     try pool.indirection.upload(device, height.len * @sizeOf(u32), std.mem.sliceAsBytes(pool.residency.get(.surface).indirection));
+}
+
+test "Morton positions map back to the keys whose index they are" {
+    for (0..4) |level| {
+        const side = @as(usize, 1) << @intCast(level);
+        for (0..side * side) |morton| {
+            const key = keyOf(@intCast(level), morton);
+            try std.testing.expectEqual(TileSet.entryCount(@intCast(level)) + morton, key.index());
+        }
+    }
 }

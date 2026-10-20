@@ -29,7 +29,7 @@ fn surfaceTile(rgba: []u8, face: u8) void {
 test "lookups find the finest resident tile and sample it at the plan's positions" {
     const device = try createTestDevice();
     defer device.deinit();
-    var pool: TilePool = try .init(testing.allocator, device, .init(.{ .height = 1, .surface = 1 }));
+    var pool: TilePool = try .init(testing.allocator, device, .init(.{ .height = 1, .surface = 1 }), 8);
     defer pool.deinit(testing.allocator);
 
     const height = try testing.allocator.create(TileSet.HeightTile);
