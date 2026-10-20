@@ -39,6 +39,7 @@ pub const ranges = struct {
 pub const Actions = struct {
     restart: bool = false,
     save_config: bool = false,
+    load_config: bool = false,
     screenshot: bool = false,
     rescan_networks: bool = false,
 };
@@ -133,6 +134,8 @@ pub fn draw(panel: Panel, gpa: std.mem.Allocator, config: *Config, networks: *Ne
     actions.restart = c.ImGui_Button("reset accumulation");
     c.ImGui_SameLine();
     actions.save_config = c.ImGui_Button("save config");
+    c.ImGui_SameLine();
+    actions.load_config = c.ImGui_Button("load config");
     c.ImGui_SameLine();
     actions.screenshot = c.ImGui_Button("screenshot");
     c.ImGui_TextDisabled("G panel   I/O save/load config   P screenshot");

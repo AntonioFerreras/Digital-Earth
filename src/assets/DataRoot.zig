@@ -66,9 +66,13 @@ pub fn createSubdir(root: DataRoot, io: Io, subdir: Subdir) Io.Dir.CreateDirPath
 }
 
 /// Logs that `sub_path` under the root failed with `err`, naming the path as the user
-/// would type it.
+/// would type it; an absolute `sub_path` already is.
 pub fn logFailure(root: DataRoot, sub_path: []const u8, err: anyerror) void {
-    log.err("{s}{c}{s}: {t}", .{ root.path, std.fs.path.sep, sub_path, err });
+    if (std.fs.path.isAbsolute(sub_path)) {
+        log.err("{s}: {t}", .{ sub_path, err });
+    } else {
+        log.err("{s}{c}{s}: {t}", .{ root.path, std.fs.path.sep, sub_path, err });
+    }
 }
 
 const testing = std.testing;

@@ -58,6 +58,8 @@ const window_size_default = [2]u32{ 1920, 1080 };
 const vsync = false;
 /// Bounds the camera step after a stall (window drag, breakpoint).
 const frame_seconds_max = 0.1;
+/// Static because the dialog reads it until the user answers.
+const config_file_filters = [_]c.SDL_DialogFileFilter{.{ .name = "Digital Earth config", .pattern = "zon" }};
 
 pub fn init(gpa: std.mem.Allocator, io: Io, options: Options) Error!Viewer {
     // The device comes first so a machine without a usable GPU fails before a window opens.
@@ -170,7 +172,9 @@ pub fn run(viewer: *Viewer) Post.RecordError!void {
             .{};
         if (intent.save_config or actions.save_config) viewer.saveConfig();
         if (actions.rescan_networks) viewer.rescanNetworks();
-        if (intent.load_config) viewer.loadConfig();
+        if (actions.load_config) viewer.window.showOpenDialog(&config_file_filters);
+        if (intent.load_config) viewer.loadConfig(DataRoot.config_path);
+        if (input.opened_path) |path| viewer.loadConfig(path);
         viewer.applySelections();
         if (actions.restart) viewer.renderer.restart();
         try viewer.renderer.render(viewer.config.camera.view(viewer.config.sun), viewer.config.tone());
@@ -228,9 +232,10 @@ fn saveConfig(viewer: *Viewer) void {
     log.info("saved {s}", .{DataRoot.config_path});
 }
 
-fn loadConfig(viewer: *Viewer) void {
-    var config = Config.load(viewer.gpa, viewer.io, viewer.data_root.dir, DataRoot.config_path) catch |err| {
-        viewer.data_root.logFailure(DataRoot.config_path, err);
+/// `path` is absolute or relative to the data root.
+fn loadConfig(viewer: *Viewer, path: []const u8) void {
+    var config = Config.load(viewer.gpa, viewer.io, viewer.data_root.dir, path) catch |err| {
+        viewer.data_root.logFailure(path, err);
         return;
     };
     _ = viewer.renderer.shared.luts.cameraResponseIndex(config.camera_response) catch {
@@ -239,7 +244,7 @@ fn loadConfig(viewer: *Viewer) void {
     };
     viewer.config.deinit(viewer.gpa);
     viewer.config = config;
-    log.info("loaded {s}", .{DataRoot.config_path});
+    log.info("loaded {s}", .{path});
 }
 
 /// Writes the display image, as presented, to `screenshots/<UTC time>.png`. Reading it

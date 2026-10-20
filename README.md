@@ -130,9 +130,10 @@ A quick ray-marched preview:
 
 The panel selects the mode, scene preset, texture quality, and the `neural`
 mode's network (`rescan` relists `<data>/cache/neural/`), and sets the sun
-angle and path, field of view, and the [display](#display) settings. Changes
-that alter the image restart the accumulation. Display settings apply to the
-samples already accumulated.
+angle and path, field of view, and the [display](#display) settings. Its
+`load config` button picks any `.zon` config, such as a preset, in a file
+dialog. Changes that alter the image restart the accumulation. Display settings
+apply to the samples already accumulated.
 
 ## Display
 
