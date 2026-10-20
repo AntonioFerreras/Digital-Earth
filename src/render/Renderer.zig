@@ -70,6 +70,7 @@ const NeuralMode = @import("NeuralMode.zig");
 const BrunetonMode = @import("BrunetonMode.zig");
 const GpuEarthMaps = @import("GpuEarthMaps.zig");
 const TilePool = @import("TilePool.zig");
+const TileStreamer = @import("TileStreamer.zig");
 const GpuLuts = @import("GpuLuts.zig");
 const ModeKernel = @import("ModeKernel.zig");
 const Post = @import("Post.zig");
@@ -85,9 +86,12 @@ preset: scene.Preset,
 single_scattering: bool,
 /// Off renders `scene.withoutClouds` of the preset.
 clouds: bool,
-/// On renders `scene.withTiles` of the preset; only with `tiles_loaded`.
+/// On renders `scene.withTiles` of the preset; only with `tile_files`.
 tiles: bool,
-tiles_loaded: bool,
+/// Must outlive the renderer, which streams from them.
+tile_files: ?*const TilePool.Files,
+/// Null without tile files, or once streaming failed.
+tile_streamer: ?TileStreamer,
 /// The Earth map set asked for, uploaded to `shared.earth_maps` once the active mode
 /// samples the maps under the active preset.
 texture_quality: EarthMaps.Quality,
@@ -221,6 +225,8 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, luts: *const Luts, optio
     errdefer shared.earth_maps.deinit();
     shared.tiles = if (options.tile_files) |files| try .load(gpa, device, files) else try .placeholder(gpa, device);
     errdefer shared.tiles.deinit(gpa);
+    var tile_streamer: ?TileStreamer = if (options.tile_files != null) try .init(gpa, device, &shared.tiles) else null;
+    errdefer if (tile_streamer) |*streamer| streamer.deinit(gpa);
     const post: Post = try .init(device);
     errdefer post.deinit();
     var mode: Mode = try .init(options.mode, gpa, &shared, options.preset);
@@ -238,7 +244,8 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, luts: *const Luts, optio
         .single_scattering = options.single_scattering,
         .clouds = options.clouds,
         .tiles = options.tiles and options.tile_files != null,
-        .tiles_loaded = options.tile_files != null,
+        .tile_files = options.tile_files,
+        .tile_streamer = tile_streamer,
         .texture_quality = options.texture_quality,
         .earth_map_cache = options.earth_map_cache,
         .accum = accum,
@@ -254,6 +261,7 @@ pub fn deinit(renderer: *Renderer) void {
     renderer.accum.deinit();
     renderer.mode.deinit(renderer.gpa);
     renderer.post.deinit();
+    if (renderer.tile_streamer) |*streamer| streamer.deinit(renderer.gpa);
     renderer.shared.tiles.deinit(renderer.gpa);
     renderer.shared.earth_maps.deinit();
     freeInputFile(renderer.gpa, renderer.shared.lut4d);
@@ -277,6 +285,16 @@ pub fn render(renderer: *Renderer, view: View, tone: Post.Tone) Post.RecordError
     var frame_uniforms = renderer.frame_uniforms;
     view.writeUniforms(&frame_uniforms, renderer.size());
     if (!std.meta.eql(frame_uniforms, renderer.frame_uniforms)) frame_uniforms.frame[0] = 0;
+    if (renderer.tile_streamer) |*streamer| {
+        // Samples of coarser tiles would blur what the new ones resolve.
+        const changed = streamer.update(renderer.gpa, renderer.shared.device, &renderer.shared.tiles, renderer.tile_files.?) catch |err| failed: {
+            std.log.scoped(.render).err("tile streaming stopped: {t}", .{err});
+            streamer.deinit(renderer.gpa);
+            renderer.tile_streamer = null;
+            break :failed false;
+        };
+        if (changed and renderer.tiles) frame_uniforms.frame[0] = 0;
+    }
 
     const frame: Frame = .{
         .uniforms = frame_uniforms,
@@ -284,9 +302,12 @@ pub fn render(renderer: *Renderer, view: View, tone: Post.Tone) Post.RecordError
         .accum = renderer.accum,
     };
     const command_list: gpu.CommandList = try .begin(renderer.shared.device);
+    const streamer = if (renderer.tile_streamer) |*streamer| streamer else null;
     const recorded = switch (renderer.mode) {
         inline else => |*mode| record: {
+            if (streamer) |s| s.recordUploads(command_list, &renderer.shared.tiles) catch |err| break :record err;
             mode.record(command_list, &renderer.shared, &frame) catch |err| break :record err;
+            if (streamer) |s| s.recordFeedback(command_list, &renderer.shared.tiles) catch |err| break :record err;
             break :record renderer.post.record(
                 command_list,
                 &renderer.shared.luts,
@@ -297,7 +318,8 @@ pub fn render(renderer: *Renderer, view: View, tone: Post.Tone) Post.RecordError
             );
         },
     };
-    try command_list.submit(null);
+    try command_list.submit(if (streamer) |s| s.signal() else null);
+    if (streamer) |s| s.submitted();
     try recorded;
 
     frame_uniforms.frame[0] += 1;
@@ -353,7 +375,7 @@ pub fn setPreset(renderer: *Renderer, preset: scene.Preset) (error{EarthMapsMiss
 /// Takes the surface from the tiles or from the Earth maps; without tile files the maps
 /// stay.
 pub fn setTiles(renderer: *Renderer, tiles: bool) void {
-    const effective = tiles and renderer.tiles_loaded;
+    const effective = tiles and renderer.tile_files != null;
     if (renderer.tiles == effective) return;
     renderer.tiles = effective;
     renderer.restart();

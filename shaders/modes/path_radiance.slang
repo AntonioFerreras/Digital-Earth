@@ -24,6 +24,7 @@ import atmosphere.phase;
 import atmosphere.scattering_luts;
 import common.constants;
 import common.geometry;
+import common.ray_cone;
 import common.rng;
 import common.sampling;
 import earth.brdf;
@@ -404,8 +405,8 @@ public struct PathSample
 // Requires the globals of shared/bindings.slang (LUT buffers) and, when `scene`
 // sets SCENE_EARTH_MAPS, SCENE_TERRAIN, or SCENE_CLOUDS, those of
 // shared/earth_bindings.slang.
-public PathSample path_radiance(float3 pos, float3 dir, float3 sun, Spectrum wavelength, inout Rng rng,
-                                SceneUniforms scene)
+public PathSample path_radiance(float3 pos, float3 dir, float3 sun, Spectrum wavelength, RayCone cone,
+                                inout Rng rng, SceneUniforms scene)
 {
     float cos_sun_radius = cos(SUN_ANGULAR_RADIUS);
     Spectrum sun_irradiance;
@@ -445,12 +446,13 @@ public PathSample path_radiance(float3 pos, float3 dir, float3 sun, Spectrum wav
             float weight;
             dir = phase.sample(rng.next4().xyz, dir, weight);
             pos = scatter_pos;
+            cone.advance(interaction.t, VOLUME_SCATTER_SPREAD);
             throughput *= weight;
         }
         else if (t_surface > 0.0)
         {
             float3 surface_pos = pos + t_surface * dir;
-            SurfaceSample s = sample_surface(surface_pos, scene);
+            SurfaceSample s = sample_surface(surface_pos, cone.width_at(t_surface), scene);
             float3 lifted = offset_surface_point(surface_pos, scene);
             float3 view = -dir;
             bool sun_visible = surface_visible(lifted, light, scene);
@@ -471,6 +473,7 @@ public PathSample path_radiance(float3 pos, float3 dir, float3 sun, Spectrum wav
                 break;
             dir = bounce.dir;
             pos = lifted;
+            cone.advance(t_surface, SURFACE_BOUNCE_SPREAD);
         }
         else
         {

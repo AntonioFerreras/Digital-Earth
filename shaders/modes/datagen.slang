@@ -8,6 +8,7 @@
 // no atomics, and the output depends on the seed alone.
 
 import atmosphere.bruneton;
+import common.ray_cone;
 import common.rng;
 import modes.path_radiance;
 import shared.bindings;
@@ -47,7 +48,9 @@ void datagen_main(uint3 group: SV_GroupID, uint thread: SV_GroupIndex)
         // Keyed by (point, path, seed): independent of chunking and batching.
         Rng rng = Rng(uint2(datagen.batch.x + point, path), frame.frame.x);
         WavelengthBundle w = sample_wavelength_bundle(cie, rng.next4().x);
-        PathSample s = path_radiance(ray.pos, ray.dir, ray.sun, w.wavelength, rng, scene);
+        // The symmetric scene reads no textures, so the footprint does not matter.
+        RayCone cone = { 0.0, 0.0 };
+        PathSample s = path_radiance(ray.pos, ray.dir, ray.sun, w.wavelength, cone, rng, scene);
         // Escaping rays see the sun disk in the canonical frame, as the original's
         // batch_path_trace did; nothing else of the sky is lit in this scene.
         Spectrum sky = s.escaped ? sky_radiance(ray.dir, ray.sun, w.wavelength, scene) : Spectrum(0.0);

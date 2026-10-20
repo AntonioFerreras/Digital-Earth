@@ -65,6 +65,12 @@ public struct PixelSample
                          plane.y * half_height * frame.camera_up.xyz);
     }
 
+    // The angle one pixel spans at the image centre.
+    public float pixel_spread()
+    {
+        return 2.0 * frame.camera_forward.w / float(frame.frame.z);
+    }
+
     // Adds this frame's linear Rec.709 sample; frame 0 overwrites, so a reset needs no clear.
     public void accumulate(float3 rgb)
     {

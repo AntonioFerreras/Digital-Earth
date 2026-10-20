@@ -109,6 +109,35 @@ fn rewriteSubtree(residency: *TileResidency, tile: Tile, value: u32, owner_level
     }
 }
 
+/// The slot holding `tile`, or null when it is not resident itself.
+pub fn slotOf(residency: TileResidency, tile: Tile) ?u32 {
+    const entry = residency.indirection[residency.entryIndex(tile)];
+    if (entry == std.math.maxInt(u32) or entry & ((1 << level_bits) - 1) != tile.key.level) return null;
+    return entry >> level_bits;
+}
+
+/// The tile whose entry is at `index`.
+pub fn tileAt(residency: TileResidency, index: usize) Tile {
+    const per_face = residency.entriesPerFace();
+    const face: u32 = @intCast(index / per_face);
+    const entry = index % per_face;
+    var level: u32 = 0;
+    while (TileSet.entryCount(level + 1) <= entry) level += 1;
+    const morton = entry - TileSet.entryCount(level);
+    var x: u32 = 0;
+    var y: u32 = 0;
+    for (0..level) |bit| {
+        x |= @intCast(((morton >> @intCast(2 * bit)) & 1) << @intCast(bit));
+        y |= @intCast(((morton >> @intCast(2 * bit + 1)) & 1) << @intCast(bit));
+    }
+    return .{ .face = face, .key = .{ .level = level, .x = x, .y = y } };
+}
+
+/// Indirection entries a change at `level` rewrites at most: its subtree to the last level.
+pub fn subtreeEntries(residency: TileResidency, level: u32) usize {
+    return TileSet.entryCount(residency.last_level - level + 1);
+}
+
 pub fn parentOf(tile: Tile) Tile {
     assert(tile.key.level > 0);
     return .{ .face = tile.face, .key = .{ .level = tile.key.level - 1, .x = tile.key.x / 2, .y = tile.key.y / 2 } };
@@ -142,6 +171,13 @@ test "every entry points at its finest resident ancestor as tiles come and go" {
     try testing.expectEqual(encode(6, 1), residency.indirection[residency.entryIndex(leaf)]);
     residency.remove(6, {}, ignore);
     try testing.expectEqual(encode(2, 0), residency.indirection[residency.entryIndex(leaf)]);
+}
+
+test "tiles and their entry indices map both ways" {
+    var residency: TileResidency = try .init(testing.allocator, 3, 1);
+    defer residency.deinit(testing.allocator);
+    const tile: Tile = .{ .face = 4, .key = .{ .level = 3, .x = 6, .y = 1 } };
+    try testing.expectEqual(tile, residency.tileAt(residency.entryIndex(tile)));
 }
 
 test "a change reports one contiguous range per level" {

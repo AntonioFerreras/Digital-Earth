@@ -18,6 +18,7 @@ pub const Datagen = @import("render/Datagen.zig");
 pub const GpuEarthMaps = @import("render/GpuEarthMaps.zig");
 pub const TileResidency = @import("render/TileResidency.zig");
 pub const TilePool = @import("render/TilePool.zig");
+pub const TileStreamer = @import("render/TileStreamer.zig");
 pub const scene = @import("render/scene.zig");
 pub const uniforms = @import("render/uniforms.zig");
 

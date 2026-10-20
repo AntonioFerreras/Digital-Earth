@@ -125,7 +125,8 @@ public float3 offset_surface_point(float3 position, SceneUniforms scene)
     return position * (1.0 + 1e-4 * scene.surface.y / 12000.0);
 }
 
-public SurfaceSample sample_surface(float3 position, SceneUniforms scene)
+// The material at `position`, read at the detail of a footprint `width` metres across.
+public SurfaceSample sample_surface(float3 position, float width, SceneUniforms scene)
 {
     float3 up = normalize(position);
     SurfaceSample s;
@@ -134,8 +135,9 @@ public SurfaceSample sample_surface(float3 position, SceneUniforms scene)
     {
         float2 uv = sphere_uv(up);
         bool tiles = (scene.config.x & SCENE_TILES) != 0;
-        s.ocean = tiles ? tile_water(up, TILE_LEVEL_FINEST) : sample_tiled(earth_ocean_mask, earth_maps.ocean_mask, uv);
-        float3 albedo = tiles ? tile_albedo(up, TILE_LEVEL_FINEST) : sample_tiled(earth_albedo, earth_maps.albedo, uv).rgb;
+        uint level = tile_level(width);
+        s.ocean = tiles ? tile_water(up, level) : sample_tiled(earth_ocean_mask, earth_maps.ocean_mask, uv);
+        float3 albedo = tiles ? tile_albedo(up, level) : sample_tiled(earth_albedo, earth_maps.albedo, uv).rgb;
         s.albedo_srgb = grade_albedo(albedo, s.ocean);
         s.bathymetry = sample_tiled(earth_bathymetry, earth_maps.bathymetry, uv);
         s.emissive = sample_tiled(earth_night_lights, earth_maps.night_lights, uv);

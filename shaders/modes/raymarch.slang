@@ -9,6 +9,7 @@ import atmosphere.phase;
 import atmosphere.scattering_luts;
 import common.constants;
 import common.geometry;
+import common.ray_cone;
 import common.sampling;
 import earth.brdf;
 import earth.surface;
@@ -149,6 +150,7 @@ void raymarch_main(uint3 thread: SV_DispatchThreadID)
     Spectrum radiance = 0.0;
     Spectrum throughput = 1.0;
     bool multiple_scattering = (scene.config.x & SCENE_SINGLE_SCATTERING) == 0;
+    RayCone cone = { 0.0, s.pixel_spread() };
     for (uint bounce = 0; bounce < min(BOUNCE_COUNT_MAX, scene.config.y); bounce++)
     {
         float2 atmosphere = ray_sphere(origin, dir, ATMOSPHERE_RADIUS);
@@ -167,7 +169,7 @@ void raymarch_main(uint3 thread: SV_DispatchThreadID)
             break;
 
         float3 position = origin + t_surface * dir;
-        SurfaceSample surface = sample_surface(position, scene);
+        SurfaceSample surface = sample_surface(position, cone.width_at(t_surface), scene);
         float3 lifted = offset_surface_point(position, scene);
         bool sun_visible = surface_visible(lifted, sun, scene);
         ColumnDensity sun_column = ColumnDensity(column_density_lut, lifted, sun);
@@ -185,6 +187,7 @@ void raymarch_main(uint3 thread: SV_DispatchThreadID)
         if (!(bounce.pdf > 0.0))
             break;
         origin = lifted;
+        cone.advance(t_surface, SURFACE_BOUNCE_SPREAD);
         dir = bounce.dir;
     }
 

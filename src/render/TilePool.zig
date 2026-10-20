@@ -21,6 +21,9 @@ water: gpu.Texture,
 surface: gpu.Texture,
 /// Both layers' `TileResidency.indirection`, the height layer first.
 indirection: gpu.Buffer,
+/// One bit per indirection entry, set by lookups that wanted the tile
+/// (`TileStreamer` reads and clears it).
+requests: gpu.Buffer,
 residency: std.EnumArray(TileSet.Layer, TileResidency),
 /// The `earth_tiles` uniforms.
 layout: uniforms.TileUniforms,
@@ -54,11 +57,20 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, last_levels: std.EnumArr
         .memory = .device,
         .label = "tile indirection",
     }, null);
+    errdefer indirection.deinit();
+    const requests: gpu.Buffer = try .init(device, .{
+        .size = requestWords(height_entries + residency.get(.surface).indirection.len) * @sizeOf(u32),
+        .element_size = @sizeOf(u32),
+        .usage = .{ .unordered_access = true, .copy_source = true, .copy_destination = true },
+        .memory = .device,
+        .label = "tile requests",
+    }, null);
     return .{
         .heights = heights,
         .water = water,
         .surface = surface,
         .indirection = indirection,
+        .requests = requests,
         .residency = residency,
         .layout = .{
             .height = .{ last_levels.get(.height), 0, 0, 0 },
@@ -68,12 +80,17 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, last_levels: std.EnumArr
 }
 
 pub fn deinit(pool: *TilePool, gpa: std.mem.Allocator) void {
+    pool.requests.deinit();
     pool.indirection.deinit();
     pool.surface.deinit();
     pool.water.deinit();
     pool.heights.deinit();
     for (&pool.residency.values) |*residency| residency.deinit(gpa);
     pool.* = undefined;
+}
+
+pub fn requestWords(entry_count: usize) usize {
+    return std.math.divCeil(usize, entry_count, 32) catch unreachable;
 }
 
 fn initArray(device: gpu.Device, format: gpu.Texture.Format, side: u32, slot_count: u32, label: [*:0]const u8) gpu.Error!gpu.Texture {
@@ -156,10 +173,11 @@ pub fn load(gpa: std.mem.Allocator, device: gpu.Device, files: *const Files) Loa
     var slot: u32 = 0;
     for (std.enums.values(TileSet.Layer)) |layer| {
         for (files.sets.get(layer), 0..) |set, face| {
-            for (0..@min(base_last_level, set.header.last_level) + 1) |level| {
+            const resident_last: u32 = @min(base_last_level, set.header.last_level);
+            for (0..resident_last + 1) |level| {
                 const side = @as(u32, 1) << @intCast(level);
                 for (0..side * side) |morton| {
-                    const key = keyOf(@intCast(level), morton);
+                    const key = pool.residency.get(layer).tileAt(face * pool.residency.get(layer).entriesPerFace() + TileSet.entryCount(@intCast(level)) + morton).key;
                     const tile = set.entry(key) orelse return error.BaseTileMissing;
                     try pool.insert(device, slot, .{ .face = @intCast(face), .key = key }, try scratch.decode(layer, set.payload(tile)));
                     slot += 1;
@@ -170,17 +188,6 @@ pub fn load(gpa: std.mem.Allocator, device: gpu.Device, files: *const Files) Loa
     }
     try pool.uploadIndirection(device);
     return pool;
-}
-
-/// The key at Morton position `morton` of `level`.
-fn keyOf(level: u32, morton: usize) TileSet.Key {
-    var x: u32 = 0;
-    var y: u32 = 0;
-    for (0..level) |bit| {
-        x |= @intCast(((morton >> @intCast(2 * bit)) & 1) << @intCast(bit));
-        y |= @intCast(((morton >> @intCast(2 * bit + 1)) & 1) << @intCast(bit));
-    }
-    return .{ .level = level, .x = x, .y = y };
 }
 
 /// Decode buffers for one tile of either layer.
@@ -244,14 +251,4 @@ pub fn uploadIndirection(pool: TilePool, device: gpu.Device) gpu.Error!void {
     const height = pool.residency.get(.height).indirection;
     try pool.indirection.upload(device, 0, std.mem.sliceAsBytes(height));
     try pool.indirection.upload(device, height.len * @sizeOf(u32), std.mem.sliceAsBytes(pool.residency.get(.surface).indirection));
-}
-
-test "Morton positions map back to the keys whose index they are" {
-    for (0..4) |level| {
-        const side = @as(usize, 1) << @intCast(level);
-        for (0..side * side) |morton| {
-            const key = keyOf(@intCast(level), morton);
-            try std.testing.expectEqual(TileSet.entryCount(@intCast(level)) + morton, key.index());
-        }
-    }
 }

@@ -210,6 +210,7 @@ fn addStb(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
     const module = translate_stb.createModule();
     module.addIncludePath(stb.path(""));
     module.addIncludePath(b.path("src/assets"));
-    module.addCSourceFile(.{ .file = b.path("src/assets/stb_impl.c"), .flags = &.{"-std=c11"} });
+    // stb's encoders left-shift negative and overflowing ints by design.
+    module.addCSourceFile(.{ .file = b.path("src/assets/stb_impl.c"), .flags = &.{ "-std=c11", "-fno-sanitize=undefined" } });
     return module;
 }

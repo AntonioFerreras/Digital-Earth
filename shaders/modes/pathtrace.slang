@@ -2,6 +2,7 @@
 // modes/path_radiance.slang, carrying a wavelength bundle, for either scene preset.
 
 import atmosphere.bruneton;
+import common.ray_cone;
 import common.rng;
 import modes.path_radiance;
 import shared.bindings;
@@ -28,7 +29,8 @@ void pathtrace_main(uint3 thread: SV_DispatchThreadID)
         ScatteringParams p = scattering_params_from_uvwz(scattering_uvwz(scattering_params_from_ray(ray.pos, dir, sun)));
         ray = canonical_ray(p.r, p.mu, p.mu_s, p.nu);
     }
-    PathSample path = path_radiance(ray.pos, ray.dir, ray.sun, w.wavelength, s.rng, scene);
+    RayCone cone = { 0.0, s.pixel_spread() };
+    PathSample path = path_radiance(ray.pos, ray.dir, ray.sun, w.wavelength, cone, s.rng, scene);
     Spectrum radiance = path.radiance + (path.escaped ? sky_radiance(dir, sun, w.wavelength, scene) : Spectrum(0.0));
     s.accumulate(xyz_to_rec709(mul(w.xyz_weight, radiance)));
 }

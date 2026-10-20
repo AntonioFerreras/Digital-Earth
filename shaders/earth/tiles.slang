@@ -18,10 +18,22 @@ public Texture2DArray<float> earth_tile_water;
 // Encoded sRGB albedo, pixel-centred.
 public Texture2DArray<float4> earth_tile_surface;
 public SamplerState earth_tile_sampler;
+// One bit per indirection entry: a lookup that wanted a tile finer than the resident one
+// sets the wanted tile's bit, which the host reads back to stream it in.
+public RWStructuredBuffer<uint> earth_tile_requests;
 
 static const uint INDIRECTION_LEVEL_BITS = 4;
 // Asks for the finest level a layer has; lookups clamp it to the layer's last level.
 public static const uint TILE_LEVEL_FINEST = (1u << INDIRECTION_LEVEL_BITS) - 1;
+// The arc of a cube face's middle row, which its tiles split 2^level ways.
+static const float FACE_SPAN = 0.5 * PI * PLANET_RADIUS;
+
+// The level whose texels match a ray footprint `width` metres across.
+public uint tile_level(float width)
+{
+    float level = ceil(log2(FACE_SPAN / (float(TILE_INTERVALS) * max(width, 1.0))));
+    return uint(clamp(level, 0.0, float(TILE_LEVEL_FINEST)));
+}
 static const uint TILE_INTERVALS = 192;
 static const uint TILE_BORDER = 2;
 static const uint HEIGHT_SIDE = TILE_INTERVALS + 1 + 2 * TILE_BORDER;
@@ -79,10 +91,15 @@ public struct TileHit
         uint level_asked = min(level_wanted, layer.x);
         uint side = 1u << level_asked;
         uint2 tile = min(uint2(p.uv * float(side)), side - 1);
-        uint entry = earth_tile_indirection[layer.y + p.face * entry_count(layer.x + 1) +
-                                            entry_count(level_asked) + morton(tile)];
+        uint index = layer.y + p.face * entry_count(layer.x + 1) + entry_count(level_asked) + morton(tile);
+        uint entry = earth_tile_indirection[index];
         slot = entry >> INDIRECTION_LEVEL_BITS;
         level = entry & ((1u << INDIRECTION_LEVEL_BITS) - 1);
+        // Reading first spares the atomic when the bit is already set, as it is for all
+        // but the first of the many lookups that want one tile.
+        uint bit = 1u << (index & 31);
+        if (level < level_asked && (earth_tile_requests[index >> 5] & bit) == 0)
+            InterlockedOr(earth_tile_requests[index >> 5], bit);
         float resident_side = float(1u << level);
         local = p.uv * resident_side - float2(tile >> (level_asked - level));
     }

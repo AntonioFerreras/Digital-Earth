@@ -28,7 +28,7 @@ const EarthParams = struct {
 };
 
 /// The globals of shaders/earth/tiles.slang, named `earth_<tag>`.
-const TileParam = enum { tiles, tile_indirection, tile_heights, tile_water, tile_surface, tile_sampler };
+const TileParam = enum { tiles, tile_indirection, tile_heights, tile_water, tile_surface, tile_sampler, tile_requests };
 
 /// The globals of shaders/shared/bindings.slang, named exactly as declared there.
 pub const SharedParam = enum {
@@ -144,6 +144,7 @@ pub fn dispatchGroups(
                 .tile_water => .{ .texture = tiles.water },
                 .tile_surface => .{ .texture = tiles.surface },
                 .tile_sampler => .{ .sampler = shared.luts.linear_clamp },
+                .tile_requests => .{ .buffer = tiles.requests },
             };
             bindings.appendAssumeCapacity(.{ .param = earth_params.tiles.get(name), .resource = resource });
         }
