@@ -144,6 +144,8 @@ typedef enum en_format {
     EN_FORMAT_RGBA16_FLOAT = 3,
     EN_FORMAT_R32_FLOAT = 4,
     EN_FORMAT_RGBA32_FLOAT = 5,
+    /* Read with Load only: integer formats do not filter. */
+    EN_FORMAT_R16_SINT = 6,
 } en_format;
 
 enum {

@@ -50,6 +50,7 @@ rhi::Format format(en_format f) {
     case EN_FORMAT_RGBA16_FLOAT: return rhi::Format::RGBA16Float;
     case EN_FORMAT_R32_FLOAT: return rhi::Format::R32Float;
     case EN_FORMAT_RGBA32_FLOAT: return rhi::Format::RGBA32Float;
+    case EN_FORMAT_R16_SINT: return rhi::Format::R16Sint;
     }
     en::raise(EN_ERR_INVALID_ARGUMENT, "unknown en_format " + std::to_string(int(f)));
 }

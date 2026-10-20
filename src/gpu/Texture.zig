@@ -19,12 +19,13 @@ pub const Format = enum(c.en_format) {
     rgba16_float,
     r32_float,
     rgba32_float,
+    r16_sint,
 
     pub fn texelSize(format: Format) u32 {
         return switch (format) {
             .r8_unorm => 1,
             .rgba8_unorm, .r32_float => 4,
-            .r16_float => 2,
+            .r16_float, .r16_sint => 2,
             .rgba16_float => 8,
             .rgba32_float => 16,
         };
