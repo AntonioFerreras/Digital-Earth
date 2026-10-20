@@ -136,10 +136,12 @@ public SurfaceResponse surface_brdf(SurfaceSample s, float albedo, float3 v, flo
     return response;
 }
 
-// A cosine-weighted bounce direction from `s`. Ocean-lobe sampling
-// (`sample_earth_bounce`) is off while its fireflies are investigated.
+// A bounce direction from unit `v` off `s`, sampled in proportion to its
+// reflectance where the BRDF has a sharp lobe.
 public BounceSample sample_bounce(SurfaceSample s, float3 v, float3 u, SceneUniforms scene)
 {
+    if ((scene.config.x & SCENE_EARTH_MAPS) != 0)
+        return sample_earth_bounce(u, s.ocean, s.bathymetry, v, s.normal);
     BounceSample bounce;
     bounce.dir = sample_hemisphere_cosine(u.xy, s.normal);
     bounce.pdf = saturate(dot(s.normal, bounce.dir)) / PI;
