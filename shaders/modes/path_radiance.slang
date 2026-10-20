@@ -405,9 +405,10 @@ public struct PathSample
 // Requires the globals of shared/bindings.slang (LUT buffers) and, when `scene`
 // sets SCENE_EARTH_MAPS, SCENE_TERRAIN, or SCENE_CLOUDS, those of
 // shared/earth_bindings.slang.
-public PathSample path_radiance(float3 pos, float3 dir, float3 sun, Spectrum wavelength, RayCone cone,
+public PathSample path_radiance(float3 pos, float3 dir, float3 sun, Spectrum wavelength, RayCone camera_cone,
                                 inout Rng rng, SceneUniforms scene)
 {
+    RayCone cone = camera_cone;
     float cos_sun_radius = cos(SUN_ANGULAR_RADIUS);
     Spectrum sun_irradiance;
     [ForceUnroll]

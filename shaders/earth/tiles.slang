@@ -21,6 +21,9 @@ public SamplerState earth_tile_sampler;
 // One bit per indirection entry: a lookup that wanted a tile finer than the resident one
 // sets the wanted tile's bit, which the host reads back to stream it in.
 public RWStructuredBuffer<uint> earth_tile_requests;
+// Per height-layer indirection entry, the largest height in metres of the tile's samples,
+// or of its nearest ancestor present where the tile is absent.
+public StructuredBuffer<int> earth_tile_height_max;
 
 static const uint INDIRECTION_LEVEL_BITS = 4;
 // Asks for the finest level a layer has; lookups clamp it to the layer's last level.
@@ -39,6 +42,44 @@ static const uint TILE_BORDER = 2;
 static const uint HEIGHT_SIDE = TILE_INTERVALS + 1 + 2 * TILE_BORDER;
 static const uint SURFACE_SIDE = TILE_INTERVALS + 2 * TILE_BORDER;
 
+// A cube face's outward normal and the axes its (s, t) coordinates grow along.
+public struct FaceFrame
+{
+    public float3 normal;
+    public float3 s_axis;
+    public float3 t_axis;
+
+    public __init(uint face)
+    {
+        float sign = (face & 1) == 0 ? 1.0 : -1.0;
+        if (face < 2)
+        {
+            normal = float3(sign, 0.0, 0.0);
+            s_axis = float3(0.0, 0.0, -sign);
+            t_axis = float3(0.0, 1.0, 0.0);
+        }
+        else if (face < 4)
+        {
+            normal = float3(0.0, sign, 0.0);
+            s_axis = float3(1.0, 0.0, 0.0);
+            t_axis = float3(0.0, 0.0, -sign);
+        }
+        else
+        {
+            normal = float3(0.0, 0.0, sign);
+            s_axis = float3(sign, 0.0, 0.0);
+            t_axis = float3(0.0, 1.0, 0.0);
+        }
+    }
+
+    // The plane through the planet centre holding the directions at face coordinate
+    // `u` along `axis` (`s_axis` or `t_axis`): its points x satisfy dot(x, normal) = 0.
+    public float3 edge_plane(float3 axis, float u)
+    {
+        return axis - tan(0.5 * PI * (u - 0.5)) * normal;
+    }
+};
+
 // A point on a cube face: (u, v) in [0, 1] along the face's s and t axes.
 public struct FacePoint
 {
@@ -49,30 +90,14 @@ public struct FacePoint
     public __init(float3 n)
     {
         float3 m = abs(n);
-        float3 s_axis, t_axis;
-        float major;
         if (m.x >= m.y && m.x >= m.z)
-        {
             face = n.x > 0.0 ? 0 : 1;
-            s_axis = float3(0.0, 0.0, n.x > 0.0 ? -1.0 : 1.0);
-            t_axis = float3(0.0, 1.0, 0.0);
-            major = m.x;
-        }
         else if (m.y >= m.z)
-        {
             face = n.y > 0.0 ? 2 : 3;
-            s_axis = float3(1.0, 0.0, 0.0);
-            t_axis = float3(0.0, 0.0, n.y > 0.0 ? -1.0 : 1.0);
-            major = m.y;
-        }
         else
-        {
             face = n.z > 0.0 ? 4 : 5;
-            s_axis = float3(n.z > 0.0 ? 1.0 : -1.0, 0.0, 0.0);
-            t_axis = float3(0.0, 1.0, 0.0);
-            major = m.z;
-        }
-        float2 gnomonic = float2(dot(n, s_axis), dot(n, t_axis)) / major;
+        FaceFrame frame = FaceFrame(face);
+        float2 gnomonic = float2(dot(n, frame.s_axis), dot(n, frame.t_axis)) / dot(n, frame.normal);
         uv = 0.5 + (2.0 / PI) * float2(atan(gnomonic.x), atan(gnomonic.y));
     }
 };
@@ -84,6 +109,9 @@ public struct TileHit
     public uint slot;
     public uint level;
     public float2 local;
+    // The resident tile's position at its level, and its height-layer entry index.
+    public uint2 tile;
+    public uint index;
 
     // `layer` is the layer's TileUniforms field.
     public __init(uint4 layer, FacePoint p, uint level_wanted)
@@ -101,7 +129,9 @@ public struct TileHit
         if (level < level_asked && (earth_tile_requests[index >> 5] & bit) == 0)
             InterlockedOr(earth_tile_requests[index >> 5], bit);
         float resident_side = float(1u << level);
-        local = p.uv * resident_side - float2(tile >> (level_asked - level));
+        this.tile = tile >> (level_asked - level);
+        this.index = layer.y + p.face * entry_count(layer.x + 1) + entry_count(level) + morton(this.tile);
+        local = p.uv * resident_side - float2(this.tile);
     }
 
     // Continuous index into the bordered grid of a vertex-centred tile.
@@ -145,7 +175,12 @@ public float tile_water(float3 n, uint level_wanted)
 // Height in metres, bilinear in f32 between the four nearest samples.
 public float tile_height(float3 n, uint level_wanted)
 {
-    TileHit hit = TileHit(earth_tiles.height, FacePoint(n), level_wanted);
+    return tile_height_at(TileHit(earth_tiles.height, FacePoint(n), level_wanted));
+}
+
+// The height at `hit`, a lookup of the height layer.
+public float tile_height_at(TileHit hit)
+{
     float2 index = hit.vertex_index();
     int2 base = int2(floor(index));
     float2 f = index - float2(base);

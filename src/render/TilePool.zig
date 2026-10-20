@@ -21,6 +21,9 @@ water: gpu.Texture,
 surface: gpu.Texture,
 /// Both layers' `TileResidency.indirection`, the height layer first.
 indirection: gpu.Buffer,
+/// Per height-layer indirection entry, the largest height of the tile, or of its
+/// nearest present ancestor where it is absent; i32 metres. Static once loaded.
+height_max: gpu.Buffer,
 /// One bit per indirection entry, set by lookups that wanted the tile
 /// (`TileStreamer` reads and clears it).
 requests: gpu.Buffer,
@@ -58,6 +61,14 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, last_levels: std.EnumArr
         .label = "tile indirection",
     }, null);
     errdefer indirection.deinit();
+    const height_max: gpu.Buffer = try .init(device, .{
+        .size = height_entries * @sizeOf(i32),
+        .element_size = @sizeOf(i32),
+        .usage = .{ .shader_resource = true, .copy_destination = true },
+        .memory = .device,
+        .label = "tile height maxima",
+    }, null);
+    errdefer height_max.deinit();
     const requests: gpu.Buffer = try .init(device, .{
         .size = requestWords(height_entries + residency.get(.surface).indirection.len) * @sizeOf(u32),
         .element_size = @sizeOf(u32),
@@ -70,6 +81,7 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, last_levels: std.EnumArr
         .water = water,
         .surface = surface,
         .indirection = indirection,
+        .height_max = height_max,
         .requests = requests,
         .residency = residency,
         .layout = .{
@@ -81,6 +93,7 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, last_levels: std.EnumArr
 
 pub fn deinit(pool: *TilePool, gpa: std.mem.Allocator) void {
     pool.requests.deinit();
+    pool.height_max.deinit();
     pool.indirection.deinit();
     pool.surface.deinit();
     pool.water.deinit();
@@ -155,6 +168,8 @@ pub fn placeholder(gpa: std.mem.Allocator, device: gpu.Device) (gpu.Error || err
     @memset(&scratch.height.height, 0);
     @memset(&scratch.height.water, 0);
     @memset(&scratch.rgba, 0);
+    const zeros: [TileResidency.face_count]i32 = @splat(0);
+    try pool.height_max.upload(device, 0, std.mem.asBytes(&zeros));
     for (0..TileResidency.face_count) |face| {
         const tile: TileResidency.Tile = .{ .face = @intCast(face), .key = .{ .level = 0, .x = 0, .y = 0 } };
         try pool.insert(device, @intCast(face), tile, .{ .height = &scratch.height });
@@ -187,7 +202,27 @@ pub fn load(gpa: std.mem.Allocator, device: gpu.Device, files: *const Files) Loa
         slot = 0;
     }
     try pool.uploadIndirection(device);
+    try pool.uploadHeightMaxima(gpa, device, files);
     return pool;
+}
+
+/// Each height tile's maximum from its file entry; absent tiles take their parent's,
+/// which bounds the parent's surface that lookups there fall back to.
+fn uploadHeightMaxima(pool: *const TilePool, gpa: std.mem.Allocator, device: gpu.Device, files: *const Files) (gpu.Error || error{OutOfMemory})!void {
+    const residency = pool.residency.get(.height);
+    const maxima = try gpa.alloc(i32, residency.indirection.len);
+    defer gpa.free(maxima);
+    for (files.sets.get(.height), 0..) |set, face| {
+        const base = face * residency.entriesPerFace();
+        for (0..residency.entriesPerFace()) |entry_index| {
+            const tile = residency.tileAt(base + entry_index);
+            maxima[base + entry_index] = if (set.entry(tile.key)) |entry|
+                entry.height_max
+            else
+                maxima[residency.entryIndex(TileResidency.parentOf(tile))];
+        }
+    }
+    try pool.height_max.upload(device, 0, std.mem.sliceAsBytes(maxima));
 }
 
 /// Decode buffers for one tile of either layer.

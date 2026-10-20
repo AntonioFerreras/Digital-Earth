@@ -28,7 +28,7 @@ const EarthParams = struct {
 };
 
 /// The globals of shaders/earth/tiles.slang, named `earth_<tag>`.
-const TileParam = enum { tiles, tile_indirection, tile_heights, tile_water, tile_surface, tile_sampler, tile_requests };
+const TileParam = enum { tiles, tile_indirection, tile_heights, tile_water, tile_surface, tile_sampler, tile_requests, tile_height_max };
 
 /// The globals of shaders/shared/bindings.slang, named exactly as declared there.
 pub const SharedParam = enum {
@@ -47,9 +47,8 @@ pub const SharedParam = enum {
 /// MODE_GROUP_SIZE in shaders/shared/bindings.slang.
 pub const group_size = 8;
 
-/// Room left for a mode's own bindings after the shared and Earth-map ones.
-pub const mode_bindings_max = gpu.CommandList.bindings_max - std.enums.values(SharedParam).len -
-    2 - std.enums.values(EarthMaps.Role).len - std.enums.values(TileParam).len;
+/// Bindings of the Earth-map and tile globals, for kernels that declare them.
+const earth_binding_count = 2 + std.enums.values(EarthMaps.Role).len + std.enums.values(TileParam).len;
 
 /// Compiles `entry` of `module`, which must import `shared.bindings`, specialized with
 /// `generic_args` as `gpu.Kernel.init` describes.
@@ -110,7 +109,8 @@ pub fn dispatchGroups(
     mode_bindings: []const gpu.CommandList.Binding,
     groups: [3]u32,
 ) gpu.Error!void {
-    assert(mode_bindings.len <= mode_bindings_max);
+    const earth_count = if (mode_kernel.earth_params != null) earth_binding_count else 0;
+    assert(std.enums.values(SharedParam).len + earth_count + mode_bindings.len <= gpu.CommandList.bindings_max);
     var buffer: [gpu.CommandList.bindings_max]gpu.CommandList.Binding = undefined;
     var bindings: std.ArrayList(gpu.CommandList.Binding) = .initBuffer(&buffer);
     inline for (comptime std.enums.values(SharedParam)) |name| {
@@ -145,6 +145,7 @@ pub fn dispatchGroups(
                 .tile_surface => .{ .texture = tiles.surface },
                 .tile_sampler => .{ .sampler = shared.luts.linear_clamp },
                 .tile_requests => .{ .buffer = tiles.requests },
+                .tile_height_max => .{ .buffer = tiles.height_max },
             };
             bindings.appendAssumeCapacity(.{ .param = earth_params.tiles.get(name), .resource = resource });
         }
