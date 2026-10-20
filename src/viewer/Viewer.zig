@@ -32,6 +32,9 @@ networks: NetworkList,
 controls: Controls,
 /// Borrowed; outlives the viewer.
 data_root: DataRoot,
+/// Where the config dialog opens: the presets directory, absolute and with a trailing
+/// separator, which marks it a folder. The dialog may read it until the user answers.
+dialog_location: [Io.Dir.max_path_bytes + 1:0]u8,
 
 const log = std.log.scoped(.viewer);
 
@@ -124,6 +127,7 @@ pub fn init(gpa: std.mem.Allocator, io: Io, options: Options) Error!Viewer {
         .networks = networks,
         .controls = .{},
         .data_root = options.data_root,
+        .dialog_location = undefined,
     };
 }
 
@@ -172,7 +176,7 @@ pub fn run(viewer: *Viewer) Post.RecordError!void {
             .{};
         if (intent.save_config or actions.save_config) viewer.saveConfig();
         if (actions.rescan_networks) viewer.rescanNetworks();
-        if (actions.load_config) viewer.window.showOpenDialog(&config_file_filters);
+        if (actions.load_config) viewer.window.showOpenDialog(&config_file_filters, viewer.presetsLocation());
         if (intent.load_config) viewer.loadConfig(DataRoot.config_path);
         if (input.opened_path) |path| viewer.loadConfig(path);
         viewer.applySelections();
@@ -230,6 +234,19 @@ fn saveConfig(viewer: *Viewer) void {
         return;
     };
     log.info("saved {s}", .{DataRoot.config_path});
+}
+
+/// The presets directory in `dialog_location`, or null when it cannot be resolved.
+fn presetsLocation(viewer: *Viewer) ?[*:0]const u8 {
+    const subdir = DataRoot.Subdir.presets.path();
+    const buffer = &viewer.dialog_location;
+    const len = viewer.data_root.dir.realPathFile(viewer.io, subdir, buffer[0 .. buffer.len - 1]) catch |err| {
+        viewer.data_root.logFailure(subdir, err);
+        return null;
+    };
+    buffer[len] = std.fs.path.sep;
+    buffer[len + 1] = 0;
+    return buffer[0 .. len + 1 :0];
 }
 
 /// `path` is absolute or relative to the data root.

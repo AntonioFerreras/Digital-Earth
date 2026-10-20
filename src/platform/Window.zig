@@ -141,11 +141,12 @@ pub fn nativeHandle(window: Window) Error!c.en_window_handle {
     return handle;
 }
 
-/// Opens the native file-open dialog unless one is already open; `pump` reports the
-/// choice. `filters` must stay valid until then, so callers pass static data.
-pub fn showOpenDialog(window: Window, filters: []const c.SDL_DialogFileFilter) void {
+/// Opens the native file-open dialog at `location` (the system's choice when null)
+/// unless one is already open; `pump` reports the choice. `filters` and `location` must
+/// stay valid until then.
+pub fn showOpenDialog(window: Window, filters: []const c.SDL_DialogFileFilter, location: ?[*:0]const u8) void {
     if (!open_dialog.begin()) return;
-    c.SDL_ShowOpenFileDialog(DialogSlot.onChosen, &open_dialog, window.sdl_window, filters.ptr, @intCast(filters.len), null, false);
+    c.SDL_ShowOpenFileDialog(DialogSlot.onChosen, &open_dialog, window.sdl_window, filters.ptr, @intCast(filters.len), location, false);
 }
 
 /// Drains pending events, forwarding each to ImGui, and returns the input the
