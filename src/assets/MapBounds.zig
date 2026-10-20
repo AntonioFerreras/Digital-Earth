@@ -80,7 +80,7 @@ fn reduceBand(job: Job, own: []u8, j_first: usize, j_end: usize) void {
             // Texels first - 1 .. next + 1, wrapping across the seam.
             var bound = texels[if (first == 0) header.width - 1 else first - 1];
             for (texels[first..@min(next + 2, header.width)]) |texel| bound = @max(bound, texel);
-            for (texels[0 .. (next + 2) -| header.width]) |texel| bound = @max(bound, texel);
+            for (texels[0..(next + 2) -| header.width]) |texel| bound = @max(bound, texel);
             value.* = bound;
             first = next;
         }
