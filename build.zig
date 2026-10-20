@@ -34,6 +34,7 @@ pub fn build(b: *std.Build) void {
     });
     app.addImport("c", translate_c.createModule());
     app.addImport("stb", addStb(b, target));
+    app.addImport("zstd", addZstd(b, target));
     app.addLibraryPath(b.path(native_prefix ++ "/lib"));
     app.addLibraryPath(b.graph.cwdRelativePath(b.pathJoin(&.{ conda_prefix, "lib" })));
     app.linkSystemLibrary("earth_native", .{});
@@ -174,6 +175,30 @@ fn addNativeBuild(b: *std.Build, conda_prefix: []const u8, optimize: std.builtin
 /// stb_image and stb_image_write compiled from the pinned dependency. Always
 /// optimized: Debug C is UBSan-instrumented and unoptimized, too slow for
 /// decoding 21600-wide Earth maps.
+/// libzstd's decoder only: tiles are compressed offline by the Python bake. Zig's
+/// std.compress.zstd decodes height tiles some 20 times slower.
+fn addZstd(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
+    const zstd = b.dependency("zstd", .{});
+    const translate_zstd = b.addTranslateC(.{
+        .root_source_file = zstd.path("lib/zstd.h"),
+        .target = target,
+        .optimize = .fast,
+    });
+    const module = translate_zstd.createModule();
+    module.addCSourceFiles(.{
+        .root = zstd.path("lib"),
+        .files = &.{
+            "common/debug.c",                     "common/entropy_common.c", "common/error_private.c",
+            "common/fse_decompress.c",            "common/xxhash.c",         "common/zstd_common.c",
+            "decompress/huf_decompress.c",        "decompress/zstd_ddict.c", "decompress/zstd_decompress.c",
+            "decompress/zstd_decompress_block.c",
+        },
+        // The x86-64 assembly decoder would need its .S file.
+        .flags = &.{ "-std=c99", "-O3", "-DZSTD_DISABLE_ASM" },
+    });
+    return module;
+}
+
 fn addStb(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
     const stb = b.dependency("stb", .{});
     const translate_stb = b.addTranslateC(.{

@@ -12,6 +12,7 @@ pub const MapBounds = @import("assets/MapBounds.zig");
 pub const Network = @import("assets/Network.zig");
 pub const Lut4d = @import("assets/Lut4d.zig");
 pub const TilePlan = @import("assets/TilePlan.zig");
+pub const TileSet = @import("assets/TileSet.zig");
 pub const datagen_format = @import("assets/datagen_format.zig");
 
 test {

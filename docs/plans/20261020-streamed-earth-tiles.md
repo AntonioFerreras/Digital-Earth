@@ -64,11 +64,17 @@ little-endian:
 - Entry: u64 payload offset, u32 payload size (0 = tile absent), int16 min and
   int16 max height (height layer; 0 for surface). Identical payloads may share
   an offset.
-- Height payload: one zstd frame of three planes, row-major over the bordered
-  grid: the low bytes, then the high bytes, of zigzag(height - MED(left, up,
-  up-left)) with the predictor's missing neighbours taken as 0; then the water
-  plane raw (zstd handles it).
-- Surface payload: a baseline JPEG, quality 90, 4:4:4.
+- Entry index of (level, x, y): (4^level - 1) / 3 + morton(x, y), bit k of x at
+  bit 2k and bit k of y at bit 2k + 1.
+- Height payload: one zstd frame of three planes over the bordered grid, row 0
+  at the smallest v, columns along u: the low bytes, then the high bytes, of z;
+  then the water plane raw (zstd handles it). With a, b, c the left, upper (the
+  previous row), and upper-left heights, 0 where missing, the prediction is
+  min(a, b) when c >= max(a, b), max(a, b) when c <= min(a, b), else
+  a + b - c, in int32; d = height - prediction wrapped to int16, and
+  z = (d << 1) ^ (d >> 15) as uint16. Decoding wraps the same way.
+- Surface payload: a baseline JPEG, quality 90, 4:4:4, RGB, row 0 at the
+  smallest v.
 
 ## Packets
 
