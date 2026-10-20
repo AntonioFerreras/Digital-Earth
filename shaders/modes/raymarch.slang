@@ -150,13 +150,13 @@ void raymarch_main(uint3 thread: SV_DispatchThreadID)
     Spectrum radiance = 0.0;
     Spectrum throughput = 1.0;
     bool multiple_scattering = (scene.config.x & SCENE_SINGLE_SCATTERING) == 0;
-    RayCone cone = { 0.0, s.pixel_spread() };
+    RayCone cone = { 0.0, s.pixel_spread(), true };
     for (uint bounce = 0; bounce < min(BOUNCE_COUNT_MAX, scene.config.y); bounce++)
     {
         float2 atmosphere = ray_sphere(origin, dir, ATMOSPHERE_RADIUS);
         if (atmosphere.y < 0.0)
             break;
-        float t_surface = intersect_surface(origin, dir, scene);
+        float t_surface = intersect_surface(origin, dir, scene, cone);
         float t_end = t_surface == SURFACE_MISS ? atmosphere.y : t_surface;
 
         float4 u = s.rng.next4();
@@ -169,9 +169,11 @@ void raymarch_main(uint3 thread: SV_DispatchThreadID)
             break;
 
         float3 position = origin + t_surface * dir;
-        SurfaceSample surface = sample_surface(position, cone.width_at(t_surface), scene);
+        RayCone footprint = { cone.width_at(t_surface), cone.spread, cone.streams };
+        SurfaceSample surface = sample_surface(position, footprint, scene);
         float3 lifted = offset_surface_point(position, scene);
-        bool sun_visible = surface_visible(lifted, sun, scene);
+        RayCone sun_cone = { cone.width_at(t_surface), cone.spread, false };
+        bool sun_visible = surface_visible(lifted, sun, scene, sun_cone);
         ColumnDensity sun_column = ColumnDensity(column_density_lut, lifted, sun);
         BounceSample bounce = sample_bounce(surface, -dir, s.rng.next4().xyz, scene);
         for (int k = 0; k < BUNDLE_WAVELENGTH_COUNT; k++)

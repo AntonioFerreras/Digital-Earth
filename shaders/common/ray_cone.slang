@@ -15,6 +15,9 @@ public struct RayCone
     public float width;
     // Radians.
     public float spread;
+    // Whether lookups along the ray ask for the tiles it resolves. Only camera rays
+    // do: secondary rays reach far and wide, and read what the camera's tiles brought.
+    public bool streams;
 
     // The width `t` metres along the ray.
     public float width_at(float t)
@@ -28,5 +31,6 @@ public struct RayCone
     {
         width = width_at(t);
         spread += added_spread;
+        streams = false;
     }
 };

@@ -286,13 +286,13 @@ Interaction track_rmo(float3 pos, float3 dir, float2 segment, Media media, inout
 // beyond which no terrain lies; the terrain is searched only in front of it, and the
 // RMO tracking stops at whichever is nearer, so that `weights` observes only the
 // collisions on the path.
-Interaction sample_interaction(float3 pos, float3 dir, Media media, SceneUniforms scene, inout Rng rng,
-                               inout SpectralWeights weights, out float t_surface)
+Interaction sample_interaction(float3 pos, float3 dir, RayCone cone, Media media, SceneUniforms scene,
+                               inout Rng rng, inout SpectralWeights weights, out float t_surface)
 {
     Interaction cloud = { Event.None, 0.0, CLOUD };
     if (media.clouds)
         cloud = track_clouds(pos, dir, ray_sphere(pos, dir, PLANET_RADIUS).x, media, rng);
-    t_surface = intersect_surface(pos, dir, scene, cloud.event != Event.None ? cloud.t : FLOAT_MAX);
+    t_surface = intersect_surface(pos, dir, scene, cone, cloud.event != Event.None ? cloud.t : FLOAT_MAX);
     if (t_surface >= 0.0)
         cloud.event = Event.None;
     float2 segment = atmosphere_segment(pos, dir, t_surface);
@@ -428,7 +428,7 @@ public PathSample path_radiance(float3 pos, float3 dir, float3 sun, Spectrum wav
         if (bounce >= CLOUD_DEEP_BOUNCE)
             media.cloud_extinction = CLOUD_EXTINCTION_DEEP;
         float t_surface;
-        Interaction interaction = sample_interaction(pos, dir, media, scene, rng, weights, t_surface);
+        Interaction interaction = sample_interaction(pos, dir, cone, media, scene, rng, weights, t_surface);
         float3 light = sample_cone(rng.next4().xy, cos_sun_radius, sun);
 
         if (interaction.event == Event.Absorb)
@@ -453,10 +453,13 @@ public PathSample path_radiance(float3 pos, float3 dir, float3 sun, Spectrum wav
         else if (t_surface > 0.0)
         {
             float3 surface_pos = pos + t_surface * dir;
-            SurfaceSample s = sample_surface(surface_pos, cone.width_at(t_surface), scene);
+            RayCone footprint = { cone.width_at(t_surface), cone.spread, cone.streams };
+            SurfaceSample s = sample_surface(surface_pos, footprint, scene);
             float3 lifted = offset_surface_point(surface_pos, scene);
             float3 view = -dir;
-            bool sun_visible = surface_visible(lifted, light, scene);
+            // The sun ray starts as wide as the surface it leaves.
+            RayCone sun_cone = { cone.width_at(t_surface), cone.spread, false };
+            bool sun_visible = surface_visible(lifted, light, scene, sun_cone);
             Spectrum sun_transmittance = sun_visible ? transmittance(lifted, light, media, rng) : Spectrum(0.0);
             BounceSample bounce = sample_bounce(s, view, rng.next4().xyz, scene);
             [ForceUnroll]

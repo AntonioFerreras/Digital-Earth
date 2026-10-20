@@ -13,7 +13,7 @@ void test_tile_lookups(uint3 id: SV_DispatchThreadID)
     float3 n = normalize(input.xyz);
     uint level = uint(input.w);
     FacePoint p = FacePoint(n);
-    c.store(0, float2(tile_height(n, level), tile_water(n, level)));
-    c.store(2, tile_albedo(n, level));
+    c.store(0, float2(tile_height(n, level, true), tile_water(n, level, true)));
+    c.store(2, tile_albedo(n, level, true));
     c.store(5, float3(float(p.face), p.uv));
 }

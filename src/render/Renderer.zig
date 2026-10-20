@@ -407,6 +407,12 @@ pub fn setTextureQuality(renderer: *Renderer, quality: EarthMaps.Quality) GpuEar
     renderer.texture_quality = quality;
 }
 
+/// Whether the tiles the view wants have arrived, or there is nothing to stream.
+pub fn tilesSettled(renderer: *const Renderer) bool {
+    const streamer = renderer.tile_streamer orelse return true;
+    return !renderer.tiles or streamer.settled();
+}
+
 /// Starts accumulating afresh with the next `render`.
 pub fn restart(renderer: *Renderer) void {
     renderer.frame_uniforms.frame[0] = 0;

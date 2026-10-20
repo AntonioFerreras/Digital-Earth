@@ -49,7 +49,7 @@ void datagen_main(uint3 group: SV_GroupID, uint thread: SV_GroupIndex)
         Rng rng = Rng(uint2(datagen.batch.x + point, path), frame.frame.x);
         WavelengthBundle w = sample_wavelength_bundle(cie, rng.next4().x);
         // The symmetric scene reads no textures, so the footprint does not matter.
-        RayCone cone = { 0.0, 0.0 };
+        RayCone cone = { 0.0, 0.0, false };
         PathSample s = path_radiance(ray.pos, ray.dir, ray.sun, w.wavelength, cone, rng, scene);
         // Escaping rays see the sun disk in the canonical frame, as the original's
         // batch_path_trace did; nothing else of the sky is lit in this scene.

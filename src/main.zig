@@ -113,6 +113,9 @@ const DatagenArguments = struct {
 
 const DatagenSampling = enum { uniform, grid };
 
+/// Bounds the streaming before an offline render when tiles keep arriving.
+const tile_warmup_frames_max = 512;
+
 /// Generous bound on an offline render; keeps a typo from queueing hours of GPU work.
 const render_sample_count_max = 1 << 16;
 const render_size_max = 16384;
@@ -395,8 +398,20 @@ fn renderImage(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
     };
     defer renderer.deinit();
 
-    const render_start = Io.Timestamp.now(io, .awake);
     const frame_view = config.camera.view(config.sun);
+    // Stream in the tiles the view wants, then accumulate every sample on them.
+    var warmup_frames: u32 = 0;
+    while (!renderer.tilesSettled() and warmup_frames < tile_warmup_frames_max) : (warmup_frames += 1) {
+        try renderer.render(frame_view, config.tone());
+        // Requests come back only once their frame is done; ahead of it they would not.
+        try device.waitIdle();
+    }
+    if (warmup_frames > 0) {
+        try device.waitIdle();
+        renderer.restart();
+        log.info("tiles streamed in {d} frames", .{warmup_frames});
+    }
+    const render_start = Io.Timestamp.now(io, .awake);
     for (0..options.sample_count) |_| try renderer.render(frame_view, config.tone());
     try device.waitIdle();
     const render_end = Io.Timestamp.now(io, .awake);

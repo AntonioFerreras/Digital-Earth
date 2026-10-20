@@ -34,6 +34,8 @@ staged_bytes: u64,
 scratch: *TilePool.Scratch,
 /// Tiles wanted this frame, by layer and entry index, to load next.
 wanted: std.AutoArrayHashMapUnmanaged(Wanted, void),
+/// Request readbacks in a row that loaded nothing.
+quiet_readbacks: u32,
 
 /// Frames in flight before a ring position is reused.
 const ring_size = 3;
@@ -136,6 +138,7 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, pool: *const TilePool) (
         .staged_bytes = 0,
         .scratch = scratch,
         .wanted = .empty,
+        .quiet_readbacks = 0,
     };
 }
 
@@ -167,8 +170,12 @@ pub fn update(streamer: *TileStreamer, gpa: std.mem.Allocator, device: gpu.Devic
     // The ring position's last frame must be done before its buffers are reused.
     const reached = try streamer.fence.value();
     if (streamer.ring_frames[position] > reached) return false;
-    if (streamer.ring_frames[position] != 0) try streamer.readRequests(gpa, device, pool, position);
-    if (streamer.wanted.count() == 0) return false;
+    if (streamer.ring_frames[position] == 0) return false;
+    try streamer.readRequests(gpa, device, pool, position);
+    if (streamer.wanted.count() == 0) {
+        streamer.quiet_readbacks +|= 1;
+        return false;
+    }
 
     const Order = struct {
         fn lessThan(keys: []const Wanted, a: usize, b: usize) bool {
@@ -206,6 +213,7 @@ pub fn update(streamer: *TileStreamer, gpa: std.mem.Allocator, device: gpu.Devic
         budget_left -= 1;
     }
     streamer.wanted.clearRetainingCapacity();
+    streamer.quiet_readbacks = if (loaded > 0) 0 else streamer.quiet_readbacks +| 1;
     return loaded > 0;
 }
 
@@ -223,6 +231,12 @@ pub fn recordFeedback(streamer: *const TileStreamer, command_list: gpu.CommandLi
     const readback = streamer.readbacks[streamer.frame % ring_size];
     try command_list.copyBuffer(readback, 0, pool.requests, 0, pool.requests.size);
     try command_list.copyBuffer(pool.requests, 0, streamer.zeros, 0, pool.requests.size);
+}
+
+/// Whether the lookups want no tile that could still arrive: the requests of more frames
+/// than are in flight, so frames that saw every tile loaded so far, loaded nothing.
+pub fn settled(streamer: *const TileStreamer) bool {
+    return streamer.quiet_readbacks > ring_size;
 }
 
 /// The fence signal of the frame being recorded; call `submitted` after submitting it.

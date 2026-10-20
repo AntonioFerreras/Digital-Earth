@@ -29,7 +29,7 @@ static const uint INDIRECTION_LEVEL_BITS = 4;
 // Asks for the finest level a layer has; lookups clamp it to the layer's last level.
 public static const uint TILE_LEVEL_FINEST = (1u << INDIRECTION_LEVEL_BITS) - 1;
 // The arc of a cube face's middle row, which its tiles split 2^level ways.
-static const float FACE_SPAN = 0.5 * PI * PLANET_RADIUS;
+public static const float FACE_SPAN = 0.5 * PI * PLANET_RADIUS;
 
 // The level whose texels match a ray footprint `width` metres across.
 public uint tile_level(float width)
@@ -37,7 +37,7 @@ public uint tile_level(float width)
     float level = ceil(log2(FACE_SPAN / (float(TILE_INTERVALS) * max(width, 1.0))));
     return uint(clamp(level, 0.0, float(TILE_LEVEL_FINEST)));
 }
-static const uint TILE_INTERVALS = 192;
+public static const uint TILE_INTERVALS = 192;
 static const uint TILE_BORDER = 2;
 static const uint HEIGHT_SIDE = TILE_INTERVALS + 1 + 2 * TILE_BORDER;
 static const uint SURFACE_SIDE = TILE_INTERVALS + 2 * TILE_BORDER;
@@ -106,6 +106,7 @@ public struct FacePoint
 // asked for, and the point's position within it in [0, 1]^2.
 public struct TileHit
 {
+    public uint face;
     public uint slot;
     public uint level;
     public float2 local;
@@ -113,9 +114,11 @@ public struct TileHit
     public uint2 tile;
     public uint index;
 
-    // `layer` is the layer's TileUniforms field.
-    public __init(uint4 layer, FacePoint p, uint level_wanted)
+    // `layer` is the layer's TileUniforms field; with `request`, a tile coarser than
+    // the level wanted sets the wanted tile's request bit.
+    public __init(uint4 layer, FacePoint p, uint level_wanted, bool request)
     {
+        face = p.face;
         uint level_asked = min(level_wanted, layer.x);
         uint side = 1u << level_asked;
         uint2 tile = min(uint2(p.uv * float(side)), side - 1);
@@ -126,7 +129,7 @@ public struct TileHit
         // Reading first spares the atomic when the bit is already set, as it is for all
         // but the first of the many lookups that want one tile.
         uint bit = 1u << (index & 31);
-        if (level < level_asked && (earth_tile_requests[index >> 5] & bit) == 0)
+        if (request && level < level_asked && (earth_tile_requests[index >> 5] & bit) == 0)
             InterlockedOr(earth_tile_requests[index >> 5], bit);
         float resident_side = float(1u << level);
         this.tile = tile >> (level_asked - level);
@@ -157,25 +160,25 @@ public uint morton(uint2 tile)
 }
 
 // Albedo at the finest resident level up to `level_wanted`.
-public float3 tile_albedo(float3 n, uint level_wanted)
+public float3 tile_albedo(float3 n, uint level_wanted, bool request)
 {
-    TileHit hit = TileHit(earth_tiles.surface, FacePoint(n), level_wanted);
+    TileHit hit = TileHit(earth_tiles.surface, FacePoint(n), level_wanted, request);
     float2 texel = float(TILE_BORDER) + hit.local * float(TILE_INTERVALS);
     return earth_tile_surface.SampleLevel(earth_tile_sampler, float3(texel / float(SURFACE_SIDE), float(hit.slot)), 0.0).rgb;
 }
 
 // Water fraction in [0, 1].
-public float tile_water(float3 n, uint level_wanted)
+public float tile_water(float3 n, uint level_wanted, bool request)
 {
-    TileHit hit = TileHit(earth_tiles.height, FacePoint(n), level_wanted);
+    TileHit hit = TileHit(earth_tiles.height, FacePoint(n), level_wanted, request);
     float2 texel = hit.vertex_index() + 0.5;
     return earth_tile_water.SampleLevel(earth_tile_sampler, float3(texel / float(HEIGHT_SIDE), float(hit.slot)), 0.0);
 }
 
 // Height in metres, bilinear in f32 between the four nearest samples.
-public float tile_height(float3 n, uint level_wanted)
+public float tile_height(float3 n, uint level_wanted, bool request)
 {
-    return tile_height_at(TileHit(earth_tiles.height, FacePoint(n), level_wanted));
+    return tile_height_at(TileHit(earth_tiles.height, FacePoint(n), level_wanted, request));
 }
 
 // The height at `hit`, a lookup of the height layer.
