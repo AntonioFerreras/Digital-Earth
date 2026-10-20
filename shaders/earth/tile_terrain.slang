@@ -18,6 +18,8 @@ static const uint FIELD_STEPS_MAX = 250;
 // Jumps and field steps together: a chord of the shell crosses at most a few hundred
 // tiles at the levels a march samples.
 static const uint ITERATIONS_MAX = 1024;
+// The coarsest level a jump tries, a few times the tallest relief across.
+static const uint JUMP_LEVEL_MIN = 4;
 // A march stops once the field is within this fraction of the distance marched inside
 // the atmosphere.
 static const float RELATIVE_EPSILON = 1e-4;
@@ -29,12 +31,13 @@ float surface_height(TileHit hit)
     return max(tile_height_at(hit), 0.0);
 }
 
-// Where the ray `origin + t dir` leaves `hit`'s tile beyond `t`, or FLOAT_MAX.
-float tile_exit(float3 origin, float3 dir, TileHit hit, float t)
+// Where the ray `origin + t dir` leaves tile `tile` of `level` on `face` beyond `t`,
+// or FLOAT_MAX.
+float tile_exit(float3 origin, float3 dir, uint face, uint level, uint2 tile, float t)
 {
-    FaceFrame frame = FaceFrame(hit.face);
-    float size = 1.0 / float(1u << hit.level);
-    float2 low = float2(hit.tile) * size;
+    FaceFrame frame = FaceFrame(face);
+    float size = 1.0 / float(1u << level);
+    float2 low = float2(tile) * size;
     float2 high = low + size;
     // Each normal points out of the tile: inside points have a negative dot product.
     float3 normals[4] = { frame.edge_plane(frame.s_axis, high.x), -frame.edge_plane(frame.s_axis, low.x),
@@ -65,19 +68,34 @@ public float tile_intersect(float3 origin, float3 dir, RayCone cone, float t_max
     float end = ground_hit ? ground.x : min(shell.y, t_max);
     float atmosphere_entry = max(ray_sphere(origin, dir, ATMOSPHERE_RADIUS).x, 0.0);
     float t = max(shell.x, 0.0);
+    // Like a maximum-mipmap traversal: the level a jump tries coarsens after each jump and
+    // refines after each miss, down to the resident level, where the field steps.
+    uint jump_level = JUMP_LEVEL_MIN;
     uint field_steps = 0;
     for (uint iteration = 0; iteration < ITERATIONS_MAX && field_steps < FIELD_STEPS_MAX; iteration++)
     {
         float3 position = origin + t * dir;
-        TileHit hit = TileHit(earth_tiles.height, FacePoint(normalize(position)), tile_level(cone.width_at(t)), cone.streams);
-        float top = PLANET_RADIUS + max(float(earth_tile_height_max[hit.index]), 0.0);
-        float exit = min(tile_exit(origin, dir, hit, t), end);
+        FacePoint p = FacePoint(normalize(position));
+        TileHit hit = TileHit(earth_tiles.height, p, tile_level(cone.width_at(t)), cone.streams);
+        uint level = min(jump_level, hit.level);
+        uint side = 1u << level;
+        uint2 tile = min(uint2(p.uv * float(side)), side - 1);
+        uint index = earth_tiles.height.y + p.face * entry_count(earth_tiles.height.x + 1) +
+                     entry_count(level) + morton(tile);
+        float top = PLANET_RADIUS + max(float(earth_tile_height_max[index]), 0.0);
+        float exit = min(tile_exit(origin, dir, p.face, level, tile, t), end);
         if (radius_range(origin, dir, t, exit).x > top)
         {
             // At least a metre, in case rounding puts the crossing at `t`.
             t = max(exit, t + 1.0);
+            jump_level = max(level, JUMP_LEVEL_MIN + 1) - 1;
             if (t >= end)
                 break;
+            continue;
+        }
+        if (level < hit.level)
+        {
+            jump_level = level + 1;
             continue;
         }
         float d = length(position) - PLANET_RADIUS - surface_height(hit);

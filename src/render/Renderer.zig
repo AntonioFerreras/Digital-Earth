@@ -407,6 +407,20 @@ pub fn setTextureQuality(renderer: *Renderer, quality: EarthMaps.Quality) GpuEar
     renderer.texture_quality = quality;
 }
 
+/// What the tile streamer holds and wants, for display; null without tile files.
+pub const TileStatus = struct { height: usize, surface: usize, wanted: u32, settled: bool };
+
+pub fn tileStatus(renderer: *const Renderer) ?TileStatus {
+    const streamer = if (renderer.tile_streamer) |*streamer| streamer else return null;
+    const pool = &renderer.shared.tiles;
+    return .{
+        .height = streamer.residentCount(pool, .height),
+        .surface = streamer.residentCount(pool, .surface),
+        .wanted = streamer.wanted_last,
+        .settled = streamer.settled(),
+    };
+}
+
 /// Whether the tiles the view wants have arrived, or there is nothing to stream.
 pub fn tilesSettled(renderer: *const Renderer) bool {
     const streamer = renderer.tile_streamer orelse return true;

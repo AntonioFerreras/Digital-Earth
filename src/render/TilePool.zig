@@ -21,8 +21,10 @@ water: gpu.Texture,
 surface: gpu.Texture,
 /// Both layers' `TileResidency.indirection`, the height layer first.
 indirection: gpu.Buffer,
-/// Per height-layer indirection entry, the largest height of the tile, or of its
-/// nearest present ancestor where it is absent; i32 metres. Static once loaded.
+/// Per height-layer indirection entry, the largest height any lookup in the tile's area
+/// can return at the tile's level or finer: the maximum over the tile and its present
+/// descendants, or of the nearest present ancestor where the tile is absent; i32 metres.
+/// Static once loaded.
 height_max: gpu.Buffer,
 /// One bit per indirection entry, set by lookups that wanted the tile
 /// (`TileStreamer` reads and clears it).
@@ -206,8 +208,9 @@ pub fn load(gpa: std.mem.Allocator, device: gpu.Device, files: *const Files) Loa
     return pool;
 }
 
-/// Each height tile's maximum from its file entry; absent tiles take their parent's,
-/// which bounds the parent's surface that lookups there fall back to.
+/// The `height_max` of every height tile from the file entries: absent tiles take their
+/// parent's own maximum, which bounds the surface lookups there fall back to; then each
+/// tile takes the largest of its children's, finest level first.
 fn uploadHeightMaxima(pool: *const TilePool, gpa: std.mem.Allocator, device: gpu.Device, files: *const Files) (gpu.Error || error{OutOfMemory})!void {
     const residency = pool.residency.get(.height);
     const maxima = try gpa.alloc(i32, residency.indirection.len);
@@ -220,6 +223,15 @@ fn uploadHeightMaxima(pool: *const TilePool, gpa: std.mem.Allocator, device: gpu
                 entry.height_max
             else
                 maxima[residency.entryIndex(TileResidency.parentOf(tile))];
+        }
+        // Children of the tile at Morton position m of a level sit at 4m .. 4m + 3 of the next.
+        var level = residency.last_level;
+        while (level > 0) : (level -= 1) {
+            const children = maxima[base + TileSet.entryCount(level) ..][0 .. TileSet.entryCount(level + 1) - TileSet.entryCount(level)];
+            const parents = maxima[base + TileSet.entryCount(level - 1) ..][0 .. children.len / 4];
+            for (parents, 0..) |*parent, morton| {
+                for (children[4 * morton ..][0..4]) |child| parent.* = @max(parent.*, child);
+            }
         }
     }
     try pool.height_max.upload(device, 0, std.mem.sliceAsBytes(maxima));

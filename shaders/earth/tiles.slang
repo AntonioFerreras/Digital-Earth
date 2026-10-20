@@ -159,13 +159,15 @@ public uint entry_count(uint level)
     return ((1u << (2 * level)) - 1) / 3;
 }
 
-// Bit k of x at bit 2k, bit k of y at bit 2k + 1.
+// Bit k of x at bit 2k, bit k of y at bit 2k + 1, for x and y below 2^16.
 public uint morton(uint2 tile)
 {
-    uint result = 0;
-    for (uint bit = 0; bit < 16; bit++)
-        result |= ((tile.x >> bit) & 1) << (2 * bit) | ((tile.y >> bit) & 1) << (2 * bit + 1);
-    return result;
+    uint2 v = tile & 0xFFFF;
+    v = (v | (v << 8)) & 0x00FF00FF;
+    v = (v | (v << 4)) & 0x0F0F0F0F;
+    v = (v | (v << 2)) & 0x33333333;
+    v = (v | (v << 1)) & 0x55555555;
+    return v.x | (v.y << 1);
 }
 
 // Albedo at the finest resident level up to `level_wanted`.

@@ -109,6 +109,11 @@ pub fn draw(panel: Panel, gpa: std.mem.Allocator, config: *Config, networks: *Ne
     _ = c.ImGui_Checkbox("clouds", &config.clouds);
     c.ImGui_SameLine();
     _ = c.ImGui_Checkbox("tiles", &config.tiles);
+    if (renderer.tileStatus()) |status| {
+        c.ImGui_TextDisabled("%s", (std.mem.printSentinel(&text, "tiles: {d} height, {d} surface, {d} wanted{s}", .{
+            status.height, status.surface, status.wanted, if (status.settled) "" else ", streaming",
+        }, 0) catch unreachable).ptr);
+    }
     slider("sun angle", &config.sun.angle_degrees, ranges.sun_angle_degrees);
     slider("sun path rotation", &config.sun.path_rotation_degrees, ranges.sun_path_rotation_degrees);
 
