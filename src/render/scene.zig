@@ -59,6 +59,20 @@ pub fn withoutClouds(scene_uniforms: uniforms.SceneUniforms) uniforms.SceneUnifo
     return result;
 }
 
+/// Scene uniforms holding only what every preset shares, for tables baked from the
+/// atmosphere alone.
+pub fn atmosphereUniforms() uniforms.SceneUniforms {
+    return build(.{
+        .flags = .{},
+        .cloud_extinction = 0,
+        .cloud_density = 0,
+        .albedo_srgb = 0,
+        .land_height_scale_m = 0,
+        .night_light_scale = 0,
+        .star_scale = 0,
+    });
+}
+
 /// What every preset shares: the atmosphere and the light transport. The values are
 /// `data_prep`'s, the newer branch; `main` had turbidity 1.06, the Rayleigh fit
 /// normalized by 1.225 instead of by its own sea-level value, Klein-Nishina aerosol

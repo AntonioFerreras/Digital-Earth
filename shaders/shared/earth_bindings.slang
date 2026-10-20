@@ -26,6 +26,8 @@ public Texture2DArray<float> earth_bathymetry;
 public Texture2DArray<float> earth_night_lights;
 // Encoded sRGB colour of the sky, looked up by direction.
 public Texture2DArray<float4> earth_stars;
+// Coarse bounds of the topography (r) and the clouds (g), src/assets/MapBounds.zig.
+public Texture2D<float4> earth_bounds;
 
 // Tile of map column `x` (texel units) under `layout`, a field of `earth_maps`.
 uint tile_of(float x, uint4 layout)

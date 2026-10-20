@@ -36,6 +36,8 @@ pub const EarthMapUniforms = extern struct {
     bathymetry: [4]u32,
     night_lights: [4]u32,
     stars: [4]u32,
+    /// The bound map's (width, height, 0, 0).
+    bounds: [4]u32,
 };
 
 pub const DatagenFlags = packed struct(u32) {

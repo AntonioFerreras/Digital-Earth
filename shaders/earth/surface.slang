@@ -13,6 +13,7 @@ import common.constants;
 import common.geometry;
 import common.sampling;
 import earth.brdf;
+import earth.map_bounds;
 import earth.maps;
 import earth.material;
 import shared.earth_bindings;
@@ -36,6 +37,9 @@ public struct SurfaceSample
 };
 
 static const uint SPHERE_TRACE_STEPS = 250;
+// Skips and field steps together: a chord of the terrain shell spans at most
+// 2 sqrt(2 PLANET_RADIUS h) for its height h, some 630 skips of REACH_MIN.
+static const uint MARCH_ITERATIONS_MAX = 1024;
 // A march stops once the field is within this fraction of the distance marched
 // inside the atmosphere. Measured from the camera instead, the tolerance grows to
 // kilometres from orbit and stops hits in bands above the sea surface.
@@ -60,29 +64,49 @@ float3 land_normal(float3 position, SceneUniforms scene)
                                 land_sdf(position - float3(0.0, 0.0, e), scene)));
 }
 
-// Distance along the unit `dir` to the first surface hit, or SURFACE_MISS.
-public float intersect_surface(float3 origin, float3 dir, SceneUniforms scene)
+// Distance along the unit `dir` to the first surface hit no farther than `t_max`,
+// or SURFACE_MISS.
+public float intersect_surface(float3 origin, float3 dir, SceneUniforms scene, float t_max = FLOAT_MAX)
 {
+    float2 ground = ray_sphere(origin, dir, PLANET_RADIUS);
+    bool ground_hit = ground.x > 0.0 && ground.x <= t_max;
     if ((scene.config.x & SCENE_TERRAIN) == 0)
-    {
-        float2 t = ray_sphere(origin, dir, PLANET_RADIUS);
-        return t.x > 0.0 ? t.x : SURFACE_MISS;
-    }
-    // The terrain lies inside the atmosphere, so the march spans the atmosphere
-    // segment only; past it the original marched on to a miss.
-    float2 atmosphere = ray_sphere(origin, dir, ATMOSPHERE_RADIUS);
-    if (atmosphere.y <= 0.0)
+        return ground_hit ? ground.x : SURFACE_MISS;
+    // The terrain lies between the planet sphere and the sphere lifted by the land
+    // height scale; at or above sea level, it is hit no later than the planet sphere.
+    float2 shell = ray_sphere(origin, dir, PLANET_RADIUS + scene.surface.y);
+    if (shell.y <= 0.0)
         return SURFACE_MISS;
-    float entry = max(atmosphere.x, 0.0);
-    float t = entry;
-    for (uint step = 0; step < SPHERE_TRACE_STEPS; step++)
+    float end = ground_hit ? ground.x : min(shell.y, t_max);
+    float atmosphere_entry = max(ray_sphere(origin, dir, ATMOSPHERE_RADIUS).x, 0.0);
+    float t = max(shell.x, 0.0);
+    // Skips advance at least REACH_MIN each along a chord of the shell, which
+    // MARCH_ITERATIONS_MAX covers, so only the field's steps count against
+    // SPHERE_TRACE_STEPS.
+    uint step_count = 0;
+    for (uint iteration = 0; iteration < MARCH_ITERATIONS_MAX && step_count < SPHERE_TRACE_STEPS; iteration++)
     {
-        float d = land_sdf(origin + t * dir, scene);
+        float3 position = origin + t * dir;
+        MapBound bound = MapBound(sphere_uv(normalize(position)));
+        float skip = min(t + bound.reach, end);
+        // Under a bound of 0 the terrain is the planet sphere, which `end` already holds.
+        if (bound.topography == 0.0 ||
+            radius_range(origin, dir, t, skip).x > PLANET_RADIUS + scene.surface.y * bound.topography)
+        {
+            t = skip;
+            if (t >= end)
+                break;
+            continue;
+        }
+        float d = land_sdf(position, scene);
         t += d;
-        if (t > atmosphere.y || abs(d) < (t - entry) * SPHERE_TRACE_RELATIVE_EPSILON)
+        step_count += 1;
+        if (t > end || abs(d) < (t - atmosphere_entry) * SPHERE_TRACE_RELATIVE_EPSILON)
             break;
     }
-    return t <= atmosphere.y ? t : SURFACE_MISS;
+    if (t < end)
+        return t;
+    return ground_hit ? ground.x : SURFACE_MISS;
 }
 
 // Whether the sun direction `dir` is unoccluded by the surface from `origin`.

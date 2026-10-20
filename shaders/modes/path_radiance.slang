@@ -1,9 +1,10 @@
 // Spectral volumetric path tracing of the planet, one wavelength bundle
 // (spectral/cie.slang) per path: delta tracking through the Rayleigh, aerosol,
-// and ozone media and the cloud shell, ratio-tracked sun transmittance,
-// next-event estimation towards the sun cone, phase sampling, the surface of
-// earth/surface.slang with a BRDF-sampled bounce, and Russian roulette. `scene`
-// flags select between the textured and the symmetric scene (shared/uniforms.slang).
+// and ozone media and the cloud shell, next-event estimation towards the sun cone
+// with the media's transmittance from the column-density table and the clouds'
+// ratio-tracked, phase sampling, the surface of earth/surface.slang with a
+// BRDF-sampled bounce, and Russian roulette. `scene` flags select between the
+// textured and the symmetric scene (shared/uniforms.slang).
 //
 // One member of the bundle, the hero, decides every collision, and each
 // member's estimate is weighted by spectral MIS (Wilkie et al. 2014, "Hero
@@ -20,12 +21,14 @@ module path_radiance;
 
 import atmosphere.media;
 import atmosphere.phase;
+import atmosphere.scattering_luts;
 import common.constants;
 import common.geometry;
 import common.rng;
 import common.sampling;
 import earth.brdf;
 import earth.clouds;
+import earth.map_bounds;
 import earth.maps;
 import earth.surface;
 import shared.bindings;
@@ -38,6 +41,7 @@ import spectral.uplift;
 // Interaction ids: Rayleigh, aerosol, and ozone index the media's columns; then the cloud.
 static const uint RAYLEIGH = 0;
 static const uint MIE = 1;
+static const uint OZONE = 2;
 static const uint CLOUD = 3;
 static const float4 SCATTERING_ALBEDO = float4(RAYLEIGH_ALBEDO, AEROSOL_ALBEDO, OZONE_ALBEDO, CLOUD_ALBEDO);
 
@@ -77,6 +81,7 @@ struct Media
                                     mie_density(0.0, rmo.first.turbidity), ozone_density_max(ozone_profile));
         Spectrum majorants = mul(rmo.extinction, density_max);
         rmo_majorant = 0.0;
+        [ForceUnroll]
         for (int k = 0; k < BUNDLE_WAVELENGTH_COUNT; k++)
             rmo_majorant = max(rmo_majorant, majorants[k]);
         clouds = (scene.config.x & SCENE_CLOUDS) != 0;
@@ -84,11 +89,65 @@ struct Media
         cloud_density_max = scene.media.z;
     }
 
-    float cloud_extinction_at(float3 pos)
+    // At `pos`, whose map coordinates are `uv`.
+    float cloud_extinction_at(float3 pos, float2 uv)
     {
-        float r = length(pos);
-        float coverage = sample_tiled(earth_clouds, earth_maps.clouds, sphere_uv(pos / r));
-        return cloud_extinction * cloud_density(r, coverage, cloud_density_max);
+        float coverage = sample_tiled(earth_clouds, earth_maps.clouds, uv);
+        return cloud_extinction * cloud_density(length(pos), coverage, cloud_density_max);
+    }
+};
+
+// One pass of a ray through the cloud shell, walked in stretches that each have one
+// majorant from the map bound at their start. Map coordinates are exact at the
+// stretch ends and linear in between: over a stretch of a few kilometres a straight
+// ray strays from that line by about 1e-6 rad, a small fraction of a map texel.
+struct CloudPass
+{
+    float3 pos;
+    float3 dir;
+    float end;
+    // The current stretch [start, stop) and its majorant.
+    float start;
+    float stop;
+    float majorant;
+    float2 uv_start;
+    // Map coordinates per metre along the ray, the u seam unwrapped.
+    float2 uv_rate;
+    float2 uv_stop;
+
+    // The pass from `t` to `end` > `t`, at its first stretch.
+    __init(float3 pos, float3 dir, float t, float end, Media media)
+    {
+        this.pos = pos;
+        this.dir = dir;
+        this.end = end;
+        stop = t;
+        uv_stop = sphere_uv(normalize(pos + t * dir));
+        advance(media);
+    }
+
+    // Moves to the stretch that starts where the current one stops.
+    [mutating]
+    void advance(Media media)
+    {
+        start = stop;
+        uv_start = uv_stop;
+        MapBound bound = MapBound(uv_start);
+        stop = min(start + bound.reach, end);
+        uv_stop = sphere_uv(normalize(pos + stop * dir));
+        float2 delta = uv_stop - uv_start;
+        delta.x -= round(delta.x);
+        uv_rate = delta / (stop - start);
+        float2 h = (radius_range(pos, dir, start, stop) - CLOUD_BASE_RADIUS) / CLOUD_THICKNESS;
+        float2 column = cloud_column(bound.clouds);
+        bool overlaps = max(h.x, column.x) < min(h.y, column.y);
+        majorant = overlaps ? media.cloud_extinction * cloud_density_bound(bound.clouds, media.cloud_density_max) : 0.0;
+    }
+
+    // The cloud extinction at `t` in the current stretch.
+    float extinction(float t, Media media)
+    {
+        return media.cloud_extinction_at(pos + t * dir, uv_start + (t - start) * uv_rate);
     }
 };
 
@@ -98,14 +157,25 @@ struct Media
 struct SpectralWeights
 {
     Spectrum ratio;
-    // The member whose probabilities decide the collisions.
-    uint hero;
+    // One-hot on the member whose probabilities decide the collisions. Indexing by
+    // a varying member instead would move the bundle's vectors to local memory.
+    Spectrum hero;
+
+    // The hero drawn from the uniform number `u`.
+    __init(float u)
+    {
+        ratio = 1.0;
+        uint index = min(uint(u * float(BUNDLE_WAVELENGTH_COUNT)), uint(BUNDLE_WAVELENGTH_COUNT - 1));
+        [ForceUnroll]
+        for (int k = 0; k < BUNDLE_WAVELENGTH_COUNT; k++)
+            hero[k] = k == index ? 1.0 : 0.0;
+    }
 
     // Applies an event whose probability for each member is proportional to `density`.
     [mutating]
     void observe(Spectrum density)
     {
-        ratio *= density / density[hero];
+        ratio *= density / dot(density, hero);
         ratio /= dot(ratio, Spectrum(1.0 / float(BUNDLE_WAVELENGTH_COUNT)));
     }
 };
@@ -135,29 +205,41 @@ float4 cloud_segments(float3 pos, float3 dir, float t_surface)
 }
 
 // Delta tracking through the clouds' two passes: the first real collision before
-// `t_end`, and whether the particle there scatters or absorbs.
+// `t_surface`, and whether the particle there scatters or absorbs. Each stretch of a
+// pass has its own majorant, and a free flight that leaves the stretch restarts at
+// its end.
 Interaction track_clouds(float3 pos, float3 dir, float t_surface, Media media, inout Rng rng)
 {
     Interaction interaction = { Event.None, 0.0, CLOUD };
-    float majorant = media.cloud_extinction * media.cloud_density_max;
-    if (!(majorant > 0.0))
+    if (!(media.cloud_extinction * media.cloud_density_max > 0.0))
         return interaction;
     float4 segments = cloud_segments(pos, dir, t_surface);
     for (uint i = 0; i < 2; i++)
     {
-        float t = segments[2 * i];
+        float2 segment = i == 0 ? segments.xy : segments.zw;
+        if (!(segment.x < segment.y))
+            continue;
+        CloudPass pass = CloudPass(pos, dir, segment.x, segment.y, media);
+        float t = pass.start;
         while (true)
         {
-            float4 u = rng.next4();
-            t -= log(1.0 - u.x) / majorant;
-            if (t >= segments[2 * i + 1])
-                break;
-            if (u.y * majorant < media.cloud_extinction_at(pos + t * dir))
+            while (pass.majorant > 0.0)
             {
-                interaction.event = u.z < CLOUD_ALBEDO ? Event.Scatter : Event.Absorb;
-                interaction.t = t;
-                return interaction;
+                float4 u = rng.next4();
+                t -= log(1.0 - u.x) / pass.majorant;
+                if (t >= pass.stop)
+                    break;
+                if (u.y * pass.majorant < pass.extinction(t, media))
+                {
+                    interaction.event = u.z < CLOUD_ALBEDO ? Event.Scatter : Event.Absorb;
+                    interaction.t = t;
+                    return interaction;
+                }
             }
+            if (pass.stop >= pass.end)
+                break;
+            t = pass.stop;
+            pass.advance(media);
         }
     }
     return interaction;
@@ -181,22 +263,14 @@ Interaction track_rmo(float3 pos, float3 dir, float2 segment, Media media, inout
         float3 density = media.rmo.first.density(pos + t * dir);
         Spectrum extinction = mul(media.rmo.extinction, density);
         float threshold = u.y * majorant;
-        if (threshold < extinction[weights.hero])
+        if (threshold < dot(extinction, weights.hero))
         {
-            float3 hero = media.rmo.extinction[weights.hero] * density;
-            uint id = 0;
-            float cumulative = hero.x;
-            while (id < 2 && threshold >= cumulative)
-            {
-                id += 1;
-                cumulative += hero[id];
-            }
+            float3 hero = mul(weights.hero, media.rmo.extinction) * density;
+            uint id = threshold < hero.x ? RAYLEIGH : threshold < hero.x + hero.y ? MIE : OZONE;
+            float3 medium = float3(float(id == RAYLEIGH), float(id == MIE), float(id == OZONE));
             // Scattering or absorbing takes the same share of each member's collisions.
-            Spectrum medium_extinction;
-            for (int k = 0; k < BUNDLE_WAVELENGTH_COUNT; k++)
-                medium_extinction[k] = media.rmo.extinction[k][id] * density[id];
-            weights.observe(medium_extinction);
-            interaction.event = u.z < SCATTERING_ALBEDO[id] ? Event.Scatter : Event.Absorb;
+            weights.observe(mul(media.rmo.extinction, density * medium));
+            interaction.event = u.z < dot(SCATTERING_ALBEDO.xyz, medium) ? Event.Scatter : Event.Absorb;
             interaction.t = t;
             interaction.id = id;
             break;
@@ -206,56 +280,65 @@ Interaction track_rmo(float3 pos, float3 dir, float2 segment, Media media, inout
     return interaction;
 }
 
-// The nearest collision in front of the surface hit `t_surface`. The cloud
-// collision comes first, so that the RMO tracking stops there and `weights`
-// observes only the collisions on the path.
-Interaction sample_interaction(float3 pos, float3 dir, float t_surface, Media media, inout Rng rng,
-                               inout SpectralWeights weights)
+// The nearest collision and, in `t_surface`, the surface hit in front of it or
+// SURFACE_MISS. The cloud collision comes first, sampled up to the planet sphere,
+// beyond which no terrain lies; the terrain is searched only in front of it, and the
+// RMO tracking stops at whichever is nearer, so that `weights` observes only the
+// collisions on the path.
+Interaction sample_interaction(float3 pos, float3 dir, Media media, SceneUniforms scene, inout Rng rng,
+                               inout SpectralWeights weights, out float t_surface)
 {
-    float2 segment = atmosphere_segment(pos, dir, t_surface);
     Interaction cloud = { Event.None, 0.0, CLOUD };
     if (media.clouds)
-        cloud = track_clouds(pos, dir, t_surface, media, rng);
+        cloud = track_clouds(pos, dir, ray_sphere(pos, dir, PLANET_RADIUS).x, media, rng);
+    t_surface = intersect_surface(pos, dir, scene, cloud.event != Event.None ? cloud.t : FLOAT_MAX);
+    if (t_surface >= 0.0)
+        cloud.event = Event.None;
+    float2 segment = atmosphere_segment(pos, dir, t_surface);
     if (cloud.event != Event.None)
         segment.y = min(segment.y, cloud.t);
     Interaction interaction = track_rmo(pos, dir, segment, media, rng, weights);
     return interaction.event == Event.None ? cloud : interaction;
 }
 
-// Ratio-tracking estimates of every member's transmittance towards the unit `dir`,
-// with the shared majorant.
+// Every member's transmittance towards the unit `dir`: exact through the RMO media
+// from the column-density table, ratio-tracked through the clouds.
 Spectrum transmittance(float3 pos, float3 dir, Media media, inout Rng rng)
 {
-    float2 segment = atmosphere_segment(pos, dir, SURFACE_MISS);
-    Spectrum result = 1.0;
-    float t = segment.x;
-    while (any(result >= RATIO_TRACKING_CUTOFF))
-    {
-        t -= log(1.0 - rng.next4().x) / media.rmo_majorant;
-        if (t >= segment.y)
-            break;
-        result *= 1.0 - mul(media.rmo.extinction, media.rmo.first.density(pos + t * dir)) / media.rmo_majorant;
-    }
-    if (!media.clouds)
-        return result;
-    float majorant = media.cloud_extinction * media.cloud_density_max;
-    if (!(majorant > 0.0))
+    ColumnDensity column = ColumnDensity(column_density_lut, pos, dir);
+    Spectrum result;
+    [ForceUnroll]
+    for (int k = 0; k < BUNDLE_WAVELENGTH_COUNT; k++)
+        result[k] = column.transmittance(media.rmo.extinction[k]);
+    if (!any(result >= RATIO_TRACKING_CUTOFF))
+        return 0.0;
+    if (!media.clouds || !(media.cloud_extinction * media.cloud_density_max > 0.0))
         return result;
     float4 segments = cloud_segments(pos, dir, SURFACE_MISS);
+    float cloud = 1.0;
     for (uint i = 0; i < 2; i++)
     {
-        float cloud = 1.0;
-        float t_cloud = segments[2 * i];
+        float2 segment = i == 0 ? segments.xy : segments.zw;
+        if (!(segment.x < segment.y))
+            continue;
+        CloudPass pass = CloudPass(pos, dir, segment.x, segment.y, media);
+        float t = pass.start;
         while (cloud >= RATIO_TRACKING_CUTOFF)
         {
-            t_cloud -= log(1.0 - rng.next4().x) / majorant;
-            if (t_cloud >= segments[2 * i + 1])
+            while (pass.majorant > 0.0 && cloud >= RATIO_TRACKING_CUTOFF)
+            {
+                t -= log(1.0 - rng.next4().x) / pass.majorant;
+                if (t >= pass.stop)
+                    break;
+                cloud *= 1.0 - pass.extinction(t, media) / pass.majorant;
+            }
+            if (pass.stop >= pass.end)
                 break;
-            cloud *= 1.0 - media.cloud_extinction_at(pos + t_cloud * dir) / majorant;
+            t = pass.stop;
+            pass.advance(media);
         }
-        result *= cloud;
     }
-    return result;
+    return result * cloud;
 }
 
 // How the phase function of a collision is chosen on bounce `bounce`.
@@ -326,6 +409,7 @@ public PathSample path_radiance(float3 pos, float3 dir, float3 sun, Spectrum wav
 {
     float cos_sun_radius = cos(SUN_ANGULAR_RADIUS);
     Spectrum sun_irradiance;
+    [ForceUnroll]
     for (int k = 0; k < BUNDLE_WAVELENGTH_COUNT; k++)
         sun_irradiance[k] = solar_irradiance(wavelength[k]);
     Media media = Media(scene, wavelength);
@@ -334,16 +418,15 @@ public PathSample path_radiance(float3 pos, float3 dir, float3 sun, Spectrum wav
     // The path's measurement over its density, except for the factors the
     // collisions put into `weights`.
     Spectrum throughput = 1.0;
-    SpectralWeights weights = { Spectrum(1.0), min(uint(rng.next4().x * float(BUNDLE_WAVELENGTH_COUNT)),
-                                                   uint(BUNDLE_WAVELENGTH_COUNT - 1)) };
+    SpectralWeights weights = SpectralWeights(rng.next4().x);
     PathSample sample;
     sample.escaped = false;
     for (uint bounce = 0; bounce < scene.config.y; bounce++)
     {
         if (bounce >= CLOUD_DEEP_BOUNCE)
             media.cloud_extinction = CLOUD_EXTINCTION_DEEP;
-        float t_surface = intersect_surface(pos, dir, scene);
-        Interaction interaction = sample_interaction(pos, dir, t_surface, media, rng, weights);
+        float t_surface;
+        Interaction interaction = sample_interaction(pos, dir, media, scene, rng, weights, t_surface);
         float3 light = sample_cone(rng.next4().xy, cos_sun_radius, sun);
 
         if (interaction.event == Event.Absorb)
@@ -373,6 +456,7 @@ public PathSample path_radiance(float3 pos, float3 dir, float3 sun, Spectrum wav
             bool sun_visible = surface_visible(lifted, light, scene);
             Spectrum sun_transmittance = sun_visible ? transmittance(lifted, light, media, rng) : Spectrum(0.0);
             BounceSample bounce = sample_bounce(s, view, rng.next4().xyz, scene);
+            [ForceUnroll]
             for (int k = 0; k < BUNDLE_WAVELENGTH_COUNT; k++)
             {
                 float albedo = srgb_to_spectrum(srgb_to_spectrum_basis, s.albedo_srgb, wavelength[k]);
@@ -398,6 +482,7 @@ public PathSample path_radiance(float3 pos, float3 dir, float3 sun, Spectrum wav
         {
             Spectrum weighted = throughput * weights.ratio;
             float weighted_max = 0.0;
+            [ForceUnroll]
             for (int k = 0; k < BUNDLE_WAVELENGTH_COUNT; k++)
                 weighted_max = max(weighted_max, weighted[k]);
             float termination = max(ROULETTE_PROBABILITY_MIN, 1.0 - weighted_max);
@@ -407,6 +492,8 @@ public PathSample path_radiance(float3 pos, float3 dir, float3 sun, Spectrum wav
         }
     }
 
+
+    [ForceUnroll]
     for (int k = 0; k < BUNDLE_WAVELENGTH_COUNT; k++)
         sample.radiance[k] = isfinite(radiance[k]) && radiance[k] > 0.0 ? radiance[k] : 0.0;
     return sample;
@@ -420,6 +507,7 @@ public Spectrum sky_radiance(float3 dir, float3 sun, Spectrum wavelength, SceneU
     bool stars = (scene.config.x & SCENE_STARS) != 0;
     float3 stars_srgb = stars ? sample_tiled(earth_stars, earth_maps.stars, sphere_uv(dir)).rgb : float3(0.0);
     Spectrum radiance;
+    [ForceUnroll]
     for (int k = 0; k < BUNDLE_WAVELENGTH_COUNT; k++)
     {
         float sun_radiance = planck(SUN_TEMPERATURE, wavelength[k]);

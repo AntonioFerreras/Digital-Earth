@@ -172,6 +172,7 @@ public struct SpectralMediumBundle
     public __init(StructuredBuffer<float> ozone_cross_section, StructuredBuffer<float> ozone_profile,
                   Spectrum wavelength, float4 media)
     {
+        [ForceUnroll]
         for (int k = 0; k < BUNDLE_WAVELENGTH_COUNT; k++)
         {
             SpectralMedium medium = SpectralMedium(ozone_cross_section, ozone_profile, wavelength[k], media);

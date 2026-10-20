@@ -51,6 +51,8 @@ public struct EarthMapUniforms {
     public uint4 bathymetry;
     public uint4 night_lights;
     public uint4 stars;
+    // The bound map's (width, height, 0, 0).
+    public uint4 bounds;
 };
 
 // Leave the sun disk out of the escaping rays' radiance (modes/datagen.slang).

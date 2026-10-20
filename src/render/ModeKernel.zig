@@ -18,10 +18,11 @@ shared_params: std.EnumArray(SharedParam, gpu.Kernel.Param),
 /// Null when the kernel does not import shared/earth_bindings.slang.
 earth_params: ?EarthParams,
 
-/// `earth_maps` and the map textures `earth_<role>`.
+/// `earth_maps`, the map textures `earth_<role>`, and `earth_bounds`.
 const EarthParams = struct {
     layouts: gpu.Kernel.Param,
     maps: std.EnumArray(EarthMaps.Role, gpu.Kernel.Param),
+    bounds: gpu.Kernel.Param,
 };
 
 /// The globals of shaders/shared/bindings.slang, named exactly as declared there.
@@ -33,6 +34,7 @@ pub const SharedParam = enum {
     srgb_to_spectrum_basis,
     ozone_cross_section,
     ozone_profile,
+    column_density_lut,
     linear_clamp,
     linear_repeat_u,
 };
@@ -42,7 +44,7 @@ pub const group_size = 8;
 
 /// Room left for a mode's own bindings after the shared and Earth-map ones.
 pub const mode_bindings_max = gpu.CommandList.bindings_max - std.enums.values(SharedParam).len -
-    1 - std.enums.values(EarthMaps.Role).len;
+    2 - std.enums.values(EarthMaps.Role).len;
 
 /// Compiles `entry` of `module`, which must import `shared.bindings`, specialized with
 /// `generic_args` as `gpu.Kernel.init` describes.
@@ -66,7 +68,7 @@ fn findEarthParams(kernel: gpu.Kernel) gpu.Kernel.LayoutError!?EarthParams {
     inline for (comptime std.enums.values(EarthMaps.Role)) |role| {
         maps.set(role, try kernel.param("earth_" ++ @tagName(role)));
     }
-    return .{ .layouts = layouts, .maps = maps };
+    return .{ .layouts = layouts, .maps = maps, .bounds = try kernel.param("earth_bounds") };
 }
 
 pub fn deinit(mode_kernel: ModeKernel) void {
@@ -110,6 +112,7 @@ pub fn dispatchGroups(
             .srgb_to_spectrum_basis => .{ .buffer = shared.luts.srgb_to_spectrum },
             .ozone_cross_section => .{ .buffer = shared.luts.ozone_cross_section },
             .ozone_profile => .{ .buffer = shared.luts.ozone_profile },
+            .column_density_lut => .{ .texture = shared.luts.column_density },
             .linear_clamp => .{ .sampler = shared.luts.linear_clamp },
             .linear_repeat_u => .{ .sampler = shared.luts.linear_repeat_u },
         };
@@ -121,6 +124,7 @@ pub fn dispatchGroups(
         for (std.enums.values(EarthMaps.Role)) |role| {
             bindings.appendAssumeCapacity(.{ .param = earth_params.maps.get(role), .resource = .{ .texture = earth_maps.textures.get(role) } });
         }
+        bindings.appendAssumeCapacity(.{ .param = earth_params.bounds, .resource = .{ .texture = earth_maps.bounds } });
     }
     bindings.appendSliceAssumeCapacity(mode_bindings);
     try command_list.dispatch(mode_kernel.kernel, bindings.items, groups);

@@ -18,7 +18,6 @@ import spectral.cie;
 import spectral.planck;
 import spectral.uplift;
 
-Texture2D<float4> column_density_lut;
 // One channel per bundle member.
 Texture3D<float4> multiple_scattering_lut;
 

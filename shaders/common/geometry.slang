@@ -27,3 +27,11 @@ public float3 local_to_world(float3 local, float3 n)
     float3 tangent = cross(n, bitangent);
     return local.x * tangent + local.y * bitangent + local.z * n;
 }
+
+// The least and the greatest distance from the origin of the points pos + t dir,
+// t in [t0, t1], for the unit `dir`.
+public float2 radius_range(float3 pos, float3 dir, float t0, float t1)
+{
+    float closest = clamp(-dot(pos, dir), t0, t1);
+    return float2(length(pos + closest * dir), max(length(pos + t0 * dir), length(pos + t1 * dir)));
+}

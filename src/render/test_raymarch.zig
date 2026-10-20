@@ -83,7 +83,7 @@ const Fixture = struct {
             .{ .param = try kernel.param("ozone_cross_section"), .resource = .{ .buffer = fixture.shared.luts.ozone_cross_section } },
             .{ .param = try kernel.param("ozone_profile"), .resource = .{ .buffer = fixture.shared.luts.ozone_profile } },
             .{ .param = try kernel.param("linear_clamp"), .resource = .{ .sampler = fixture.shared.luts.linear_clamp } },
-            .{ .param = try kernel.param("column_density_lut"), .resource = .{ .texture = fixture.mode.column_density } },
+            .{ .param = try kernel.param("column_density_lut"), .resource = .{ .texture = fixture.shared.luts.column_density } },
             .{ .param = try kernel.param("multiple_scattering_lut"), .resource = .{ .texture = fixture.mode.multiple_scattering } },
             .{ .param = try kernel.param("cie"), .resource = .{ .buffer = fixture.shared.luts.cie } },
         }, kernel.groupCount(.{ case_count, 1, 1 }));

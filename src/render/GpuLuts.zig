@@ -1,10 +1,12 @@
-//! The lookup tables of `assets.Luts` on the GPU, uploaded once, and the samplers every
+//! The lookup tables of `assets.Luts` on the GPU, uploaded once, the column densities
+//! of the atmosphere every preset shares, baked once from them, and the samplers every
 //! kernel shares. Buffers keep the host layouts documented in `assets.Luts`.
 
 const std = @import("std");
 const assert = std.debug.assert;
 const gpu = @import("../gpu.zig");
 const Luts = @import("../assets/Luts.zig");
+const scene = @import("scene.zig");
 
 const GpuLuts = @This();
 
@@ -12,6 +14,8 @@ cie: gpu.Buffer,
 srgb_to_spectrum: gpu.Buffer,
 ozone_cross_section: gpu.Buffer,
 ozone_profile: gpu.Buffer,
+/// The column-density table of shaders/atmosphere/scattering_luts.slang.
+column_density: gpu.Texture,
 /// rgba32f, `Luts.crf_texel_count` wide, one camera response per row in
 /// `camera_response_names` order.
 camera_responses: gpu.Texture,
@@ -22,6 +26,9 @@ linear_clamp: gpu.Sampler,
 linear_repeat_u: gpu.Sampler,
 
 /// The host tables may be freed once this returns.
+/// COLUMN_DENSITY_LUT_SIZE in scattering_luts.slang.
+pub const column_density_size = [2]u32{ 256, 256 };
+
 pub fn init(gpa: std.mem.Allocator, device: gpu.Device, luts: *const Luts) (gpu.Error || error{OutOfMemory})!GpuLuts {
     const cie = try initBuffer(device, luts.cie, "CIE");
     errdefer cie.deinit();
@@ -31,6 +38,8 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, luts: *const Luts) (gpu.
     errdefer ozone_cross_section.deinit();
     const ozone_profile = try initBuffer(device, luts.ozone_profile, "ozone profile");
     errdefer ozone_profile.deinit();
+    const column_density = try bakeColumnDensity(device, ozone_cross_section, ozone_profile);
+    errdefer column_density.deinit();
 
     const crf_count: u32 = @intCast(luts.crf_names.len);
     assert(luts.crf.len == crf_count * Luts.crf_texel_count * 4);
@@ -82,6 +91,7 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, luts: *const Luts) (gpu.
         .srgb_to_spectrum = srgb_to_spectrum,
         .ozone_cross_section = ozone_cross_section,
         .ozone_profile = ozone_profile,
+        .column_density = column_density,
         .camera_responses = camera_responses,
         .camera_response_names = camera_response_names,
         .linear_clamp = linear_clamp,
@@ -95,11 +105,42 @@ pub fn deinit(gpu_luts: *GpuLuts, gpa: std.mem.Allocator) void {
     gpu_luts.linear_repeat_u.deinit();
     gpu_luts.linear_clamp.deinit();
     gpu_luts.camera_responses.deinit();
+    gpu_luts.column_density.deinit();
     gpu_luts.ozone_profile.deinit();
     gpu_luts.ozone_cross_section.deinit();
     gpu_luts.srgb_to_spectrum.deinit();
     gpu_luts.cie.deinit();
     gpu_luts.* = undefined;
+}
+
+/// Blocking: waits for the bake.
+fn bakeColumnDensity(device: gpu.Device, ozone_cross_section: gpu.Buffer, ozone_profile: gpu.Buffer) gpu.Error!gpu.Texture {
+    // The shader filters the column densities itself, in f32.
+    const texture: gpu.Texture = try .init(device, .{
+        .kind = .@"2d",
+        .format = .rgba32_float,
+        .width = column_density_size[0],
+        .height = column_density_size[1],
+        .depth_or_layers = 1,
+        // Copies out serve the tests.
+        .usage = .{ .shader_resource = true, .unordered_access = true, .copy_source = true },
+        .label = "column density LUT",
+    });
+    errdefer texture.deinit();
+    const kernel: gpu.Kernel = try .init(device, "modes/raymarch_lut", "bake_column_density", &.{});
+    defer kernel.deinit();
+    const atmosphere = scene.atmosphereUniforms();
+    const command_list: gpu.CommandList = try .begin(device);
+    const recorded = command_list.dispatch(kernel, &.{
+        .{ .param = try kernel.param("scene"), .resource = .{ .data = std.mem.asBytes(&atmosphere) } },
+        .{ .param = try kernel.param("ozone_cross_section"), .resource = .{ .buffer = ozone_cross_section } },
+        .{ .param = try kernel.param("ozone_profile"), .resource = .{ .buffer = ozone_profile } },
+        .{ .param = try kernel.param("column_density_target"), .resource = .{ .texture = texture } },
+    }, kernel.groupCount(.{ column_density_size[0], column_density_size[1], 1 }));
+    try command_list.submit();
+    try recorded;
+    try device.waitIdle();
+    return texture;
 }
 
 /// The row of `camera_responses` holding the response named `name`; the only place a

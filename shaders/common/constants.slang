@@ -4,6 +4,7 @@
 module constants;
 
 public static const float PI = 3.14159265358979;
+public static const float FLOAT_MAX = 3.402823466e38;
 
 public static const float PLANET_RADIUS = 6371e3;
 public static const float ATMOSPHERE_HEIGHT = 110e3;

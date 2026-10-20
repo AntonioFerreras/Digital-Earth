@@ -8,6 +8,7 @@ pub const EarthMaps = @import("assets/EarthMaps.zig");
 pub const DataRoot = @import("assets/DataRoot.zig");
 pub const Image = @import("assets/Image.zig");
 pub const Luts = @import("assets/Luts.zig");
+pub const MapBounds = @import("assets/MapBounds.zig");
 pub const Network = @import("assets/Network.zig");
 pub const Lut4d = @import("assets/Lut4d.zig");
 pub const TilePlan = @import("assets/TilePlan.zig");

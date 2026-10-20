@@ -28,6 +28,8 @@ public StructuredBuffer<float> srgb_to_spectrum_basis;
 // LUT/ozone_cross_section.dat and LUT/ozone_profile.dat, see atmosphere/media.slang.
 public StructuredBuffer<float> ozone_cross_section;
 public StructuredBuffer<float> ozone_profile;
+// The column densities of atmosphere/scattering_luts.slang.
+public Texture2D<float4> column_density_lut;
 public SamplerState linear_clamp;
 // Earth maps wrap around the globe in u and clamp at the poles in v.
 public SamplerState linear_repeat_u;

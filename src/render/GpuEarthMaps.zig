@@ -1,6 +1,7 @@
 //! The Earth maps of `assets.EarthMaps` on the GPU: one `Texture2DArray` per role,
-//! split into longitude tiles by `assets.TilePlan` for the device's 2D limit, and the
-//! tile layouts that shaders/shared/earth_bindings.slang reads from `earth_maps`.
+//! split into longitude tiles by `assets.TilePlan` for the device's 2D limit, the
+//! tile layouts that shaders/shared/earth_bindings.slang reads from `earth_maps`, and
+//! the `assets.MapBounds` of the topography and the clouds.
 //!
 //! Until a mode samples the maps, and always without a map cache, the renderer binds
 //! 1x1 placeholders instead, so kernels that declare the maps still bind.
@@ -10,12 +11,15 @@ const assert = std.debug.assert;
 const Io = std.Io;
 const gpu = @import("../gpu.zig");
 const EarthMaps = @import("../assets/EarthMaps.zig");
+const MapBounds = @import("../assets/MapBounds.zig");
 const TilePlan = @import("../assets/TilePlan.zig");
 const uniforms = @import("uniforms.zig");
 
 const GpuEarthMaps = @This();
 
 textures: std.EnumArray(EarthMaps.Role, gpu.Texture),
+/// rgba8 `assets.MapBounds`: the topography's in r, the clouds' in g.
+bounds: gpu.Texture,
 /// The `earth_maps` uniforms.
 layouts: uniforms.EarthMapUniforms,
 /// The set `load` was asked for, also after a fallback to Q1; null for the placeholders.
@@ -30,7 +34,7 @@ pub const Cache = struct {
     dir: Io.Dir,
 };
 
-pub const LoadError = EarthMaps.Map.OpenError || TilePlan.PlanError ||
+pub const LoadError = EarthMaps.Map.OpenError || TilePlan.PlanError || Io.Cancelable ||
     gpu.Error || std.mem.Allocator.Error || error{TooManyLayers};
 
 /// Host bytes staged per upload; bounds both the host buffer and slang-rhi's staging heap.
@@ -65,11 +69,17 @@ pub fn placeholder(device: gpu.Device) gpu.Error!GpuEarthMaps {
         try texture.upload(device, .{ .x = 0, .y = 0, .z = 0, .width = 1, .height = 1, .depth = 1 }, &zeros, zeros.len);
         layoutField(&layouts, role).* = .{ 1, 1, 1, 0 };
     }
-    return .{ .textures = textures, .layouts = layouts, .quality = null };
+    const bounds = try initBounds(device, 1, 1);
+    errdefer bounds.deinit();
+    const zeros: [4]u8 = @splat(0);
+    try bounds.upload(device, .{ .x = 0, .y = 0, .z = 0, .width = 1, .height = 1, .depth = 1 }, &zeros, zeros.len);
+    layouts.bounds = .{ 1, 1, 0, 0 };
+    return .{ .textures = textures, .bounds = bounds, .layouts = layouts, .quality = null };
 }
 
 pub fn deinit(earth_maps: *GpuEarthMaps) void {
     for (earth_maps.textures.values) |texture| texture.deinit();
+    earth_maps.bounds.deinit();
     earth_maps.* = undefined;
 }
 
@@ -96,10 +106,42 @@ fn upload(gpa: std.mem.Allocator, device: gpu.Device, cache: Cache, quality: Ear
         created_count += 1;
         layoutField(&layouts, role).* = tiled.layout;
     }
+    const bounds = try uploadBounds(gpa, cache.io, device, &maps);
+    errdefer bounds.deinit();
+    layouts.bounds = .{ MapBounds.width, MapBounds.height, 0, 0 };
     // Releases the staging memory of the uploads.
     try device.waitIdle();
     log.info("Earth maps {t} uploaded in {d} ms", .{ quality, start.untilNow(cache.io, .awake).toMilliseconds() });
-    return .{ .textures = textures, .layouts = layouts, .quality = quality };
+    return .{ .textures = textures, .bounds = bounds, .layouts = layouts, .quality = quality };
+}
+
+fn uploadBounds(gpa: std.mem.Allocator, io: Io, device: gpu.Device, maps: *const EarthMaps) LoadError!gpu.Texture {
+    const channel_count = 4;
+    const cells = try gpa.alloc(u8, MapBounds.width * MapBounds.height * channel_count);
+    defer gpa.free(cells);
+    @memset(cells, 0);
+    const topography = maps.maps.get(.topography);
+    const clouds = maps.maps.get(.clouds);
+    try MapBounds.build(gpa, io, &.{
+        .{ .header = topography.header, .pixels = topography.pixels, .channel = 0 },
+        .{ .header = clouds.header, .pixels = clouds.pixels, .channel = 1 },
+    }, cells, channel_count);
+    const texture = try initBounds(device, MapBounds.width, MapBounds.height);
+    errdefer texture.deinit();
+    try texture.upload(device, .{ .x = 0, .y = 0, .z = 0, .width = MapBounds.width, .height = MapBounds.height, .depth = 1 }, cells, MapBounds.width * channel_count);
+    return texture;
+}
+
+fn initBounds(device: gpu.Device, width: u32, height: u32) gpu.Error!gpu.Texture {
+    return .init(device, .{
+        .kind = .@"2d",
+        .format = .rgba8_unorm,
+        .width = width,
+        .height = height,
+        .depth_or_layers = 1,
+        .usage = .{ .shader_resource = true, .copy_destination = true },
+        .label = "map bounds",
+    });
 }
 
 pub const Limits = struct { dimension_max: u32, layers_max: u32 };

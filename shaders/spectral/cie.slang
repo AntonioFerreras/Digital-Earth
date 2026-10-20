@@ -90,6 +90,7 @@ public WavelengthBundle sample_wavelength_bundle(StructuredBuffer<float> cie, fl
 {
     WavelengthBundle bundle;
     bundle.u = u;
+    [ForceUnroll]
     for (int k = 0; k < BUNDLE_WAVELENGTH_COUNT; k++)
     {
         WavelengthSample s = sample_wavelength(cie, (u + float(k)) / float(BUNDLE_WAVELENGTH_COUNT));
