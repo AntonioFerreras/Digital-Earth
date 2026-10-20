@@ -34,12 +34,12 @@ terrain and albedo reach about 100 m. Evidence:
   tiles share one payload), payloads.
 - Layers:
   - **height**: vertex-centred n + 1 samples with a 2-sample border, signed
-    metres (sea floor included), stored as residuals against the reconstructed
-    parent (Proland's closed loop), MED-predicted, zstd. Also per tile: min and
-    max height for the traversal bounds.
-  - **surface**: albedo RGB + water mask in A, n texels with a 2-texel border,
-    linear-space box mips; zstd for now (Blue Marble stops at depth 7), an
-    image codec once a sharper source arrives.
+    metres (sea floor included) and a water-fraction plane, MED-predicted,
+    zstd; each tile decodes alone. Per tile: min and max height for the
+    traversal bounds.
+  - **surface**: RGB albedo, n texels with a 2-texel border, baseline JPEG;
+    Blue Marble stops at depth 7.
+- The binding layout is in `docs/plans/20261020-streamed-earth-tiles.md`.
 - Coarse levels 0 to L_base of every layer are always resident (tens of MB).
 
 ### Bake (`python/tiles/`)
@@ -51,28 +51,28 @@ terrain and albedo reach about 100 m. Evidence:
 
 ### GPU streaming (`src/render/TileStreamer.zig`, `shaders/earth/tiles.slang`)
 
-- Pool: `Texture2DArray`s of fixed slots (heights R32F or R16 + scale; surface
-  RGBA8), LRU on the host, about 1 to 2 GB, split across arrays under the
-  2048-layer guarantee.
+- Pool: `Texture2DArray`s of 2048 slots, the layer count every device supports
+  (heights R16_SINT and water R8, surface RGBA8), about 0.6 GB.
 - Indirection: per-face u32 mip pyramid of {slot, resident level} pointing at
   the finest resident ancestor; one dependent fetch per lookup.
-- LOD: ray cones carried by `Path`; a lookup wanting a finer level than resident
-  sets a bit in a request bitset.
+- LOD: ray cones; a lookup wanting a finer level than resident sets a bit in a
+  request bitset. Only camera rays request: shadow and bounce rays reach far
+  and wide and read what the camera's tiles brought.
 - Feedback: triple-buffered request buffers copied to readback memory and read
-  behind fences two or three frames late; worker threads read and decode
-  (libzstd vendored in the native library), uploads go through a persistent
-  staging ring.
-- Epochs: new tiles enter the indirection only at an epoch boundary; a change
-  of heights where primary rays hit restarts accumulation, albedo-only changes
-  keep it.
+  behind fences three frames late; the render thread decodes up to 32 tiles a
+  frame (libzstd's decoder built by build.zig, stb for JPEG) into a staging
+  ring whose copies precede the frame's dispatches. A full pool evicts the
+  least recently wanted leaf.
+- Accumulation restarts when tiles arrive; offline renders stream until quiet
+  first.
 
 ### Terrain intersection (`shaders/earth/surface.slang`)
 
-- Two levels: walk the face quadtree front to back with each node's max height
-  (skipping like today's bound map), then inside a resident tile step its
-  max-mip chain in tile-local f32 coordinates. A missing child uses the parent's
-  bound and surface; hits carry their level so shadow and bounce rays start on
-  the same surface.
+- `shaders/earth/tile_terrain.slang`: each tile is bounded by four planes
+  through the planet centre, so the march jumps exactly to where the ray leaves
+  a tile whose subtree maximum it clears, coarsening the tried level after each
+  jump and refining after each miss as a maximum-mipmap traversal does; at the
+  resident level it steps the height field (sea level over the sea floor).
 
 ### C shim additions (`native/`)
 
