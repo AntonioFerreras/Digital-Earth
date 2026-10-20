@@ -262,7 +262,8 @@ Spectrum transmittance(float3 pos, float3 dir, Media media, inout Rng rng)
 struct PhaseChoice
 {
     uint id;
-    // The aerosol switches to Henyey-Greenstein, clouds to their broader peak.
+    // After the first scatter the aerosol switches from Klein-Nishina to
+    // Henyey-Greenstein and clouds to their broader peak.
     bool reduce_peak;
     // Hack of the original: deep bounces see clouds as isotropic.
     bool isotropic_cloud;
@@ -274,22 +275,17 @@ struct PhaseChoice
         isotropic_cloud = bounce >= CLOUD_DEEP_BOUNCE;
     }
 
-    bool mie_hg(SceneUniforms scene)
-    {
-        return reduce_peak && (scene.config.x & SCENE_MIE_HG_AFTER_FIRST) != 0;
-    }
-
-    float evaluate(float cos_theta, SceneUniforms scene)
+    float evaluate(float cos_theta)
     {
         if (id == RAYLEIGH)
             return rayleigh_phase(cos_theta);
         if (id == MIE)
-            return mie_hg(scene) ? hg_phase(cos_theta, MIE_HG_G) : klein_nishina_phase(cos_theta, MIE_KLEIN_NISHINA_E);
+            return reduce_peak ? hg_phase(cos_theta, MIE_HG_G) : klein_nishina_phase(cos_theta, MIE_KLEIN_NISHINA_E);
         return isotropic_cloud ? ISOTROPIC_PHASE : cloud_phase(cos_theta, reduce_peak);
     }
 
     // A new direction for propagation `dir`; `weight` is phase / pdf.
-    float3 sample(float3 u, float3 dir, SceneUniforms scene, out float weight)
+    float3 sample(float3 u, float3 dir, out float weight)
     {
         weight = 1.0;
         if (id == RAYLEIGH)
@@ -299,7 +295,7 @@ struct PhaseChoice
             return sampled;
         }
         if (id == MIE)
-            return mie_hg(scene) ? sample_hg_phase(u.xy, dir, MIE_HG_G) : sample_klein_nishina_phase(u.xy, dir, MIE_KLEIN_NISHINA_E);
+            return reduce_peak ? sample_hg_phase(u.xy, dir, MIE_HG_G) : sample_klein_nishina_phase(u.xy, dir, MIE_KLEIN_NISHINA_E);
         return isotropic_cloud ? sample_sphere_uniform(u.xy) : sample_cloud_phase(u, dir, reduce_peak);
     }
 };
@@ -361,10 +357,10 @@ public PathSample path_radiance(float3 pos, float3 dir, float3 sun, Spectrum wav
             {
                 Spectrum sun_transmittance = transmittance(scatter_pos, light, media, rng);
                 radiance += throughput * weights.ratio * sun_transmittance * sun_irradiance *
-                            phase.evaluate(dot(dir, light), scene);
+                            phase.evaluate(dot(dir, light));
             }
             float weight;
-            dir = phase.sample(rng.next4().xyz, dir, scene, weight);
+            dir = phase.sample(rng.next4().xyz, dir, weight);
             pos = scatter_pos;
             throughput *= weight;
         }

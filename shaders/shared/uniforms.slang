@@ -25,13 +25,11 @@ public static const uint SCENE_CLOUDS = 1u << 1;
 public static const uint SCENE_NIGHT_LIGHTS = 1u << 2;
 public static const uint SCENE_STARS = 1u << 3;
 public static const uint SCENE_EARTH_MAPS = 1u << 4;
-// Klein-Nishina Mie on the first scatter only, Henyey-Greenstein afterwards.
-public static const uint SCENE_MIE_HG_AFTER_FIRST = 1u << 5;
 // Round-trip every camera ray through the uvwz parameterization (symmetric scene).
-public static const uint SCENE_CANONICALIZE = 1u << 6;
+public static const uint SCENE_CANONICALIZE = 1u << 5;
 // Light scatters once only (with `config.y` = 1): the ray marcher drops its
 // multiple-scattering table. For accuracy studies of the modes against each other.
-public static const uint SCENE_SINGLE_SCATTERING = 1u << 7;
+public static const uint SCENE_SINGLE_SCATTERING = 1u << 6;
 
 public struct SceneUniforms {
     // x: SCENE_* flags, y: max bounces, z: first bounce with Russian roulette, w: unused.

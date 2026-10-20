@@ -157,8 +157,8 @@ upstream DCTL that the shader is tested against.
 
 Render modes:
 
-- `path_tracer`: spectral volumetric path tracing, up to 25 bounces in the
-  textured scene. The reference, and the slowest to converge.
+- `path_tracer`: spectral volumetric path tracing, up to 25 bounces. The
+  reference, and the slowest to converge.
 - `raymarch`: single scattering along the view ray plus a multiple-scattering
   lookup table (Hillaire 2020), baked on the GPU at startup and whenever the
   scene preset changes. Its steps crowd into dense air, placed by a coarse
@@ -182,6 +182,10 @@ Scene presets:
 - `symmetric`: a smooth grey sphere under a clear atmosphere, the scene the networks
   are trained on and the scattering table holds. `neural` and `bruneton` render it
   whatever the preset.
+
+Both presets share one atmosphere and one light transport (aerosol phase
+Klein-Nishina on the first scatter and Henyey-Greenstein after it, up to 25
+bounces); they differ in scene content only.
 
 The config presets in [`presets/`](presets) (`apollo-11.zon`, `florida.zon`,
 `sunset-hurricane.zon`) set the camera, sun, scene preset, and display

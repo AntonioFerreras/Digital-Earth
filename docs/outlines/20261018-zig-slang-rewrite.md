@@ -151,12 +151,15 @@ against Slang reflection when the kernel is created.
 - **RNG:** a PCG hash keyed by (pixel, frame, sample dimension), so the output
   is reproducible.
 - **Scene presets:** a struct of flags and constants, so one path-tracer
-  kernel serves both scenes:
+  kernel serves both scenes. They differ in scene content only; the
+  atmosphere and the light transport are shared (KN Mie on the first scatter
+  and HG g = 0.8 after it, turbidity 1.03, Rayleigh fit normalized to 1 at sea
+  level, 25 bounces):
   - `textured` (from `main`): heightfield land, materials, clouds, night
-    lights, stars, KN Mie, 25 bounces, turbidity 1.06.
+    lights, stars.
   - `symmetric` (from `data_prep`): sphere ground with albedo 0.3, no clouds,
-    KN then HG Mie, 10 bounces, turbidity 1.03, and canonicalization through
-    uvwz. It exists for MLP parity and data generation.
+    and canonicalization through uvwz. It exists for MLP parity and data
+    generation.
 - **Earth maps:**
   - `bake-textures` decodes the NASA PNGs once with stb_image into a raw cache
     (header plus u8 rows, south row first, matching the Taichi orientation).
@@ -210,6 +213,7 @@ against Slang reflection when the kernel is created.
 | 17 | ozone: two Gaussians at 25 km plus a floor below 15 km, scaled to a 173 DU column; 293 K cross sections read nearest-lower from bins [390 + i, 391 + i) nm | measured profile (`LUT/ozone_profile.dat`, McPeters and Labow 2011 global annual mean, 292 DU, 500 m samples interpolated linearly); 223 K cross sections (Serdyuchenko et al. 2014) averaged over bins centred on 390 + i nm and interpolated linearly; generators in `python/lut/`. The ozone goldens are numpy references, and the `bruneton` table and the networks, trained on the old ozone, need a rebake and retraining |
 | 18 | ray march: one wavelength per sample; per-wavelength transmittance (64 x 64 x 441) and multiple-scattering (32 x 32 x 441) tables | four wavelengths per sample, stratified in the CIE CDF (`sample_wavelength_bundle`); transmittance from a 256 x 256 table of log column densities (exact for every wavelength, filtered in f32); the multiple-scattering table holds one bundle per texel (32 x 32 x 128 x rgba); see `docs/research/20261019-twilight-variance.md` |
 | 19 | path tracer: one wavelength per path; surface bounces cosine weighted | a four-wavelength bundle per path: a hero drawn uniformly from the bundle decides the collisions under a majorant shared by all members, and the members are weighted by spectral MIS (balance heuristic, Wilkie et al. 2014); clouds are tracked before the RMO media; in both modes, bounces off the textured surface mix cosine weighting with the ocean lobes' GGX normals by one-sample MIS; see `docs/research/20261019-twilight-variance.md` |
+| 20 | `main` and `data_prep` differ in physics: turbidity 1.06 vs 1.03, Rayleigh fit normalized by 1.225 vs 1.220554684, KN Mie on every scatter vs KN then HG g = 0.8, 25 vs 10 bounces | both presets share `data_prep`'s physics with 25 bounces (`atmosphere` in `src/render/scene.zig`); they differ in scene content only, so the ray marcher's tables bake identically for both |
 
 Kept on purpose: the Beckmann ocean lobe without `1/(4 nl nv)` (a tuned
 look), and the `mu_s >= -0.2` clamp inside uvwz (it defines the MLP's input
