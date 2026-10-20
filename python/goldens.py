@@ -34,6 +34,7 @@ import torch
 
 import export_weights
 import opendrt
+from tiles import cube
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDENS = ROOT / "tests" / "goldens"
@@ -801,6 +802,39 @@ def earth_sets():
     return sets
 
 
+# cube ------------------------------------------------------------------------
+
+
+def cube_sets():
+    sets = []
+    # Face centres, near-edge and near-corner directions (off the exact ties,
+    # where the face choice is a convention: the first of x, y, z wins), the
+    # Alps, and random directions, some not unit length.
+    near_edges = [[1, 0.999, 0.2], [-0.3, 1, -0.999], [0.999, -0.999, 1], [-1, 0.5, 0.9999], [0.2, -1, 0.99]]
+    alps = cube.lonlat_to_direction(np.array([5.0, 7.5, 12.0]), np.array([44.0, 46.0, 48.0]))
+    rows = np.vstack([np.eye(3), -np.eye(3), unit(near_edges), alps, random_units(16),
+                      random_units(4) * np.array([[3.7], [0.01], [250.0], [1.0]])])
+    face, u, v = cube.direction_to_face_uv(rows)
+    sets.append(golden_set(
+        "cube_face_uv", "test_cube_face_uv", rows, np.stack([face, u, v], axis=1), tol(3e-6, 0.0),
+        reference="port", source="python/tiles/cube.py direction_to_face_uv",
+        note="Inputs: a direction, not necessarily unit. Outputs: face, u, v.",
+    ))
+
+    corners = [[0, 0], [1, 1], [0, 1], [1, 0], [0.5, 0.5], [0.25, 0.75]]
+    borders = [[-2 / 192, 0.5], [1 + 2 / 192, 0.3], [0.7, -2 / 192], [1 + 2 / 192, 1 + 2 / 192]]
+    rows = np.array([[f, *uv] for f in range(6) for uv in corners + borders]
+                    + [[f, *uv] for f, uv in zip(rng.integers(0, 6, 12), rng.random((12, 2)))])
+    sets.append(golden_set(
+        "cube_direction", "test_cube_direction", rows,
+        cube.face_uv_to_direction(rows[:, 0].astype(int), rows[:, 1], rows[:, 2]), tol(3e-6, 0.0),
+        reference="port", source="python/tiles/cube.py face_uv_to_direction",
+        note="Inputs: face, u, v; u and v run 2/192 past the face edges, where tile borders sample. "
+             "Outputs: the unit direction.",
+    ))
+    return sets
+
+
 # post ------------------------------------------------------------------------
 
 
@@ -952,7 +986,7 @@ def neural_sets(checkpoint):
     return sets
 
 
-MODULES = ("common", "spectral", "atmosphere", "earth", "post", "neural")
+MODULES = ("common", "spectral", "atmosphere", "earth", "cube", "post", "neural")
 
 
 def main():
@@ -969,6 +1003,7 @@ def main():
         "spectral": spectral_sets,
         "atmosphere": atmosphere_sets,
         "earth": earth_sets,
+        "cube": cube_sets,
         "post": post_sets,
         "neural": lambda: neural_sets(args.mlp_checkpoint),
     }

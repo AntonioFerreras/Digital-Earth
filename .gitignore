@@ -13,5 +13,5 @@ cache/
 zig-pkg/
 screenshots/
 /config.zon
-sources/
-tiles/
+/sources/
+/tiles/
