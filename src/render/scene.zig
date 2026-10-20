@@ -1,5 +1,7 @@
 //! Scene presets: the flags and constants that let one path-tracer kernel render both
-//! original scenes. Values are those of the Taichi branches named below.
+//! original scenes. The presets differ in scene content only; the atmosphere and the
+//! light transport are the same in both. Values are those of the Taichi branches
+//! named below.
 
 const std = @import("std");
 const uniforms = @import("uniforms.zig");
@@ -16,23 +18,17 @@ pub const Preset = enum {
         return switch (preset) {
             .textured => build(.{
                 .flags = .{ .terrain = true, .clouds = true, .stars = true, .earth_maps = true },
-                .bounce_count_max = 25,
-                .turbidity = 1.06,
                 .cloud_extinction = 0.1,
                 .cloud_density = 0.029,
-                .rayleigh_sea_level_density = 1.225,
                 .albedo_srgb = 0.3,
                 .land_height_scale_m = 7800,
                 .night_light_scale = 1e-4,
                 .star_scale = 1e-7,
             }),
             .symmetric => build(.{
-                .flags = .{ .mie_hg_after_first = true, .canonicalize = true },
-                .bounce_count_max = 10,
-                .turbidity = 1.03,
+                .flags = .{ .canonicalize = true },
                 .cloud_extinction = 0,
                 .cloud_density = 0,
-                .rayleigh_sea_level_density = 1.220554684,
                 .albedo_srgb = 0.3,
                 // No terrain: the scale only lifts surface points for shadow rays.
                 .land_height_scale_m = 7800,
@@ -63,16 +59,24 @@ pub fn withoutClouds(scene_uniforms: uniforms.SceneUniforms) uniforms.SceneUnifo
     return result;
 }
 
-/// Both originals start Russian roulette once `scatter_count > 3`.
-const russian_roulette_first_bounce = 4;
+/// What every preset shares: the atmosphere and the light transport. The values are
+/// `data_prep`'s, the newer branch; `main` had turbidity 1.06, the Rayleigh fit
+/// normalized by 1.225 instead of by its own sea-level value, Klein-Nishina aerosol
+/// phase on every scatter, and the same 25 bounces.
+const atmosphere = struct {
+    const bounce_count_max = 25;
+    /// Both originals start Russian roulette once `scatter_count > 3`.
+    const russian_roulette_first_bounce = 4;
+    const turbidity = 1.03;
+    /// The Rayleigh fit's value at sea level, so its normalized density is 1 there.
+    const rayleigh_sea_level_density = 1.220554684;
+};
 
+/// Scene content: what the presets differ in.
 const Constants = struct {
     flags: uniforms.SceneFlags,
-    bounce_count_max: u32,
-    turbidity: f32,
     cloud_extinction: f32,
     cloud_density: f32,
-    rayleigh_sea_level_density: f32,
     /// Ground albedo where `earth_maps` is off.
     albedo_srgb: f32,
     land_height_scale_m: f32,
@@ -82,12 +86,12 @@ const Constants = struct {
 
 fn build(constants: Constants) uniforms.SceneUniforms {
     return .{
-        .config = .{ @bitCast(constants.flags), constants.bounce_count_max, russian_roulette_first_bounce, 0 },
+        .config = .{ @bitCast(constants.flags), atmosphere.bounce_count_max, atmosphere.russian_roulette_first_bounce, 0 },
         .media = .{
-            constants.turbidity,
+            atmosphere.turbidity,
             constants.cloud_extinction,
             constants.cloud_density,
-            constants.rayleigh_sea_level_density,
+            atmosphere.rayleigh_sea_level_density,
         },
         .surface = .{
             constants.albedo_srgb,

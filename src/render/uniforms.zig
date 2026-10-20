@@ -16,10 +16,9 @@ pub const SceneFlags = packed struct(u32) {
     night_lights: bool = false,
     stars: bool = false,
     earth_maps: bool = false,
-    mie_hg_after_first: bool = false,
     canonicalize: bool = false,
     single_scattering: bool = false,
-    _: u24 = 0,
+    _: u25 = 0,
 };
 
 pub const SceneUniforms = extern struct {

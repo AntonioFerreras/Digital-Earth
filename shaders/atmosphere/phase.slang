@@ -10,7 +10,7 @@ import common.geometry;
 public static const float ISOTROPIC_PHASE = 1.0 / (4.0 * PI);
 // Klein-Nishina asymmetry of the aerosol phase, a sharp forward peak.
 public static const float MIE_KLEIN_NISHINA_E = 3000.0;
-// Henyey-Greenstein g of the aerosol phase after the first scatter (symmetric scene).
+// Henyey-Greenstein g of the aerosol phase after the first scatter.
 public static const float MIE_HG_G = 0.8;
 
 public float rayleigh_phase(float cos_theta)
