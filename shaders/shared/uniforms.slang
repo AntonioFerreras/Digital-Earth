@@ -55,6 +55,13 @@ public struct EarthMapUniforms {
     public uint4 bounds;
 };
 
+// The cube-face tile quadtrees (earth/tiles.slang): per layer, x the last level and
+// y the first indirection entry of its face 0; height layer first, then surface.
+public struct TileUniforms {
+    public uint4 height;
+    public uint4 surface;
+};
+
 // Leave the sun disk out of the escaping rays' radiance (modes/datagen.slang).
 public static const uint DATAGEN_EXCLUDE_SUN_DISK = 1u << 0;
 

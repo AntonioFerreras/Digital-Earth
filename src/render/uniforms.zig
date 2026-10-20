@@ -40,6 +40,12 @@ pub const EarthMapUniforms = extern struct {
     bounds: [4]u32,
 };
 
+/// Per `TileSet.Layer`: the last level, and the first indirection entry of its face 0.
+pub const TileUniforms = extern struct {
+    height: [4]u32,
+    surface: [4]u32,
+};
+
 pub const DatagenFlags = packed struct(u32) {
     exclude_sun_disk: bool = false,
     _: u31 = 0,

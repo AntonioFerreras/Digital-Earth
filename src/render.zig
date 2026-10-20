@@ -17,6 +17,7 @@ pub const BrunetonMode = @import("render/BrunetonMode.zig");
 pub const Datagen = @import("render/Datagen.zig");
 pub const GpuEarthMaps = @import("render/GpuEarthMaps.zig");
 pub const TileResidency = @import("render/TileResidency.zig");
+pub const TilePool = @import("render/TilePool.zig");
 pub const scene = @import("render/scene.zig");
 pub const uniforms = @import("render/uniforms.zig");
 
@@ -29,4 +30,5 @@ test {
     _ = @import("render/test_datagen.zig");
     _ = @import("render/test_lut4d.zig");
     _ = @import("render/test_brdf.zig");
+    _ = @import("render/test_tiles.zig");
 }
