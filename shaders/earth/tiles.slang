@@ -102,6 +102,15 @@ public struct FacePoint
     }
 };
 
+// The unit direction at face coordinates `uv` of `face`, the inverse of FacePoint; uv
+// may run past [0, 1] onto the face's continued warp, where tile borders sample.
+public float3 face_direction(uint face, float2 uv)
+{
+    FaceFrame frame = FaceFrame(face);
+    float2 gnomonic = tan(0.5 * PI * (uv - 0.5));
+    return normalize(frame.normal + gnomonic.x * frame.s_axis + gnomonic.y * frame.t_axis);
+}
+
 // Where a lookup lands: the pool slot of the finest resident tile at or above the level
 // asked for, and the point's position within it in [0, 1]^2.
 public struct TileHit

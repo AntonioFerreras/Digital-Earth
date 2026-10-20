@@ -253,6 +253,12 @@ test "golden neural.k_planes" {
 test "golden neural.erf" {
     try expectGoldenSet("neural", "erf");
 }
+test "golden cube.cube_face_uv" {
+    try expectGoldenSet("cube", "cube_face_uv");
+}
+test "golden cube.cube_direction" {
+    try expectGoldenSet("cube", "cube_direction");
+}
 test "golden post.opendrt" {
     try expectGoldenSet("post", "opendrt");
 }
