@@ -32,6 +32,12 @@ python = "3.12.*"
 numpy = "*"
 # python/study plots the encoding study's Pareto fronts.
 matplotlib = "*"
+# python/tiles bakes the streamed Earth tiles: GDAL reads the sources (GEBCO
+# is netCDF), zstandard and Pillow encode the payloads.
+gdal = ">=3.13.3,<4"
+libgdal-netcdf = ">=3.13.3,<4"
+zstandard = ">=0.25.0,<0.26"
+pillow = ">=13.0.0,<14"
 
 [feature.py.pypi-dependencies]
 torch = "*"
