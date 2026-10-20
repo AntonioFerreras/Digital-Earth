@@ -42,7 +42,7 @@ test "earth bounce sampling is normalized and matches uniform sampling" {
         .{ .param = try kernel.param("outputs"), .resource = .{ .buffer = output_buffer } },
         .{ .param = try kernel.param("case_count"), .resource = .{ .data = std.mem.asBytes(&case_count) } },
     }, kernel.groupCount(.{ case_count, 1, 1 }));
-    try command_list.submit();
+    try command_list.submit(null);
     try dispatched;
     try output_buffer.read(device, 0, std.mem.sliceAsBytes(&results));
 

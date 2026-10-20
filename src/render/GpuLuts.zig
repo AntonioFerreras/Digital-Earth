@@ -137,7 +137,7 @@ fn bakeColumnDensity(device: gpu.Device, ozone_cross_section: gpu.Buffer, ozone_
         .{ .param = try kernel.param("ozone_profile"), .resource = .{ .buffer = ozone_profile } },
         .{ .param = try kernel.param("column_density_target"), .resource = .{ .texture = texture } },
     }, kernel.groupCount(.{ column_density_size[0], column_density_size[1], 1 }));
-    try command_list.submit();
+    try command_list.submit(null);
     try recorded;
     try device.waitIdle();
     return texture;

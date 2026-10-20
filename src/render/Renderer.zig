@@ -282,7 +282,7 @@ pub fn render(renderer: *Renderer, view: View, tone: Post.Tone) Post.RecordError
             );
         },
     };
-    try command_list.submit();
+    try command_list.submit(null);
     try recorded;
 
     frame_uniforms.frame[0] += 1;

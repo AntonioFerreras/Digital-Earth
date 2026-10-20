@@ -51,6 +51,7 @@ typedef struct en_sampler en_sampler;
 typedef struct en_kernel en_kernel;
 typedef struct en_cmd en_cmd;
 typedef struct en_surface en_surface;
+typedef struct en_fence en_fence;
 
 /* ---------------------------------------------------------------- device */
 
@@ -121,6 +122,12 @@ EN_API en_status en_buffer_upload(en_device *device, en_buffer *buffer, uint64_t
 /* Blocking. */
 EN_API en_status en_buffer_read(en_device *device, en_buffer *buffer, uint64_t offset,
                                 void *dst, uint64_t size);
+/* Maps an EN_MEMORY_UPLOAD or EN_MEMORY_READBACK buffer for the host until en_buffer_unmap.
+ * Never blocks: a readback buffer holds what the last copy into it wrote only once that
+ * copy's fence has been reached, and an upload buffer must not be written while a copy
+ * reading it is in flight. */
+EN_API en_status en_buffer_map(en_device *device, en_buffer *buffer, void **out);
+EN_API en_status en_buffer_unmap(en_device *device, en_buffer *buffer);
 
 /* ---------------------------------------------------------------- textures */
 
@@ -238,6 +245,16 @@ EN_API en_status en_kernel_find_param(const en_kernel *kernel, const char *path,
 EN_API en_status en_kernel_find_field(const en_kernel *kernel, const char *path,
                                       const char *field, uint64_t *offset, uint64_t *size);
 
+/* ---------------------------------------------------------------- fences */
+
+/* A counter the GPU raises as submitted work completes (en_cmd_submit). */
+EN_API en_status en_fence_create(en_device *device, en_fence **out);
+EN_API void en_fence_destroy(en_fence *fence);
+/* The largest value signaled so far; never blocks. */
+EN_API en_status en_fence_value(en_fence *fence, uint64_t *out);
+/* Blocking: waits until the fence reaches `value`. */
+EN_API en_status en_fence_wait(en_device *device, en_fence *fence, uint64_t value);
+
 /* ---------------------------------------------------------------- commands */
 
 typedef enum en_binding_kind {
@@ -259,13 +276,29 @@ typedef struct en_binding {
     en_sampler *sampler;
 } en_binding;
 
+/* Alignments of en_cmd_copy_buffer_to_texture's source, the strictest of the backends. */
+enum {
+    EN_COPY_ROW_PITCH_ALIGNMENT = 256,
+    EN_COPY_OFFSET_ALIGNMENT = 512,
+};
+
 EN_API en_status en_cmd_begin(en_device *device, en_cmd **out);
 /* Consecutive dispatches in one command list are separated by a UAV barrier. */
 EN_API en_status en_cmd_dispatch(en_cmd *cmd, en_kernel *kernel, const en_binding *bindings,
                                  uint32_t binding_count, uint32_t groups_x, uint32_t groups_y,
                                  uint32_t groups_z);
-/* Submits and releases cmd, also on failure. */
-EN_API en_status en_cmd_submit(en_cmd *cmd);
+/* Copies `size` bytes between buffers, ordered with the list's other commands. */
+EN_API en_status en_cmd_copy_buffer(en_cmd *cmd, en_buffer *dst, uint64_t dst_offset,
+                                    en_buffer *src, uint64_t src_offset, uint64_t size);
+/* Copies rows `row_pitch` apart from `src` at `src_offset` into `region` of a 2D texture or
+ * of one layer (region->z) of a 2D array; region->depth must be 1. `row_pitch` and
+ * `src_offset` must be multiples of EN_COPY_ROW_PITCH_ALIGNMENT and EN_COPY_OFFSET_ALIGNMENT. */
+EN_API en_status en_cmd_copy_buffer_to_texture(en_cmd *cmd, en_texture *dst,
+                                               const en_texture_region *region, en_buffer *src,
+                                               uint64_t src_offset, uint64_t row_pitch);
+/* Submits and releases cmd, also on failure. With a fence, the GPU raises it to `value`
+ * once the list's work completes; values must increase from submit to submit. */
+EN_API en_status en_cmd_submit(en_cmd *cmd, en_fence *fence, uint64_t value);
 
 /* ---------------------------------------------------------------- surface */
 

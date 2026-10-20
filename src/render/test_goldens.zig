@@ -102,7 +102,7 @@ fn expectGoldenSet(file: []const u8, function: []const u8) !void {
     }
     const command_list: gpu.CommandList = try .begin(device);
     const dispatched = command_list.dispatch(kernel, bindings.items, kernel.groupCount(.{ set.cases, 1, 1 }));
-    try command_list.submit();
+    try command_list.submit(null);
     try dispatched;
 
     const results = try arena.alloc(f32, set.outputs.len);

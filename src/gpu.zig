@@ -11,6 +11,7 @@ pub const Texture = @import("gpu/Texture.zig");
 pub const Sampler = @import("gpu/Sampler.zig");
 pub const Kernel = @import("gpu/Kernel.zig");
 pub const CommandList = @import("gpu/CommandList.zig");
+pub const Fence = @import("gpu/Fence.zig");
 pub const Surface = @import("gpu/Surface.zig");
 
 const log = std.log.scoped(.gpu);

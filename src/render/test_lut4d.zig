@@ -154,7 +154,7 @@ fn run(
     }
     const command_list: gpu.CommandList = try .begin(device);
     const dispatched = command_list.dispatch(kernel, all_bindings[0 .. 3 + bindings.len], kernel.groupCount(.{ case_count, 1, 1 }));
-    try command_list.submit();
+    try command_list.submit(null);
     try dispatched;
     try output_buffer.read(device, 0, std.mem.sliceAsBytes(outputs));
 }

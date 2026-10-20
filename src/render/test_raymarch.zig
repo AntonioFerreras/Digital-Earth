@@ -44,7 +44,7 @@ const Fixture = struct {
         const scene_uniforms = scene.Preset.textured.sceneUniforms();
         const command_list: gpu.CommandList = try .begin(device);
         const recorded = mode.bake(command_list, &shared, &scene_uniforms);
-        try command_list.submit();
+        try command_list.submit(null);
         try recorded;
         try device.waitIdle();
         return .{ .device = device, .shared = shared, .mode = mode, .scene = scene_uniforms };
@@ -87,7 +87,7 @@ const Fixture = struct {
             .{ .param = try kernel.param("multiple_scattering_lut"), .resource = .{ .texture = fixture.mode.multiple_scattering } },
             .{ .param = try kernel.param("cie"), .resource = .{ .buffer = fixture.shared.luts.cie } },
         }, kernel.groupCount(.{ case_count, 1, 1 }));
-        try command_list.submit();
+        try command_list.submit(null);
         try dispatched;
         try output_buffer.read(device, 0, std.mem.sliceAsBytes(results));
     }

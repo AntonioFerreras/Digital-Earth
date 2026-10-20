@@ -194,7 +194,7 @@ pub fn evaluate(datagen: *Datagen, first_point: u32, records: []datagen_format.R
         }
         break :record {};
     };
-    try command_list.submit();
+    try command_list.submit(null);
     try recorded;
     try datagen.accum.read(device, 0, std.mem.sliceAsBytes(datagen.group_sums));
 

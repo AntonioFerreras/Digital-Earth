@@ -1,4 +1,4 @@
-//! A recording of compute dispatches. `submit` consumes it, also on failure.
+//! A recording of compute dispatches and copies. `submit` consumes it, also on failure.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -83,6 +83,50 @@ pub fn dispatch(
     ), "en_cmd_dispatch");
 }
 
-pub fn submit(command_list: CommandList) gpu.Error!void {
-    try gpu.check(c.en_cmd_submit(command_list.handle), "en_cmd_submit");
+/// EN_COPY_ROW_PITCH_ALIGNMENT and EN_COPY_OFFSET_ALIGNMENT: what `copyBufferToTexture`
+/// requires of its source's row pitch and offset.
+pub const copy_row_pitch_alignment = c.EN_COPY_ROW_PITCH_ALIGNMENT;
+pub const copy_offset_alignment = c.EN_COPY_OFFSET_ALIGNMENT;
+
+/// Records a copy of `size` bytes, ordered with the list's other commands.
+pub fn copyBuffer(command_list: CommandList, dst: gpu.Buffer, dst_offset: u64, src: gpu.Buffer, src_offset: u64, size: u64) gpu.Error!void {
+    assert(size > 0 and dst_offset + size <= dst.size and src_offset + size <= src.size);
+    try gpu.check(
+        c.en_cmd_copy_buffer(command_list.handle, dst.handle, dst_offset, src.handle, src_offset, size),
+        "en_cmd_copy_buffer",
+    );
+}
+
+/// Records a copy of rows `row_pitch` apart from `src` at `src_offset` into `region` of a
+/// 2D texture or of one layer (`region.z`) of a 2D array.
+pub fn copyBufferToTexture(
+    command_list: CommandList,
+    dst: gpu.Texture,
+    region: gpu.Texture.Region,
+    src: gpu.Buffer,
+    src_offset: u64,
+    row_pitch: u64,
+) gpu.Error!void {
+    assert(region.depth == 1);
+    assert(row_pitch % copy_row_pitch_alignment == 0 and src_offset % copy_offset_alignment == 0);
+    assert(src_offset + row_pitch * region.height <= src.size);
+    const native: c.en_texture_region = .{
+        .x = region.x,
+        .y = region.y,
+        .z = region.z,
+        .width = region.width,
+        .height = region.height,
+        .depth = region.depth,
+    };
+    try gpu.check(
+        c.en_cmd_copy_buffer_to_texture(command_list.handle, dst.handle, &native, src.handle, src_offset, row_pitch),
+        "en_cmd_copy_buffer_to_texture",
+    );
+}
+
+/// Submits the list; with `signal`, its fence reaches the value once the work completes.
+pub fn submit(command_list: CommandList, signal: ?gpu.Fence.Signal) gpu.Error!void {
+    const fence = if (signal) |s| s.fence.handle else null;
+    const value = if (signal) |s| s.value else 0;
+    try gpu.check(c.en_cmd_submit(command_list.handle, fence, value), "en_cmd_submit");
 }

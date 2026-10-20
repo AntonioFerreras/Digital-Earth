@@ -72,3 +72,17 @@ pub fn read(buffer: Buffer, device: gpu.Device, offset: u64, target: []u8) gpu.E
         "en_buffer_read",
     );
 }
+
+/// The bytes of an upload or readback buffer, until `unmap`. Never blocks: readback
+/// contents are valid once the fence of the copy into them is reached, and upload bytes
+/// must not change while a copy reading them is in flight.
+pub fn map(buffer: Buffer, device: gpu.Device) gpu.Error![]u8 {
+    var mapped: ?*anyopaque = null;
+    try gpu.check(c.en_buffer_map(device.handle, buffer.handle, &mapped), "en_buffer_map");
+    const bytes: [*]u8 = @ptrCast(mapped.?);
+    return bytes[0..@intCast(buffer.size)];
+}
+
+pub fn unmap(buffer: Buffer, device: gpu.Device) gpu.Error!void {
+    try gpu.check(c.en_buffer_unmap(device.handle, buffer.handle), "en_buffer_unmap");
+}

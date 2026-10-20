@@ -120,6 +120,10 @@ struct en_cmd {
     ComPtr<rhi::ICommandEncoder> encoder;
 };
 
+struct en_fence {
+    ComPtr<rhi::IFence> fence;
+};
+
 namespace en {
 
 void raise(en_status status, std::string message) { throw Error{status, std::move(message)}; }
@@ -557,6 +561,29 @@ en_status en_buffer_read(en_device *device, en_buffer *buffer, uint64_t offset, 
     });
 }
 
+en_status en_buffer_map(en_device *device, en_buffer *buffer, void **out) {
+    return en::guard([&] {
+        auto &dev = en::deref(device, "device");
+        rhi::IBuffer &buf = *en::deref(buffer, "buffer").buffer;
+        auto &mapped = en::deref(out, "out");
+        mapped = nullptr;
+        const rhi::MemoryType memory = buf.getDesc().memoryType;
+        if (memory == rhi::MemoryType::DeviceLocal)
+            en::raise(EN_ERR_INVALID_ARGUMENT, "device-local buffers cannot be mapped");
+        const auto mode = memory == rhi::MemoryType::Upload ? rhi::CpuAccessMode::Write
+                                                            : rhi::CpuAccessMode::Read;
+        en::check(dev.device->mapBuffer(&buf, mode, &mapped), "mapBuffer");
+    });
+}
+
+en_status en_buffer_unmap(en_device *device, en_buffer *buffer) {
+    return en::guard([&] {
+        en::check(en::deref(device, "device")
+                      .device->unmapBuffer(en::deref(buffer, "buffer").buffer),
+                  "unmapBuffer");
+    });
+}
+
 en_status en_texture_create(en_device *device, const en_texture_desc *desc, en_texture **out) {
     return en::guard([&] {
         auto &dev = en::deref(device, "device");
@@ -778,6 +805,35 @@ en_status en_kernel_find_field(const en_kernel *kernel, const char *path, const 
     });
 }
 
+en_status en_fence_create(en_device *device, en_fence **out) {
+    return en::guard([&] {
+        auto &dev = en::deref(device, "device");
+        en::deref(out, "out") = nullptr;
+        auto fence = std::make_unique<en_fence>();
+        en::check(dev.device->createFence(rhi::FenceDesc{}, fence->fence.writeRef()),
+                  "createFence");
+        *out = fence.release();
+    });
+}
+
+void en_fence_destroy(en_fence *fence) { delete fence; }
+
+en_status en_fence_value(en_fence *fence, uint64_t *out) {
+    return en::guard([&] {
+        en::check(en::deref(fence, "fence").fence->getCurrentValue(&en::deref(out, "out")),
+                  "getCurrentValue");
+    });
+}
+
+en_status en_fence_wait(en_device *device, en_fence *fence, uint64_t value) {
+    return en::guard([&] {
+        rhi::IFence *native = en::deref(fence, "fence").fence;
+        en::check(en::deref(device, "device")
+                      .device->waitForFences(1, &native, &value, true, rhi::kTimeoutInfinite),
+                  "waitForFences");
+    });
+}
+
 en_status en_cmd_begin(en_device *device, en_cmd **out) {
     return en::guard([&] {
         auto &dev = en::deref(device, "device");
@@ -807,11 +863,75 @@ en_status en_cmd_dispatch(en_cmd *cmd, en_kernel *kernel, const en_binding *bind
     });
 }
 
-en_status en_cmd_submit(en_cmd *cmd) {
+en_status en_cmd_copy_buffer(en_cmd *cmd, en_buffer *dst, uint64_t dst_offset, en_buffer *src,
+                             uint64_t src_offset, uint64_t size) {
+    return en::guard([&] {
+        auto &c = en::deref(cmd, "cmd");
+        rhi::IBuffer &to = *en::deref(dst, "dst").buffer;
+        rhi::IBuffer &from = *en::deref(src, "src").buffer;
+        require_usage(is_set(to.getDesc().usage, rhi::BufferUsage::CopyDestination),
+                      "EN_BUFFER_COPY_DESTINATION");
+        require_usage(is_set(from.getDesc().usage, rhi::BufferUsage::CopySource),
+                      "EN_BUFFER_COPY_SOURCE");
+        if (size == 0 || dst_offset > to.getDesc().size || size > to.getDesc().size - dst_offset ||
+            src_offset > from.getDesc().size || size > from.getDesc().size - src_offset)
+            en::raise(EN_ERR_INVALID_ARGUMENT, "copy range outside a buffer");
+        c.encoder->copyBuffer(&to, dst_offset, &from, src_offset, size);
+    });
+}
+
+en_status en_cmd_copy_buffer_to_texture(en_cmd *cmd, en_texture *dst,
+                                        const en_texture_region *region, en_buffer *src,
+                                        uint64_t src_offset, uint64_t row_pitch) {
+    return en::guard([&] {
+        auto &c = en::deref(cmd, "cmd");
+        rhi::ITexture &tex = *en::deref(dst, "dst").texture;
+        rhi::IBuffer &from = *en::deref(src, "src").buffer;
+        const auto &r = en::deref(region, "region");
+        const rhi::TextureDesc &desc = tex.getDesc();
+        require_usage(is_set(desc.usage, rhi::TextureUsage::CopyDestination),
+                      "EN_TEXTURE_COPY_DESTINATION");
+        require_usage(is_set(from.getDesc().usage, rhi::BufferUsage::CopySource),
+                      "EN_BUFFER_COPY_SOURCE");
+        const bool layered = desc.type == rhi::TextureType::Texture2DArray;
+        if (!layered && desc.type != rhi::TextureType::Texture2D)
+            en::raise(EN_ERR_INVALID_ARGUMENT, "copies go to 2D textures and 2D arrays only");
+        if (r.width == 0 || r.height == 0 || r.depth != 1 ||
+            uint64_t(r.x) + r.width > desc.size.width ||
+            uint64_t(r.y) + r.height > desc.size.height ||
+            r.z >= (layered ? desc.arrayLength : 1))
+            en::raise(EN_ERR_INVALID_ARGUMENT, "copy region outside the texture");
+        if (row_pitch % EN_COPY_ROW_PITCH_ALIGNMENT || src_offset % EN_COPY_OFFSET_ALIGNMENT)
+            en::raise(EN_ERR_INVALID_ARGUMENT, "row_pitch or src_offset is misaligned");
+        if (row_pitch < uint64_t(r.width) * rhi::getFormatInfo(desc.format).blockSizeInBytes)
+            en::raise(EN_ERR_INVALID_ARGUMENT, "row_pitch is smaller than one row of the region");
+        const uint64_t size = row_pitch * r.height;
+        if (src_offset > from.getDesc().size || size > from.getDesc().size - src_offset)
+            en::raise(EN_ERR_INVALID_ARGUMENT, "copy source outside the buffer");
+        c.encoder->copyBufferToTexture(&tex, layered ? r.z : 0, 0, {r.x, r.y, 0}, &from,
+                                       src_offset, size, row_pitch, {r.width, r.height, 1});
+    });
+}
+
+en_status en_cmd_submit(en_cmd *cmd, en_fence *fence, uint64_t value) {
     const std::unique_ptr<en_cmd> owned(cmd);
     return en::guard([&] {
         auto &c = en::deref(owned.get(), "cmd");
-        en::submit(*c.device, *c.encoder);
+        if (!fence) {
+            en::submit(*c.device, *c.encoder);
+            return;
+        }
+        ComPtr<rhi::ICommandBuffer> commands;
+        en::check(c.encoder->finish(commands.writeRef()), "finish");
+        rhi::ICommandBuffer *buffers[] = {commands};
+        rhi::IFence *fences[] = {fence->fence};
+        rhi::SubmitDesc submit;
+        submit.commandBuffers = buffers;
+        submit.commandBufferCount = 1;
+        submit.signalFences = fences;
+        submit.signalFenceValues = &value;
+        submit.signalFenceCount = 1;
+        en::check(c.device->queue->submit(submit), "submit");
     });
 }
 

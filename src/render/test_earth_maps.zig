@@ -75,7 +75,7 @@ fn sampleTiled(device: gpu.Device, texels: *const [height][width]u8, dimension_m
         .{ .param = try kernel.param("earth_topography"), .resource = .{ .texture = tiled.texture } },
         .{ .param = try kernel.param("linear_repeat_u"), .resource = .{ .sampler = sampler } },
     }, kernel.groupCount(.{ case_count, 1, 1 }));
-    try command_list.submit();
+    try command_list.submit(null);
     try recorded;
     try outputs.read(device, 0, std.mem.sliceAsBytes(results));
 }
