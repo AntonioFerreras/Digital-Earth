@@ -27,6 +27,10 @@ public StructuredBuffer<int> earth_tile_height_max;
 // Per height slot, BLOCK_ENTRIES maxima in metres of the slot's tile split into blocks
 // 1 to BLOCK_LEVELS levels below it, coarsest first, each level row by row.
 public StructuredBuffer<int> earth_tile_block_max;
+// The 10 m wind of src/assets/WindMap.zig over sphere_uv, or one cell of alpha 0
+// without a wind map.
+public Texture2D<float4> earth_wind;
+public SamplerState earth_wind_sampler;
 
 static const uint INDIRECTION_LEVEL_BITS = 4;
 // Asks for the finest level a layer has; lookups clamp it to the layer's last level.

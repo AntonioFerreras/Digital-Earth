@@ -392,6 +392,7 @@ fn renderImage(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
             .preset = config.preset,
             .single_scattering = options.single_scattering,
             .clouds = config.clouds and !options.no_clouds,
+            .water = config.water,
             .seed = arguments.seed,
             .texture_quality = config.texture_quality,
             .earth_map_cache = if (cache_dir) |dir| .{ .io = io, .dir = dir } else null,

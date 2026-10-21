@@ -1,6 +1,7 @@
 """Uploads the baked tile files to the Hugging Face dataset that `earth download` reads.
 
-Writes <data>/tiles/manifest.zon, the size and SHA-256 of every face file, and
+Writes <data>/tiles/manifest.zon, the size and SHA-256 of every face file and of
+the wind map that python/tiles/wind.py bakes, and
 uploads it with the files and dataset_card.md as the dataset's README.md. An
 upload of unchanged files transfers nothing.
 
@@ -35,7 +36,7 @@ def main():
     args = parser.parse_args()
 
     tiles = args.data / "tiles"
-    paths = [f"{layer}/face{face}.tiles" for layer in LAST_LEVELS for face in range(FACE_COUNT)]
+    paths = [f"{layer}/face{face}.tiles" for layer in LAST_LEVELS for face in range(FACE_COUNT)] + ["wind.raw"]
     lines = []
     for path in paths:
         print(f"hashing {path}", flush=True)

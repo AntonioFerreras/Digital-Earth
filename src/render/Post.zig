@@ -23,6 +23,8 @@ pub const Tone = struct {
     /// Offset to the tonescale preset's contrast power; 0 keeps the preset.
     contrast: f64,
     tonescale: TonescalePreset,
+    /// Off shows the exposed linear colour clipped to [0, 1] instead of OpenDRT's.
+    tone_map: bool = true,
     /// One of `GpuLuts.camera_response_names`; "Neutral" is the identity response.
     camera_response: []const u8,
     gamma: f64,
@@ -76,6 +78,7 @@ pub fn record(
     const post_uniforms: uniforms.PostUniforms = .{
         .tone = .{ @floatCast(tone.exposure), @floatCast(tone.gamma), @floatCast(tone.saturation), @floatCast(tone.contrast) },
         .state = .{ sample_count, camera_response_index, camera_response_count, @backingInt(tone.tonescale) },
+        .options = .{ @intFromBool(tone.tone_map), 0, 0, 0 },
     };
     const bindings = [_]gpu.CommandList.Binding{
         .{ .param = post.params.get(.post), .resource = .{ .data = std.mem.asBytes(&post_uniforms) } },

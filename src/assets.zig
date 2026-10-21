@@ -13,6 +13,7 @@ pub const Network = @import("assets/Network.zig");
 pub const Lut4d = @import("assets/Lut4d.zig");
 pub const TilePlan = @import("assets/TilePlan.zig");
 pub const TileSet = @import("assets/TileSet.zig");
+pub const WindMap = @import("assets/WindMap.zig");
 pub const datagen_format = @import("assets/datagen_format.zig");
 pub const tile_download = @import("assets/tile_download.zig");
 

@@ -103,6 +103,7 @@ pub fn init(gpa: std.mem.Allocator, io: Io, options: Options) Error!Viewer {
         .mode = config.mode,
         .preset = config.preset,
         .clouds = config.clouds,
+        .water = config.water,
         .tile_files = options.tile_files,
         .tiles = config.tiles,
         .texture_quality = config.texture_quality,
@@ -216,6 +217,7 @@ fn applySelections(viewer: *Viewer) void {
         viewer.config.preset = viewer.renderer.preset;
     };
     viewer.renderer.setClouds(viewer.config.clouds);
+    viewer.renderer.setWater(viewer.config.water);
     viewer.renderer.setTiles(viewer.config.tiles);
     viewer.renderer.setTextureQuality(viewer.config.texture_quality) catch |err| {
         log.err("switching to Earth maps {t} failed: {t}", .{ viewer.config.texture_quality, err });

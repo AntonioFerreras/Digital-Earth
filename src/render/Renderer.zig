@@ -86,6 +86,7 @@ preset: scene.Preset,
 single_scattering: bool,
 /// Off renders `scene.withoutClouds` of the preset.
 clouds: bool,
+water: scene.Water,
 /// On renders `scene.withTiles` of the preset; only with `tile_files`.
 tiles: bool,
 /// Must outlive the renderer, which streams from them.
@@ -191,6 +192,7 @@ pub const Options = struct {
     preset: scene.Preset,
     single_scattering: bool = false,
     clouds: bool = true,
+    water: scene.Water = .{},
     /// Keys the random numbers of frame i by i + seed, so renders seeded `n` samples
     /// apart are independent and together equal one longer render.
     seed: u32 = 0,
@@ -245,6 +247,7 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, luts: *const Luts, optio
         .preset = options.preset,
         .single_scattering = options.single_scattering,
         .clouds = options.clouds,
+        .water = options.water,
         .tiles = options.tiles and options.tile_files != null,
         .tile_files = options.tile_files,
         .tile_streamer = tile_streamer,
@@ -391,10 +394,17 @@ pub fn setClouds(renderer: *Renderer, clouds: bool) void {
     renderer.restart();
 }
 
+pub fn setWater(renderer: *Renderer, water: scene.Water) void {
+    if (std.meta.eql(renderer.water, water)) return;
+    renderer.water = water;
+    renderer.restart();
+}
+
 /// The active preset with this renderer's overrides applied.
 fn sceneUniforms(renderer: *const Renderer) uniforms.SceneUniforms {
     var result = renderer.preset.sceneUniforms();
     if (!renderer.clouds) result = scene.withoutClouds(result);
+    result = scene.withWater(result, renderer.water);
     if (renderer.tiles) result = scene.withTiles(result);
     if (renderer.single_scattering) result = scene.singleScattering(result);
     return result;

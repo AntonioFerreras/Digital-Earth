@@ -178,7 +178,7 @@ void raymarch_main(uint3 thread: SV_DispatchThreadID)
         BounceSample bounce = sample_bounce(surface, -dir, s.rng.next4().xyz, scene);
         for (int k = 0; k < BUNDLE_WAVELENGTH_COUNT; k++)
         {
-            float albedo = srgb_to_spectrum(srgb_to_spectrum_basis, surface.albedo_srgb, w.wavelength[k]);
+            Reflectance albedo = surface_reflectance(surface, srgb_to_spectrum_basis, w.wavelength[k]);
             radiance[k] += throughput[k] * surface_emission(surface, w.wavelength[k], scene);
             float sun_visibility = sun_visible ? sun_column.transmittance(media.extinction[k]) : 0.0;
             SurfaceResponse direct = surface_brdf(surface, albedo, -dir, sun, scene);

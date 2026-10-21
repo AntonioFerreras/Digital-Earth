@@ -59,6 +59,48 @@ pub fn withTiles(scene_uniforms: uniforms.SceneUniforms) uniforms.SceneUniforms 
     return result;
 }
 
+/// The water model's parts, each switchable for now to compare it with the previous
+/// look (shared/uniforms.slang).
+pub const Water = struct {
+    glint: bool = true,
+    body: bool = true,
+    clear_deep_water: bool = true,
+    calm_lakes: bool = true,
+    wind_map: bool = true,
+    roughness_texture: bool = true,
+    /// The sea's, in m/s at 10 m, where the wind map is off or holds none.
+    wind_speed: f64 = 0.25,
+    /// Factors on the roughness texture's default strength and size.
+    texture_strength: f64 = 0.02,
+    texture_size: f64 = 0.62,
+    /// How far the wind map's speed replaces `wind_speed`, 0 to 1.
+    wind_map_influence: f64 = 0.4,
+    /// The weight of the sea's slope tail, 0 to 1.
+    glint_tail: f64 = 1.0,
+    /// The roughness texture's streaks, in wavelengths along the wind.
+    streak_length: f64 = 4.4,
+    /// How far the roughness texture's coordinates bend, in its coarsest wavelengths.
+    texture_warp: f64 = 1.4,
+    /// The factor on the slope variance the wind adds over a calm sea's.
+    wind_roughness: f64 = 1.0,
+};
+
+/// `scene_uniforms` with `water`.
+pub fn withWater(scene_uniforms: uniforms.SceneUniforms, water: Water) uniforms.SceneUniforms {
+    var flags: uniforms.SceneFlags = @bitCast(scene_uniforms.config[0]);
+    flags.water_glint = water.glint;
+    flags.water_body = water.body;
+    flags.clear_deep_water = water.clear_deep_water;
+    flags.calm_lakes = water.calm_lakes;
+    flags.wind_map = water.wind_map;
+    flags.roughness_texture = water.roughness_texture;
+    var result = scene_uniforms;
+    result.config[0] = @bitCast(flags);
+    result.water = .{ @floatCast(water.wind_speed), @floatCast(water.texture_strength), @floatCast(water.texture_size), @floatCast(water.wind_map_influence) };
+    result.glint = .{ @floatCast(water.glint_tail), @floatCast(water.streak_length), @floatCast(water.texture_warp), @floatCast(water.wind_roughness) };
+    return result;
+}
+
 /// `scene_uniforms` without the cloud shell.
 pub fn withoutClouds(scene_uniforms: uniforms.SceneUniforms) uniforms.SceneUniforms {
     var flags: uniforms.SceneFlags = @bitCast(scene_uniforms.config[0]);
@@ -122,6 +164,8 @@ fn build(constants: Constants) uniforms.SceneUniforms {
             constants.night_light_scale,
             constants.star_scale,
         },
+        .water = @splat(0),
+        .glint = @splat(0),
     };
 }
 

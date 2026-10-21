@@ -10,6 +10,7 @@ const assert = std.debug.assert;
 const Io = std.Io;
 const gpu = @import("../gpu.zig");
 const TileSet = @import("../assets/TileSet.zig");
+const WindMap = @import("../assets/WindMap.zig");
 pub const TileResidency = @import("TileResidency.zig");
 const uniforms = @import("uniforms.zig");
 
@@ -19,6 +20,8 @@ heights: gpu.Texture,
 water: gpu.Texture,
 /// `TileSet.surface_side`² RGBA8 per slot.
 surface: gpu.Texture,
+/// `WindMap.cells`, or one cell of alpha 0 where there is no wind map.
+wind: gpu.Texture,
 /// Both layers' `TileResidency.indirection`, the height layer first.
 indirection: gpu.Buffer,
 /// Per height-layer indirection entry, the largest height any lookup in the tile's area
@@ -69,6 +72,8 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, last_levels: std.EnumArr
     errdefer water.deinit();
     const surface = try initArray(device, .rgba8_unorm, TileSet.surface_side, slot_count, "tile surface");
     errdefer surface.deinit();
+    const wind = try initWind(device, null);
+    errdefer wind.deinit();
     const height_entries = residency.get(.height).indirection.len;
     const indirection: gpu.Buffer = try .init(device, .{
         .size = (height_entries + residency.get(.surface).indirection.len) * @sizeOf(u32),
@@ -105,6 +110,7 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, last_levels: std.EnumArr
         .heights = heights,
         .water = water,
         .surface = surface,
+        .wind = wind,
         .indirection = indirection,
         .height_max = height_max,
         .block_max = block_max,
@@ -122,6 +128,7 @@ pub fn deinit(pool: *TilePool, gpa: std.mem.Allocator) void {
     pool.block_max.deinit();
     pool.height_max.deinit();
     pool.indirection.deinit();
+    pool.wind.deinit();
     pool.surface.deinit();
     pool.water.deinit();
     pool.heights.deinit();
@@ -131,6 +138,25 @@ pub fn deinit(pool: *TilePool, gpa: std.mem.Allocator) void {
 
 pub fn requestWords(entry_count: usize) usize {
     return std.math.divCeil(usize, entry_count, 32) catch unreachable;
+}
+
+fn initWind(device: gpu.Device, map: ?*const WindMap) gpu.Error!gpu.Texture {
+    const no_data = [_][4]u8{@splat(0)};
+    const width = if (map) |given| given.width else 1;
+    const height = if (map) |given| given.height else 1;
+    const wind: gpu.Texture = try .init(device, .{
+        .kind = .@"2d",
+        .format = .rgba8_unorm,
+        .width = width,
+        .height = height,
+        .depth_or_layers = 1,
+        .usage = .{ .shader_resource = true, .copy_destination = true },
+        .label = "wind",
+    });
+    errdefer wind.deinit();
+    const region: gpu.Texture.Region = .{ .x = 0, .y = 0, .z = 0, .width = width, .height = height, .depth = 1 };
+    try wind.upload(device, region, std.mem.sliceAsBytes(if (map) |given| given.cells else &no_data), width * 4);
+    return wind;
 }
 
 fn initArray(device: gpu.Device, format: gpu.Texture.Format, side: u32, slot_count: u32, label: [*:0]const u8) gpu.Error!gpu.Texture {
@@ -146,16 +172,18 @@ fn initArray(device: gpu.Device, format: gpu.Texture.Format, side: u32, slot_cou
 }
 
 /// The tile files of both layers, one per face, as `python/tiles/bake.py` writes them
-/// under `<data>/tiles/`.
+/// under `<data>/tiles/`, and the wind map beside them.
 pub const Files = struct {
     /// Also decodes the streamed tiles across its threads.
     io: Io,
     sets: std.EnumArray(TileSet.Layer, [TileResidency.face_count]TileSet),
+    /// Null where `WindMap.file_name` is missing.
+    wind: ?WindMap,
 
-    pub const OpenError = TileSet.OpenError || error{TileSetsDisagree};
+    pub const OpenError = TileSet.OpenError || WindMap.OpenError || error{TileSetsDisagree};
 
     pub fn open(io: Io, tiles_dir: Io.Dir) OpenError!Files {
-        var files: Files = .{ .io = io, .sets = .initUndefined() };
+        var files: Files = .{ .io = io, .sets = .initUndefined(), .wind = null };
         var opened: usize = 0;
         errdefer for (0..opened) |index| files.sets.values[index / TileResidency.face_count][index % TileResidency.face_count].close(io);
         for (std.enums.values(TileSet.Layer)) |layer| {
@@ -169,11 +197,16 @@ pub const Files = struct {
                 }
             }
         }
+        files.wind = WindMap.open(io, tiles_dir) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => |e| return e,
+        };
         return files;
     }
 
     pub fn close(files: *Files) void {
         for (&files.sets.values) |*faces| for (faces) |*set| set.close(files.io);
+        if (files.wind) |*map| map.close(files.io);
         files.* = undefined;
     }
 
@@ -233,6 +266,11 @@ pub fn load(gpa: std.mem.Allocator, device: gpu.Device, files: *const Files) Loa
     }
     try pool.uploadIndirection(device);
     try pool.uploadHeightMaxima(gpa, device, files);
+    if (files.wind) |*map| {
+        const wind = try initWind(device, map);
+        pool.wind.deinit();
+        pool.wind = wind;
+    }
     return pool;
 }
 

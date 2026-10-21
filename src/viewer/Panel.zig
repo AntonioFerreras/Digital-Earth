@@ -28,6 +28,14 @@ pub const ranges = struct {
     pub const vertical_fov_degrees: Range = .{ .min = View.vertical_fov_degrees_min, .max = 115 };
     pub const aspect_scale: Range = .{ .min = 0.75, .max = 1.25 };
     pub const exposure: Range = .{ .min = -1, .max = 10 };
+    pub const wind_speed: Range = .{ .min = 0, .max = 25 };
+    pub const texture_strength: Range = .{ .min = 0, .max = 2 };
+    pub const texture_size: Range = .{ .min = 0.05, .max = 2 };
+    pub const wind_map_influence: Range = .{ .min = 0, .max = 1 };
+    pub const glint_tail: Range = .{ .min = 0, .max = 1 };
+    pub const streak_length: Range = .{ .min = 0, .max = 6 };
+    pub const texture_warp: Range = .{ .min = 0, .max = 2 };
+    pub const wind_roughness: Range = .{ .min = 0, .max = 1 };
     /// Greyscale up to a strong chroma boost; 1 keeps OpenDRT's look.
     pub const saturation: Range = .{ .min = 0, .max = 3.6 };
     /// Keeps every preset's contrast power at or above the shader's floor of 0.25.
@@ -117,6 +125,25 @@ pub fn draw(panel: Panel, gpa: std.mem.Allocator, config: *Config, networks: *Ne
     slider("sun angle", &config.sun.angle_degrees, ranges.sun_angle_degrees);
     slider("sun path rotation", &config.sun.path_rotation_degrees, ranges.sun_path_rotation_degrees);
 
+    c.ImGui_SeparatorText("water");
+    _ = c.ImGui_Checkbox("wind glint", &config.water.glint);
+    c.ImGui_SameLine();
+    _ = c.ImGui_Checkbox("water body", &config.water.body);
+    _ = c.ImGui_Checkbox("clear deep water", &config.water.clear_deep_water);
+    c.ImGui_SameLine();
+    _ = c.ImGui_Checkbox("calm lakes", &config.water.calm_lakes);
+    _ = c.ImGui_Checkbox("ERA5 wind", &config.water.wind_map);
+    c.ImGui_SameLine();
+    _ = c.ImGui_Checkbox("roughness texture", &config.water.roughness_texture);
+    slider("wind speed m/s", &config.water.wind_speed, ranges.wind_speed);
+    slider("ERA5 influence", &config.water.wind_map_influence, ranges.wind_map_influence);
+    slider("wind roughness", &config.water.wind_roughness, ranges.wind_roughness);
+    slider("glint tail", &config.water.glint_tail, ranges.glint_tail);
+    slider("streak length", &config.water.streak_length, ranges.streak_length);
+    slider("texture warp", &config.water.texture_warp, ranges.texture_warp);
+    slider("texture strength", &config.water.texture_strength, ranges.texture_strength);
+    slider("texture size", &config.water.texture_size, ranges.texture_size);
+
     c.ImGui_SeparatorText("camera");
     const altitude_m = config.camera.altitude();
     c.ImGui_TextUnformatted(if (altitude_m < 10e3)
@@ -128,6 +155,7 @@ pub fn draw(panel: Panel, gpa: std.mem.Allocator, config: *Config, networks: *Ne
     slider("exposure", &config.exposure, ranges.exposure);
     slider("saturation", &config.saturation, ranges.saturation);
     slider("contrast", &config.contrast, ranges.contrast);
+    _ = c.ImGui_Checkbox("tone mapping", &config.tone_map);
     enumCombo(Post.TonescalePreset, "tonescale", &config.tonescale);
     const luts = &renderer.shared.luts;
     var camera_response: c_int = @intCast(luts.cameraResponseIndex(config.camera_response) catch unreachable);
@@ -174,6 +202,14 @@ test "defaults lie inside the slider ranges, and the ranges inside what View acc
         .vertical_fov_degrees = defaults.camera.vertical_fov_degrees,
         .aspect_scale = defaults.camera.aspect_scale,
         .exposure = defaults.exposure,
+        .wind_speed = defaults.water.wind_speed,
+        .texture_strength = defaults.water.texture_strength,
+        .texture_size = defaults.water.texture_size,
+        .wind_map_influence = defaults.water.wind_map_influence,
+        .glint_tail = defaults.water.glint_tail,
+        .streak_length = defaults.water.streak_length,
+        .texture_warp = defaults.water.texture_warp,
+        .wind_roughness = defaults.water.wind_roughness,
         .saturation = defaults.saturation,
         .contrast = defaults.contrast,
         .gamma = defaults.gamma,

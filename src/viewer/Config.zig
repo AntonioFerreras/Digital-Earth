@@ -16,23 +16,25 @@ const scene = @import("../render/scene.zig");
 const Config = @This();
 
 camera: Camera = .{},
-sun: View.Sun = .{},
+sun: View.Sun = .{ .angle_degrees = 120, .path_rotation_degrees = 15 },
 mode: Renderer.ModeKind = .debug,
 preset: scene.Preset = .textured,
 /// The original's default; the upload falls back to Q1 where Q2 does not fit.
 texture_quality: EarthMaps.Quality = .q2,
-exposure: f64 = 2.5,
+exposure: f64 = 3.0,
 /// OpenDRT settings: a mild chroma boost over OpenDRT's look, contrast 0, the
-/// DaGrinchi tonescale.
+/// high-contrast tonescale.
 saturation: f64 = 1.2,
 contrast: f64 = 0,
-tonescale: Post.TonescalePreset = .dagrinchi_tone,
+tonescale: Post.TonescalePreset = .high_contrast,
+tone_map: bool = true,
 gamma: f64 = 1,
 /// The camera response's .rf file stem in LUT/camera_response_functions; a name, not
 /// a position, because directory order differs between platforms.
 camera_response: []const u8 = "Neutral",
 /// Off removes the cloud shell from presets that have one.
 clouds: bool = true,
+water: scene.Water = .{},
 /// The surface from the cube-face tiles, when they are baked; off uses the Earth maps.
 tiles: bool = true,
 gui_visible: bool = true,
@@ -46,6 +48,7 @@ pub fn tone(config: Config) Post.Tone {
         .saturation = config.saturation,
         .contrast = config.contrast,
         .tonescale = config.tonescale,
+        .tone_map = config.tone_map,
         .camera_response = config.camera_response,
         .gamma = config.gamma,
     };

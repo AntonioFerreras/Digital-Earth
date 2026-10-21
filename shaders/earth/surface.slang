@@ -22,6 +22,8 @@ import earth.tiles;
 import shared.earth_bindings;
 import shared.uniforms;
 import spectral.planck;
+import spectral.uplift;
+import common.noise;
 
 public static const float SURFACE_MISS = TILE_SURFACE_MISS;
 
@@ -29,15 +31,22 @@ public struct SurfaceSample
 {
     // Unit shading normal.
     public float3 normal;
-    // Graded albedo, encoded sRGB in [0, 1] as the Taichi renderer used it.
+    // Graded albedo, encoded sRGB in [0, 1] as the Taichi renderer used it; of land
+    // alone when the water body has its own colour.
     public float3 albedo_srgb;
-    // 1 over water, 0 over land.
-    public float ocean;
-    // 1 for land or shallow water, 0 for the deepest ocean.
-    public float bathymetry;
+    // The albedo map's linear colour, for the water body's.
+    public float3 water_rgb;
+    // How much of the water body takes the clear-ocean spectrum instead.
+    public float clear_water;
+    public Water water;
     // Night-light intensity in [0, 1].
     public float emissive;
 };
+
+// Water whose surface lies this many metres above sea level is a lake.
+static const float LAKE_SURFACE_MIN = 1.0;
+// Lakes are sheltered and short of fetch, so calmer than the open sea.
+static const float LAKE_WIND_SPEED = 3.0;
 
 static const uint SPHERE_TRACE_STEPS = 250;
 // Skips and field steps together: a chord of the terrain shell spans at most
@@ -129,6 +138,89 @@ public float3 offset_surface_point(float3 position, SceneUniforms scene)
     return position * (1.0 + 1e-4 * scene.surface.y / 12000.0);
 }
 
+// Above any 10 m wind the wind map holds; python/tiles/wind.py encodes speeds over it.
+static const float WIND_SPEED_MAX = 32.0;
+
+// The 10 m wind at unit `up`: xy its eastward and northward components and z its
+// speed in m/s, w 1 where the wind map holds it and 0 where there is none.
+float4 wind_at(float3 up)
+{
+    float4 cell = earth_wind.SampleLevel(earth_wind_sampler, sphere_uv(up), 0.0);
+    return float4((cell.yz * 2.0 - 1.0) * WIND_SPEED_MAX, cell.x * WIND_SPEED_MAX, cell.w);
+}
+
+// The unit tangent at unit `up` the `wind` of wind_at blows along, or 0 where the
+// map has none or it is too weak to set a direction.
+float3 wind_direction(float3 up, float4 wind)
+{
+    if (!(wind.w > 0.0 && wind.z > 0.5))
+        return 0.0;
+    float3 east = float3(up.z, 0.0, -up.x);
+    east *= rsqrt(max(dot(east, east), 1e-12));
+    return normalize(wind.x * east + wind.y * cross(up, east));
+}
+
+// The roughness texture's coarsest wavelength in metres, its octave count, and the
+// wavelength ratio and amplitude ratio between octaves: calm and rough patches from
+// the scale of weather down to that of slicks, with no one scale standing out.
+static const float ROUGHNESS_WAVELENGTH = 80e3;
+static const uint ROUGHNESS_OCTAVES = 5;
+static const float ROUGHNESS_LACUNARITY = 2.3;
+static const float ROUGHNESS_GAIN = 0.6;
+// Taps averaged along the wind in each octave but the coarsest, spread over the
+// streak length and weighted by a sine-squared bell, which draw patches out into
+// streaks; the coarsest octave stays round, as wind patches are.
+static const uint STREAK_TAPS = 8;
+// The standard deviation of one gradient_noise sample.
+static const float GRADIENT_NOISE_DEVIATION = 0.191;
+
+// A factor on the sea's slope variance for the slicks, wind shadows, and gust
+// patches the wind field cannot resolve: log-normal fBm with mean 1, streaked
+// `along` the wind where it has a direction over `streak_length` wavelengths, its
+// coordinates bent by `warp` coarsest wavelengths per unit of noise so that patches
+// take irregular shapes instead of the lattice's,
+// strongest in light wind, where such patches survive, and fading with octaves finer
+// than the `footprint` metres a sample spans, which average to the mean.
+float roughness_texture(float3 position, float3 along, float wind_speed, float footprint, float strength, float size, float streak_length, float warp)
+{
+    float coarsest = ROUGHNESS_WAVELENGTH * size;
+    float3 q = position / coarsest;
+    float3 bend = float3(gradient_noise(q + 31.0), gradient_noise(q + 57.0), gradient_noise(q + 83.0));
+    float3 warped = position + warp * coarsest * bend;
+    bool streaked = any(along != 0.0) && streak_length > 0.0;
+    // Averaging along a streak keeps 1 / sqrt(1 + 0.75 L^2) of the variance for a
+    // streak L wavelengths long, fitted to within 10% over 0.5 to 6.
+    float streak_variance = 1.0 / sqrt(1.0 + 0.75 * streak_length * streak_length);
+    float noise = 0.0;
+    float variance = 0.0;
+    float wavelength = coarsest;
+    float amplitude = 1.0;
+    for (uint octave = 0; octave < ROUGHNESS_OCTAVES; octave++)
+    {
+        uint taps = streaked && octave > 0 ? STREAK_TAPS : 1;
+        variance += amplitude * amplitude * (taps > 1 ? streak_variance : 1.0);
+        float resolved = saturate(wavelength / (4.0 * footprint) - 0.5);
+        if (resolved > 0.0)
+        {
+            float streak = 0.0;
+            for (uint tap = 0; tap < taps; tap++)
+            {
+                float offset = taps > 1 ? (float(tap) / float(taps - 1) - 0.5) * streak_length : 0.0;
+                float bell = sin(PI * (float(tap) + 0.5) / float(taps));
+                float weight = taps > 1 ? bell * bell * 2.0 / float(taps) : 1.0;
+                streak += weight * gradient_noise((warped + offset * wavelength * along) / wavelength + float(octave) * 17.0);
+            }
+            noise += amplitude * resolved * streak;
+        }
+        wavelength /= ROUGHNESS_LACUNARITY;
+        amplitude *= ROUGHNESS_GAIN;
+    }
+    noise /= GRADIENT_NOISE_DEVIATION * sqrt(variance);
+    // The log factor's standard deviation.
+    float deviation = strength * lerp(0.8, 0.12, smoothstep(3.0, 10.0, wind_speed));
+    return exp(deviation * noise - 0.5 * deviation * deviation);
+}
+
 // The material at `position`, read at the detail of `footprint`, the ray's cone there.
 public SurfaceSample sample_surface(float3 position, RayCone footprint, SceneUniforms scene)
 {
@@ -144,31 +236,57 @@ public SurfaceSample sample_surface(float3 position, RayCone footprint, SceneUni
         float2 uv = sphere_uv(up);
         bool tiles = (scene.config.x & SCENE_TILES) != 0;
         uint level = tile_level(footprint.width);
-        s.ocean = tiles ? tile_water(up, level, footprint.streams) : sample_tiled(earth_ocean_mask, earth_maps.ocean_mask, uv);
+        s.water.fraction = tiles ? tile_water(up, level, footprint.streams) : sample_tiled(earth_ocean_mask, earth_maps.ocean_mask, uv);
         float3 albedo = tiles ? tile_albedo(up, level, footprint.streams) : sample_tiled(earth_albedo, earth_maps.albedo, uv).rgb;
-        s.albedo_srgb = grade_albedo(albedo, s.ocean);
-        s.bathymetry = sample_tiled(earth_bathymetry, earth_maps.bathymetry, uv);
+        s.water.body = (scene.config.x & SCENE_WATER_BODY) != 0;
+        s.albedo_srgb = grade_albedo(albedo, s.water.body ? 0.0 : s.water.fraction);
+        s.water_rgb = srgb_eotf(albedo);
+        s.clear_water = (scene.config.x & SCENE_CLEAR_DEEP_WATER) != 0 ? deep_ocean_fill(albedo) : 0.0;
+        s.water.bathymetry = sample_tiled(earth_bathymetry, earth_maps.bathymetry, uv);
+        s.water.glint = (scene.config.x & SCENE_WATER_GLINT) != 0;
+        float4 wind = (scene.config.x & SCENE_WIND_MAP) != 0 ? wind_at(up) : 0.0;
+        // From the data, not the hit: a march stops anywhere within its tolerance above
+        // the sea, which far away exceeds a lake's height.
+        float surface_height = tiles ? tile_height(up, level, false) : scene.surface.y * sample_tiled_exact(earth_topography, earth_maps.topography, uv);
+        bool lake = (scene.config.x & SCENE_CALM_LAKES) != 0 && surface_height > LAKE_SURFACE_MIN;
+        s.water.wind_speed = lake ? LAKE_WIND_SPEED : lerp(scene.water.x, wind.z, wind.w * scene.water.w);
+        s.water.along = lake ? 0.0 : wind_direction(up, wind);
+        s.water.tail = scene.glint.x;
+        s.water.wind_roughness = scene.glint.w;
+        s.water.slope_scale = (scene.config.x & SCENE_ROUGHNESS_TEXTURE) != 0
+                                  ? roughness_texture(position, s.water.along, s.water.wind_speed, footprint.width, scene.water.y, scene.water.z, scene.glint.y, scene.glint.z)
+                                  : 1.0;
         s.emissive = sample_tiled(earth_night_lights, earth_maps.night_lights, uv);
     }
     else
     {
         s.albedo_srgb = scene.surface.xxx;
-        s.ocean = 0.0;
-        s.bathymetry = 1.0;
+        s.water_rgb = 0.0;
+        s.clear_water = 0.0;
+        s.water = { 0.0, 0.0, 1.0, float3(0.0), 0.0, 1.0, 1.0, false, false };
         s.emissive = 0.0;
     }
     return s;
 }
 
+// Spectral reflectances of `s` at `wavelength` nm, uplifted through `basis`.
+public Reflectance surface_reflectance(SurfaceSample s, StructuredBuffer<float> basis, float wavelength)
+{
+    Reflectance albedo;
+    albedo.land = srgb_to_spectrum(basis, s.albedo_srgb, wavelength);
+    albedo.water = s.water.body ? lerp(srgb_to_spectrum(basis, s.water_rgb, wavelength), clear_ocean_reflectance(wavelength), s.clear_water) : 0.0;
+    return albedo;
+}
+
 // Reflectance of `s` with spectral `albedo` for unit `v` and `l` pointing away
 // from the surface. Without the Earth maps the ground is Lambertian at half its
 // albedo, the shading the symmetric scene (and the MLP trained on it) used.
-public SurfaceResponse surface_brdf(SurfaceSample s, float albedo, float3 v, float3 l, SceneUniforms scene)
+public SurfaceResponse surface_brdf(SurfaceSample s, Reflectance albedo, float3 v, float3 l, SceneUniforms scene)
 {
     if ((scene.config.x & SCENE_EARTH_MAPS) != 0)
-        return earth_brdf(albedo, s.ocean, s.bathymetry, v, s.normal, l);
+        return earth_brdf(albedo, s.water, v, s.normal, l);
     SurfaceResponse response;
-    response.brdf = albedo / PI * 0.5;
+    response.brdf = albedo.land / PI * 0.5;
     response.n_dot_l = saturate(dot(s.normal, l));
     return response;
 }
@@ -178,7 +296,7 @@ public SurfaceResponse surface_brdf(SurfaceSample s, float albedo, float3 v, flo
 public BounceSample sample_bounce(SurfaceSample s, float3 v, float3 u, SceneUniforms scene)
 {
     if ((scene.config.x & SCENE_EARTH_MAPS) != 0)
-        return sample_earth_bounce(u, s.ocean, s.bathymetry, v, s.normal);
+        return sample_earth_bounce(u, s.water, v, s.normal);
     BounceSample bounce;
     bounce.dir = sample_hemisphere_cosine(u.xy, s.normal);
     bounce.pdf = saturate(dot(s.normal, bounce.dir)) / PI;

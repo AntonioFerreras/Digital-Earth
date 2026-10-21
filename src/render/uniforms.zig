@@ -20,13 +20,21 @@ pub const SceneFlags = packed struct(u32) {
     single_scattering: bool = false,
     /// Surface albedo and water from the cube-face tiles instead of the Earth maps.
     tiles: bool = false,
-    _: u24 = 0,
+    water_glint: bool = false,
+    water_body: bool = false,
+    clear_deep_water: bool = false,
+    calm_lakes: bool = false,
+    wind_map: bool = false,
+    roughness_texture: bool = false,
+    _: u18 = 0,
 };
 
 pub const SceneUniforms = extern struct {
     config: [4]u32,
     media: [4]f32,
     surface: [4]f32,
+    water: [4]f32,
+    glint: [4]f32,
 };
 
 /// Field names are those of `assets.EarthMaps.Role`.
@@ -61,4 +69,5 @@ pub const DatagenUniforms = extern struct {
 pub const PostUniforms = extern struct {
     tone: [4]f32,
     state: [4]u32,
+    options: [4]u32,
 };

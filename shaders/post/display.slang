@@ -1,5 +1,5 @@
 // Accumulated scene-linear samples to the rgba8 display image: average,
-// vignette, exposure, OpenDRT, camera response, gamma, and the sRGB OETF.
+// vignette, exposure, OpenDRT or a clip, camera response, gamma, and the sRGB OETF.
 // This is the one place where rows flip: `accum` counts rows from the bottom
 // (shared/bindings.slang), `image` from the top as presentation and PNGs expect.
 
@@ -32,7 +32,7 @@ void display_main(uint3 thread: SV_DispatchThreadID)
     // Keeps the user-facing exposure on the original's scale.
     float exposure = exp2(post.tone.x + ORIGINAL_ESTIMATOR_STOPS);
     float3 linear = accum[pixel].rgb / samples * vignette(pixel, size) * exposure;
-    float3 display = opendrt(linear, post.tone.z, post.tone.w, post.state.w);
+    float3 display = post.options.x != 0 ? opendrt(linear, post.tone.z, post.tone.w, post.state.w) : saturate(linear);
     float3 response = camera_response(camera_responses, linear_clamp, display, post.state.y, post.state.z);
     image[thread.xy] = float4(srgb_oetf(pow(response, post.tone.y)), 1.0);
 }

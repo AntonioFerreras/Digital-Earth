@@ -465,7 +465,7 @@ public PathSample path_radiance(float3 pos, float3 dir, float3 sun, Spectrum wav
             [ForceUnroll]
             for (int k = 0; k < BUNDLE_WAVELENGTH_COUNT; k++)
             {
-                float albedo = srgb_to_spectrum(srgb_to_spectrum_basis, s.albedo_srgb, wavelength[k]);
+                Reflectance albedo = surface_reflectance(s, srgb_to_spectrum_basis, wavelength[k]);
                 SurfaceResponse direct = surface_brdf(s, albedo, view, light, scene);
                 float lit = surface_emission(s, wavelength[k], scene) +
                             sun_transmittance[k] * sun_irradiance[k] * direct.brdf * direct.n_dot_l;

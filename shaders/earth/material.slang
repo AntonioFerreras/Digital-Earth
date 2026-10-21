@@ -19,3 +19,36 @@ public float3 grade_albedo(float3 albedo, float ocean)
     float3 water = lerp(grey, albedo, 0.75) * 0.9;
     return lerp(land, water, ocean);
 }
+
+// Decodes sRGB-encoded `encoded` to linear.
+public float3 srgb_eotf(float3 encoded)
+{
+    return select(encoded <= 0.04045, encoded / 12.92, pow((encoded + 0.055) / 1.055, 2.4));
+}
+
+// Blue Marble fills every deep ocean with this one encoded sRGB colour; shallow water
+// keeps its measured colour.
+static const float3 DEEP_OCEAN_FILL = float3(2.0, 5.0, 20.0) / 255.0;
+
+// How much of the albedo map's colour is the deep-ocean fill: 1 at the fill, falling
+// to 0 by a few sRGB steps away, which JPEG noise and averaged levels stay within.
+public float deep_ocean_fill(float3 albedo_srgb)
+{
+    return 1.0 - smoothstep(4.0 / 255.0, 12.0 / 255.0, length(albedo_srgb - DEEP_OCEAN_FILL));
+}
+
+// Reflectance of clear open ocean seen from straight above at `wavelength` nm, about
+// Morel and Maritorena's (2001) water at 0.03 mg/m^3 of chlorophyll.
+public float clear_ocean_reflectance(float wavelength)
+{
+    static const float WAVELENGTHS[7] = { 400.0, 440.0, 490.0, 550.0, 600.0, 650.0, 700.0 };
+    static const float REFLECTANCES[7] = { 0.024, 0.022, 0.014, 0.0032, 0.001, 0.0003, 0.0 };
+    if (wavelength <= WAVELENGTHS[0])
+        return REFLECTANCES[0];
+    for (uint i = 1; i < 7; i++)
+    {
+        if (wavelength <= WAVELENGTHS[i])
+            return lerp(REFLECTANCES[i - 1], REFLECTANCES[i], (wavelength - WAVELENGTHS[i - 1]) / (WAVELENGTHS[i] - WAVELENGTHS[i - 1]));
+    }
+    return 0.0;
+}
