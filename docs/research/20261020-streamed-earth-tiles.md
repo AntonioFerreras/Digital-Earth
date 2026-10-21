@@ -57,23 +57,6 @@ Albedo, bits per texel and PSNR against the source:
 
   Blue Marble albedo stored at its own 500 m (depth 7) is about 1 GB.
 
-## Proland (BSD-3 C++, GPLv3 demo shaders and configs; design only)
-
-- Six gnomonic cube faces, each a quadtree in one file per face and layer,
-  Z-ordered tiles behind an offset table that deduplicates constant tiles
-  (`HeightMipmap.cpp:615-669`; uint32 offsets cap files at 4 GB).
-- Heights are residuals against the *reconstructed* parent upsampled with a
-  (-1, 9, 9, -1)/16 filter, int16 at a 1 m quantum, deflate TIFF: 13.6 KB per
-  unique 192² tile, 16 GB for the planet at 65 to 130 m (*measured* from the
-  offset tables). Tiles are vertex-centred (193 + 2 x 2 border = 197).
-- Colour: JPEG q90 tiles (deflate at face edges), 2-texel borders, linear-space
-  box mips; alpha packs a water mask and night lights. 190 MB per face at 400 m.
-- Runtime: LRU tile caches over `Texture2DArray` pools, producers with
-  dependencies on worker threads, ancestor fallback while a tile loads.
-- Not reusable for a path tracer: residency, LOD and geomorphing follow the
-  camera; per-quad bounds arrive by readback frames late; no traversal
-  structure; ocean and clouds are screen-space or shell shortcuts.
-
 ## Streaming for a path tracer
 
 - LOD per ray from ray cones ([Akenine-Möller et al. 2019](https://media.contentapi.ea.com/content/dam/ea/seed/presentations/2019-ray-tracing-gems-chapter-20-akenine-moller-et-al.pdf), [JCGT 2021](https://jcgt.org/published/0010/01/01/paper.pdf)):

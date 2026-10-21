@@ -23,8 +23,8 @@ terrain and albedo reach about 100 m. Evidence:
 ### Planet addressing (`shaders/earth/cube.slang`, `src/assets/Cube.zig`)
 
 - Equal-angle cube (tangent warp of the gnomonic face coordinates): texels vary
-  about 1.3x across a face instead of Proland's 2x, the same data in fewer
-  texels.
+  about 1.3x across a face instead of a plain gnomonic cube's 2x, the same data
+  in fewer texels.
 - `TileKey = (face, level, x, y)`; one function each way between a direction and
   (face, u, v), shared by the bake and the shaders through goldens.
 
