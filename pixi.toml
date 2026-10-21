@@ -38,6 +38,8 @@ gdal = ">=3.13.3,<4"
 libgdal-netcdf = ">=3.13.3,<4"
 zstandard = ">=0.25.0,<0.26"
 pillow = ">=13.0.0,<14"
+# python/tiles/publish.py uploads the tiles to the dataset `earth download` reads.
+huggingface_hub = ">=2.2.0,<3"
 
 [feature.py.pypi-dependencies]
 torch = "*"

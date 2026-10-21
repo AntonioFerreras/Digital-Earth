@@ -19,6 +19,7 @@ const usage =
     \\  render          offline render
     \\  datagen         MLP training data
     \\  bake-textures   decode Earth maps into the raw cache
+    \\  download        fetch the streamed terrain tiles (13 GB) into <data>/tiles/
     \\
     \\options:
     \\  --backend vulkan|metal|d3d12   GPU backend (default: the platform's choice)
@@ -70,7 +71,7 @@ const usage =
     \\
 ;
 
-const Command = enum { view, render, datagen, @"bake-textures" };
+const Command = enum { view, render, datagen, @"bake-textures", download };
 
 const Arguments = struct {
     command: Command = .view,
@@ -153,6 +154,10 @@ pub fn main(init: std.process.Init.Minimal) u8 {
         },
         .@"bake-textures" => bakeTextures(gpa, io, arguments) catch |err| {
             log.err("bake-textures failed: {t}", .{err});
+            return 1;
+        },
+        .download => downloadTiles(gpa, io, arguments) catch |err| {
+            log.err("download failed: {t}; running it again resumes", .{err});
             return 1;
         },
         .datagen => generateData(gpa, io, arguments) catch |err| {
@@ -556,10 +561,21 @@ fn openCacheDir(io: Io, data_root: assets.DataRoot) Io.Dir.OpenError!Io.Dir {
     };
 }
 
+fn downloadTiles(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
+    const data_root: assets.DataRoot = try .open(io, arguments.data_path);
+    defer data_root.close(io);
+    var tiles_dir = try data_root.createSubdir(io, .tiles);
+    defer tiles_dir.close(io);
+    try assets.tile_download.run(gpa, io, tiles_dir);
+}
+
 /// The cube-face tile files under `<data>/tiles`, or null when there are none; broken
 /// files are logged and left out.
 fn openTileFiles(io: Io, data_root: assets.DataRoot) ?render.TilePool.Files {
-    var dir = data_root.dir.openDir(io, assets.DataRoot.Subdir.tiles.path(), .{}) catch return null;
+    var dir = data_root.dir.openDir(io, assets.DataRoot.Subdir.tiles.path(), .{}) catch {
+        log.info("no tile files under {s}; `earth download` fetches them", .{assets.DataRoot.Subdir.tiles.path()});
+        return null;
+    };
     defer dir.close(io);
     return render.TilePool.Files.open(io, dir) catch |err| {
         log.err("tile files under {s}: {t}; rendering with the Earth maps", .{ assets.DataRoot.Subdir.tiles.path(), err });
@@ -621,6 +637,7 @@ test "command line parsing" {
     try std.testing.expectEqual(gpu.Device.Backend.metal, full.backend);
     try std.testing.expect(full.validation);
     try std.testing.expectEqual(Command.@"bake-textures", (try parseArguments(&.{"bake-textures"})).command);
+    try std.testing.expectEqual(Command.download, (try parseArguments(&.{"download"})).command);
     try std.testing.expectError(error.InvalidArguments, parseArguments(&.{"--backend"}));
     try std.testing.expectError(error.InvalidArguments, parseArguments(&.{ "--backend", "cuda" }));
     try std.testing.expectError(error.InvalidArguments, parseArguments(&.{ "view", "render" }));

@@ -64,6 +64,13 @@ start the viewer from the repository root:
 
 Without baked textures the viewer still runs the `symmetric` scene preset.
 
+For terrain down to 90 m, download the streamed tiles (13 GB) into `tiles/`;
+the viewer renders them in place of the Earth maps once they are there:
+
+```bash
+./zig-out/bin/earth download    # resumes where an interrupted run stopped
+```
+
 ## Command line
 
 ```
@@ -75,6 +82,7 @@ earth [command] [options]
 | `view` (default) | interactive viewer |
 | `render` | headless render to a PNG |
 | `bake-textures` | decode the NASA PNGs into `<data>/cache/` |
+| `download` | fetch the streamed terrain tiles into `<data>/tiles/` |
 | `datagen` | MLP training data and scattering tables from the symmetric path tracer |
 
 Options for every command:
@@ -205,6 +213,7 @@ cache/mlp/mlp_e120.emlp   the default network
 cache/neural/*.emlp       networks the viewer offers
 cache/lut/scattering.edgn the default scattering table
 presets/                  config presets (tracked)
+tiles/height|surface/     streamed terrain tiles, from `earth download`
 screenshots/              viewer screenshots
 config.zon                the viewer's saved state (I / O)
 ```

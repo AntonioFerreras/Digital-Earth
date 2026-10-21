@@ -20,7 +20,7 @@ pub const Subdir = enum {
     screenshots,
     /// Shipped and user configs, loaded with `--config`.
     presets,
-    /// Cube-face tile files that python/tiles/bake.py writes.
+    /// Cube-face tile files that python/tiles/bake.py writes and `earth download` fetches.
     tiles,
 
     pub fn path(subdir: Subdir) []const u8 {
