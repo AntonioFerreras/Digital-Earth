@@ -408,6 +408,7 @@ fn renderImage(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
     }
     if (warmup_frames > 0) {
         try device.waitIdle();
+        renderer.tiles_frozen = true;
         renderer.restart();
         log.info("tiles streamed in {d} frames", .{warmup_frames});
     }

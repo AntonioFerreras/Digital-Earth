@@ -92,6 +92,8 @@ tiles: bool,
 tile_files: ?*const TilePool.Files,
 /// Null without tile files, or once streaming failed.
 tile_streamer: ?TileStreamer,
+/// Holds the resident tiles as they are, so that accumulation never restarts.
+tiles_frozen: bool,
 /// The Earth map set asked for, uploaded to `shared.earth_maps` once the active mode
 /// samples the maps under the active preset.
 texture_quality: EarthMaps.Quality,
@@ -246,6 +248,7 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, luts: *const Luts, optio
         .tiles = options.tiles and options.tile_files != null,
         .tile_files = options.tile_files,
         .tile_streamer = tile_streamer,
+        .tiles_frozen = false,
         .texture_quality = options.texture_quality,
         .earth_map_cache = options.earth_map_cache,
         .accum = accum,
@@ -285,7 +288,7 @@ pub fn render(renderer: *Renderer, view: View, tone: Post.Tone) Post.RecordError
     var frame_uniforms = renderer.frame_uniforms;
     view.writeUniforms(&frame_uniforms, renderer.size());
     if (!std.meta.eql(frame_uniforms, renderer.frame_uniforms)) frame_uniforms.frame[0] = 0;
-    if (renderer.tile_streamer) |*streamer| {
+    if (renderer.tile_streamer) |*streamer| if (!renderer.tiles_frozen) {
         // Samples of coarser tiles would blur what the new ones resolve.
         const changed = streamer.update(renderer.gpa, renderer.shared.device, &renderer.shared.tiles, renderer.tile_files.?) catch |err| failed: {
             std.log.scoped(.render).err("tile streaming stopped: {t}", .{err});
@@ -294,7 +297,7 @@ pub fn render(renderer: *Renderer, view: View, tone: Post.Tone) Post.RecordError
             break :failed false;
         };
         if (changed and renderer.tiles) frame_uniforms.frame[0] = 0;
-    }
+    };
 
     const frame: Frame = .{
         .uniforms = frame_uniforms,
