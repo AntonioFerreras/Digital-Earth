@@ -338,7 +338,7 @@ fn view(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
     var cache_dir: ?Io.Dir = openCacheDir(io, data_root) catch null;
     defer if (cache_dir) |*dir| dir.close(io);
     var tile_files = openTileFiles(io, data_root);
-    defer if (tile_files) |*files| files.close(io);
+    defer if (tile_files) |*files| files.close();
     const shader_paths: ShaderPaths = try .init(gpa, io);
     defer shader_paths.deinit(gpa);
     var earth_viewer: viewer.Viewer = try .init(gpa, io, .{
@@ -371,7 +371,7 @@ fn renderImage(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
     const device = try initHeadlessDevice(gpa, io, arguments);
     defer device.deinit();
     var tile_files = openTileFiles(io, data_root);
-    defer if (tile_files) |*files| files.close(io);
+    defer if (tile_files) |*files| files.close();
     var renderer = init: {
         var lut_dir = try data_root.openSubdir(io, .lut, .{});
         defer lut_dir.close(io);
@@ -400,6 +400,7 @@ fn renderImage(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
 
     const frame_view = config.camera.view(config.sun);
     // Stream in the tiles the view wants, then accumulate every sample on them.
+    const warmup_start = Io.Timestamp.now(io, .awake);
     var warmup_frames: u32 = 0;
     while (!renderer.tilesSettled() and warmup_frames < tile_warmup_frames_max) : (warmup_frames += 1) {
         try renderer.render(frame_view, config.tone());
@@ -410,7 +411,8 @@ fn renderImage(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
         try device.waitIdle();
         renderer.tiles_frozen = true;
         renderer.restart();
-        log.info("tiles streamed in {d} frames", .{warmup_frames});
+        const warmup_ms = warmup_start.durationTo(Io.Timestamp.now(io, .awake)).toMilliseconds();
+        log.info("tiles streamed in {d} frames, {d} ms", .{ warmup_frames, warmup_ms });
     }
     const render_start = Io.Timestamp.now(io, .awake);
     for (0..options.sample_count) |_| try renderer.render(frame_view, config.tone());

@@ -1,14 +1,17 @@
 //! Streams tiles into a `TilePool` from what its lookups asked for, without ever waiting
-//! for the GPU. Each frame copies the request bits to a readback buffer behind the frame's
-//! fence and clears them; once a later frame finds that fence reached, it walks each
-//! wanted tile's chain one level down from its resident ancestor, decodes up to
-//! `tiles_per_frame` such tiles, and records their uploads, with the indirection ranges
-//! they rewrite, ahead of its own dispatches. A full pool gives up the least recently
-//! wanted tile that has no resident children.
+//! for the GPU. Each frame that finds a ring position free copies the request bits to its
+//! readback buffer behind the frame's fence and clears them; otherwise the bits gather
+//! until one is. Every later frame reads the readbacks whose fences it finds reached,
+//! queues each wanted tile with its ancestors below the resident one, decodes up to
+//! `tiles_per_frame` of them, coarsest first, across the threads of the files' `io`, and
+//! records their uploads, with the indirection ranges they rewrite, ahead of its own
+//! dispatches. A full pool gives up the least recently wanted tile that has no resident
+//! children.
 
 const TileStreamer = @This();
 
 const std = @import("std");
+const Io = std.Io;
 const assert = std.debug.assert;
 const gpu = @import("../gpu.zig");
 const TileSet = @import("../assets/TileSet.zig");
@@ -24,6 +27,10 @@ readbacks: [ring_size]gpu.Buffer,
 staging: [ring_size]gpu.Buffer,
 /// The frame that last used each ring position, 0 for none.
 ring_frames: [ring_size]u64,
+/// Whether each ring position holds request bits not read yet.
+unread: [ring_size]bool,
+/// The ring position of the frame being recorded; null while all are in flight or unread.
+position: ?usize,
 /// Clears the request bits.
 zeros: gpu.Buffer,
 slot_use: std.EnumArray(TileSet.Layer, []SlotUse),
@@ -31,17 +38,20 @@ free_slots: std.EnumArray(TileSet.Layer, std.ArrayList(u32)),
 /// This frame's recorded uploads into `staging`.
 copies: std.ArrayList(Copy),
 staged_bytes: u64,
-scratch: *TilePool.Scratch,
-/// Tiles wanted this frame, by layer and entry index, to load next.
+/// This frame's decodes, `tiles_per_frame` of them.
+decodes: []Decode,
+/// Tiles wanted by the readbacks read so far, by layer and entry index, to load next.
 wanted: std.AutoArrayHashMapUnmanaged(Wanted, void),
-/// Request readbacks in a row that loaded nothing.
-quiet_readbacks: u32,
+/// The last frame that loaded tiles.
+last_load_frame: u64,
+/// Whether a readback of a frame that saw the last loads wanted nothing more to load.
+quiet: bool,
 /// Tiles the last readback wanted next, present or not in the files.
 wanted_last: u32,
 
-/// Frames in flight before a ring position is reused.
-const ring_size = 3;
-pub const tiles_per_frame = 32;
+/// More than the frames a GPU-bound loop runs ahead, so that one position is free.
+const ring_size = 8;
+pub const tiles_per_frame = 128;
 
 const SlotUse = struct {
     /// The last frame whose lookups wanted the tile or one below it.
@@ -51,9 +61,23 @@ const SlotUse = struct {
 
 const Wanted = struct { layer: TileSet.Layer, tile: TileResidency.Tile };
 
+const Decode = struct {
+    wanted: Wanted,
+    payload: []const u8,
+    scratch: TilePool.Scratch,
+    data: TileSet.DecodeError!TilePool.TileData,
+
+    fn run(decode: *Decode) void {
+        decode.data = decode.scratch.decode(decode.wanted.layer, decode.payload);
+    }
+};
+
 const Copy = union(enum) {
     tile: struct { texture: gpu.Texture, slot: u32, side: u32, offset: u64, row_pitch: u64 },
-    indirection: struct { dst_offset: u64, offset: u64, size: u64 },
+    indirection: BufferRange,
+    block_max: BufferRange,
+
+    const BufferRange = struct { dst_offset: u64, offset: u64, size: u64 };
 };
 
 /// Byte layout of one staged tile: rows of `side` texels `texel_size` bytes each.
@@ -72,12 +96,14 @@ fn stagingSize(pool: *const TilePool) u64 {
     for (pool.residency.values) |residency| subtree = @max(subtree, residency.subtreeEntries(TilePool.base_last_level + 1));
     // Each plane may start after up to one alignment's padding.
     const padding = 2 * gpu.CommandList.copy_offset_alignment;
-    const tile = padding + @max(stagedSize(TileSet.height_side, 2) + stagedSize(TileSet.height_side, 1), stagedSize(TileSet.surface_side, 4));
+    const height = stagedSize(TileSet.height_side, 2) + stagedSize(TileSet.height_side, 1) + @sizeOf(@FieldType(TilePool.HeightData, "block_max"));
+    const tile = padding + @max(height, stagedSize(TileSet.surface_side, 4));
     return tiles_per_frame * (tile + 2 * subtree * @sizeOf(u32));
 }
 
-/// Copies per tile: two planes, and one range per level for an insertion and an eviction.
-const copies_per_tile = 2 + 2 * (1 << TileResidency.level_bits);
+/// Copies per tile: two planes, the block maxima, and one range per level for an
+/// insertion and an eviction.
+const copies_per_tile = 3 + 2 * (1 << TileResidency.level_bits);
 
 pub fn init(gpa: std.mem.Allocator, device: gpu.Device, pool: *const TilePool) (gpu.Error || error{OutOfMemory})!TileStreamer {
     const fence: gpu.Fence = try .init(device);
@@ -126,27 +152,30 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, pool: *const TilePool) (
     }
     var copies: std.ArrayList(Copy) = try .initCapacity(gpa, tiles_per_frame * copies_per_tile);
     errdefer copies.deinit(gpa);
-    const scratch = try gpa.create(TilePool.Scratch);
+    const decodes = try gpa.alloc(Decode, tiles_per_frame);
     return .{
         .fence = fence,
         .frame = 1,
         .readbacks = readbacks,
         .staging = staging,
         .ring_frames = @splat(0),
+        .unread = @splat(false),
+        .position = null,
         .zeros = zeros,
         .slot_use = slot_use,
         .free_slots = free_slots,
         .copies = copies,
         .staged_bytes = 0,
-        .scratch = scratch,
+        .decodes = decodes,
         .wanted = .empty,
-        .quiet_readbacks = 0,
+        .last_load_frame = 0,
+        .quiet = false,
         .wanted_last = 0,
     };
 }
 
 pub fn deinit(streamer: *TileStreamer, gpa: std.mem.Allocator) void {
-    gpa.destroy(streamer.scratch);
+    gpa.free(streamer.decodes);
     streamer.wanted.deinit(gpa);
     streamer.copies.deinit(gpa);
     for (std.enums.values(TileSet.Layer)) |layer| {
@@ -162,22 +191,29 @@ pub fn deinit(streamer: *TileStreamer, gpa: std.mem.Allocator) void {
     streamer.* = undefined;
 }
 
-pub const UpdateError = gpu.Error || TileSet.DecodeError || error{OutOfMemory};
+pub const UpdateError = gpu.Error || TileSet.DecodeError || Io.Cancelable || error{OutOfMemory};
 
 /// Reads the requests of finished frames and stages this frame's uploads; returns
 /// whether any tile changed, which changes what the renderer accumulates.
 pub fn update(streamer: *TileStreamer, gpa: std.mem.Allocator, device: gpu.Device, pool: *TilePool, files: *const TilePool.Files) UpdateError!bool {
     streamer.copies.clearRetainingCapacity();
     streamer.staged_bytes = 0;
-    const position = streamer.frame % ring_size;
-    // The ring position's last frame must be done before its buffers are reused.
     const reached = try streamer.fence.value();
-    if (streamer.ring_frames[position] > reached) return false;
-    if (streamer.ring_frames[position] == 0) return false;
-    try streamer.readRequests(gpa, device, pool, position);
-    streamer.wanted_last = @intCast(streamer.wanted.count());
+    var newest_read: ?u64 = null;
+    for (streamer.ring_frames, &streamer.unread, 0..) |ring_frame, *unread, position| {
+        if (!unread.* or ring_frame > reached) continue;
+        try streamer.readRequests(gpa, device, pool, position);
+        unread.* = false;
+        newest_read = @max(newest_read orelse 0, ring_frame);
+    }
+    if (newest_read != null) streamer.wanted_last = @intCast(streamer.wanted.count());
+    // A position's buffers are reused once its frame is done and its bits are read.
+    streamer.position = for (streamer.ring_frames, streamer.unread, 0..) |ring_frame, unread, position| {
+        if (!unread and ring_frame <= reached) break position;
+    } else null;
+    const position = streamer.position orelse return false;
     if (streamer.wanted.count() == 0) {
-        streamer.quiet_readbacks +|= 1;
+        if (newest_read) |frame| streamer.quiet = frame >= streamer.last_load_frame;
         return false;
     }
 
@@ -193,19 +229,32 @@ pub fn update(streamer: *TileStreamer, gpa: std.mem.Allocator, device: gpu.Devic
         }
     }{ .keys = streamer.wanted.keys() });
 
+    var decode_count: usize = 0;
+    for (streamer.wanted.keys()) |wanted| {
+        if (decode_count == streamer.decodes.len) break;
+        // Wanted by readbacks from before it arrived.
+        if (pool.residency.get(wanted.layer).residentLevel(wanted.tile).? >= wanted.tile.key.level) continue;
+        const set = files.sets.get(wanted.layer)[wanted.tile.face];
+        const entry = set.entry(wanted.tile.key) orelse continue;
+        const decode = &streamer.decodes[decode_count];
+        decode.wanted = wanted;
+        decode.payload = set.payload(entry);
+        decode_count += 1;
+    }
+    var group: Io.Group = .init;
+    for (streamer.decodes[0..decode_count]) |*decode| group.async(files.io, Decode.run, .{decode});
+    try group.await(files.io);
+
     const staging = try streamer.staging[position].map(device);
     defer streamer.staging[position].unmap(device) catch {};
     var loaded: usize = 0;
-    var budget_left: usize = tiles_per_frame;
-    for (streamer.wanted.keys()) |wanted| {
-        if (budget_left == 0) break;
-        const residency = pool.residency.getPtr(wanted.layer);
-        // Its parent may have arrived earlier this frame, or the tile itself.
-        if (residency.residentLevel(wanted.tile) != wanted.tile.key.level - 1) continue;
-        const set = files.sets.get(wanted.layer)[wanted.tile.face];
-        const entry = set.entry(wanted.tile.key) orelse continue;
+    for (streamer.decodes[0..decode_count]) |*decode| {
+        const wanted = decode.wanted;
         // Decoding comes before a slot is taken, so a corrupt tile changes nothing.
-        const data = try streamer.scratch.decode(wanted.layer, set.payload(entry));
+        const data = try decode.data;
+        const residency = pool.residency.getPtr(wanted.layer);
+        // The parent arrives earlier in the batch, or is missing from the files.
+        if (residency.residentLevel(wanted.tile) != wanted.tile.key.level - 1) continue;
         const slot = streamer.takeSlot(wanted.layer, pool, staging) orelse break;
         streamer.stageTile(pool, slot, data, staging);
         const parent_slot = residency.slotOf(TileResidency.parentOf(wanted.tile)).?;
@@ -214,25 +263,33 @@ pub fn update(streamer: *TileStreamer, gpa: std.mem.Allocator, device: gpu.Devic
         var stager: Stager = .{ .streamer = streamer, .staging = staging, .entries = residency.indirection, .base = indirectionBase(pool, wanted.layer) };
         residency.insert(slot, wanted.tile, &stager, Stager.stage);
         loaded += 1;
-        budget_left -= 1;
     }
     streamer.wanted.clearRetainingCapacity();
-    streamer.quiet_readbacks = if (loaded > 0) 0 else streamer.quiet_readbacks +| 1;
+    if (loaded > 0) {
+        streamer.last_load_frame = streamer.frame;
+        streamer.quiet = false;
+    } else if (newest_read) |frame| {
+        streamer.quiet = frame >= streamer.last_load_frame;
+    }
     return loaded > 0;
 }
 
 /// Records this frame's uploads; ahead of the dispatches that read them.
 pub fn recordUploads(streamer: *const TileStreamer, command_list: gpu.CommandList, pool: *const TilePool) gpu.Error!void {
-    const staging = streamer.staging[streamer.frame % ring_size];
+    const position = streamer.position orelse return;
+    const staging = streamer.staging[position];
     for (streamer.copies.items) |copy| switch (copy) {
         .tile => |tile| try command_list.copyBufferToTexture(tile.texture, .{ .x = 0, .y = 0, .z = tile.slot, .width = tile.side, .height = tile.side, .depth = 1 }, staging, tile.offset, tile.row_pitch),
         .indirection => |range| try command_list.copyBuffer(pool.indirection, range.dst_offset, staging, range.offset, range.size),
+        .block_max => |range| try command_list.copyBuffer(pool.block_max, range.dst_offset, staging, range.offset, range.size),
     };
 }
 
-/// Records the copy of this frame's request bits for a later frame, and their clearing.
+/// Records the copy of this frame's request bits for a later frame, and their clearing,
+/// when the frame has a ring position.
 pub fn recordFeedback(streamer: *const TileStreamer, command_list: gpu.CommandList, pool: *const TilePool) gpu.Error!void {
-    const readback = streamer.readbacks[streamer.frame % ring_size];
+    const position = streamer.position orelse return;
+    const readback = streamer.readbacks[position];
     try command_list.copyBuffer(readback, 0, pool.requests, 0, pool.requests.size);
     try command_list.copyBuffer(pool.requests, 0, streamer.zeros, 0, pool.requests.size);
 }
@@ -242,10 +299,9 @@ pub fn residentCount(streamer: *const TileStreamer, pool: *const TilePool, layer
     return pool.residency.get(layer).slots.len - streamer.free_slots.get(layer).items.len;
 }
 
-/// Whether the lookups want no tile that could still arrive: the requests of more frames
-/// than are in flight, so frames that saw every tile loaded so far, loaded nothing.
+/// Whether the lookups want no tile that could still arrive.
 pub fn settled(streamer: *const TileStreamer) bool {
-    return streamer.quiet_readbacks > ring_size;
+    return streamer.quiet;
 }
 
 /// The fence signal of the frame being recorded; call `submitted` after submitting it.
@@ -254,12 +310,15 @@ pub fn signal(streamer: *const TileStreamer) gpu.Fence.Signal {
 }
 
 pub fn submitted(streamer: *TileStreamer) void {
-    streamer.ring_frames[streamer.frame % ring_size] = streamer.frame;
+    if (streamer.position) |position| {
+        streamer.ring_frames[position] = streamer.frame;
+        streamer.unread[position] = true;
+    }
     streamer.frame += 1;
 }
 
-/// Marks the resident tiles on the way to each wanted tile as used, and queues the next
-/// level of those not resident yet.
+/// Marks the resident tiles on the way to each wanted tile as used, and queues the
+/// missing ones.
 fn readRequests(streamer: *TileStreamer, gpa: std.mem.Allocator, device: gpu.Device, pool: *TilePool, position: usize) (gpu.Error || error{OutOfMemory})!void {
     const bytes = try streamer.readbacks[position].map(device);
     defer streamer.readbacks[position].unmap(device) catch {};
@@ -282,10 +341,9 @@ fn readRequests(streamer: *TileStreamer, gpa: std.mem.Allocator, device: gpu.Dev
                 if (ancestor.key.level == 0) break;
                 ancestor = TileResidency.parentOf(ancestor);
             }
-            if (resident_level < tile.key.level) {
-                var next = tile;
-                while (next.key.level > resident_level + 1) next = TileResidency.parentOf(next);
-                try streamer.wanted.put(gpa, .{ .layer = layer, .tile = next }, {});
+            var missing = tile;
+            while (missing.key.level > resident_level) : (missing = TileResidency.parentOf(missing)) {
+                try streamer.wanted.put(gpa, .{ .layer = layer, .tile = missing }, {});
             }
         }
     }
@@ -345,8 +403,13 @@ const Stager = struct {
 fn stageTile(streamer: *TileStreamer, pool: *const TilePool, slot: u32, data: TilePool.TileData, staging: []u8) void {
     switch (data) {
         .height => |height| {
-            streamer.stagePlane(pool.heights, slot, TileSet.height_side, 2, std.mem.sliceAsBytes(&height.height), staging);
-            streamer.stagePlane(pool.water, slot, TileSet.height_side, 1, &height.water, staging);
+            streamer.stagePlane(pool.heights, slot, TileSet.height_side, 2, std.mem.sliceAsBytes(&height.tile.height), staging);
+            streamer.stagePlane(pool.water, slot, TileSet.height_side, 1, &height.tile.water, staging);
+            const bytes = std.mem.asBytes(&height.block_max);
+            const offset = streamer.staged_bytes;
+            @memcpy(staging[offset..][0..bytes.len], bytes);
+            streamer.staged_bytes += bytes.len;
+            streamer.copies.appendAssumeCapacity(.{ .block_max = .{ .dst_offset = TilePool.blockMaxOffset(slot), .offset = offset, .size = bytes.len } });
         },
         .surface => |rgba| streamer.stagePlane(pool.surface, slot, TileSet.surface_side, 4, rgba, staging),
     }

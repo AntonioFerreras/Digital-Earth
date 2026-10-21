@@ -32,19 +32,21 @@ test "lookups find the finest resident tile and sample it at the plan's position
     var pool: TilePool = try .init(testing.allocator, device, .init(.{ .height = 1, .surface = 1 }), 8);
     defer pool.deinit(testing.allocator);
 
-    const height = try testing.allocator.create(TileSet.HeightTile);
+    const height = try testing.allocator.create(TilePool.HeightData);
     defer testing.allocator.destroy(height);
     const rgba = try testing.allocator.alloc(u8, TileSet.surface_side * TileSet.surface_side * 4);
     defer testing.allocator.free(rgba);
     for (0..6) |face| {
         const tile: TilePool.TileResidency.Tile = .{ .face = @intCast(face), .key = .{ .level = 0, .x = 0, .y = 0 } };
-        heightTile(height, @intCast(100 * face), false, @intCast(face * 50));
+        heightTile(&height.tile, @intCast(100 * face), false, @intCast(face * 50));
+        height.buildBlockMaxima();
         try pool.insert(device, @intCast(face), tile, .{ .height = height });
         surfaceTile(rgba, @intCast(face));
         try pool.insert(device, @intCast(face), tile, .{ .surface = rgba });
     }
     // Face 2 (+Y): s along +X, t along -Z; tile (0, 0) of level 1 covers u, v < 0.5.
-    heightTile(height, 1000, true, 255);
+    heightTile(&height.tile, 1000, true, 255);
+    height.buildBlockMaxima();
     try pool.insert(device, 6, .{ .face = 2, .key = .{ .level = 1, .x = 0, .y = 0 } }, .{ .height = height });
     try pool.uploadIndirection(device);
 
@@ -194,7 +196,7 @@ fn writeTileFile(gpa: std.mem.Allocator, dir: std.Io.Dir, layer: TileSet.Layer, 
     try dir.writeFile(testing.io, .{ .sub_path = path, .data = bytes.items });
 }
 
-test "the streamer brings in the levels lookups want, a level per round trip" {
+test "the streamer brings in the levels lookups want and those between in one round trip" {
     const device = try createTestDevice();
     defer device.deinit();
     const gpa = testing.allocator;
@@ -218,7 +220,7 @@ test "the streamer brings in the levels lookups want, a level per round trip" {
         try writeTileFile(gpa, tmp.dir, .surface, @intCast(face), last_level, &surfaces);
     }
     var files: TilePool.Files = try .open(testing.io, tmp.dir);
-    defer files.close(testing.io);
+    defer files.close();
     var pool: TilePool = try .load(gpa, device, &files);
     defer pool.deinit(gpa);
     var streamer: TileStreamer = try .init(gpa, device, &pool);
@@ -261,6 +263,7 @@ test "the streamer brings in the levels lookups want, a level per round trip" {
                 .{ .param = try kernel.param("earth_tile_surface"), .resource = .{ .texture = pool.surface } },
                 .{ .param = try kernel.param("earth_tile_sampler"), .resource = .{ .sampler = sampler } },
                 .{ .param = try kernel.param("earth_tile_requests"), .resource = .{ .buffer = pool.requests } },
+                .{ .param = try kernel.param("earth_tile_block_max"), .resource = .{ .buffer = pool.block_max } },
             }, kernel.groupCount(.{ case_count, 1, 1 })) catch |err| break :record err;
             break :record streamer.recordFeedback(command_list, &pool);
         };
@@ -273,14 +276,14 @@ test "the streamer brings in the levels lookups want, a level per round trip" {
         heights_seen[frames] = results[0][0];
         try testing.expectEqual(2000, results[1][0]);
     }
-    // Level 3 at first, then each level one readback round trip after the one before.
+    // Level 3 at first, then levels 4 and 5 together a readback round trip later.
     try testing.expectEqual(3040, heights_seen[0]);
     try testing.expectEqual(5040, heights_seen[heights_seen.len - 1]);
     var levels_seen: usize = 0;
     for (heights_seen[1..], heights_seen[0 .. heights_seen.len - 1]) |height, previous| {
         if (height != previous) levels_seen += 1;
     }
-    try testing.expectEqual(2, levels_seen);
+    try testing.expectEqual(1, levels_seen);
     // Grey 200 of level 5 reaches the surface layer too.
     try testing.expectApproxEqAbs(200.0 / 255.0, results[0][2], 2.0 / 255.0);
 }

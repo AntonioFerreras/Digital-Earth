@@ -174,16 +174,16 @@ pub fn decodeHeight(bytes: []const u8, planes: *[3 * height_side * height_side]u
     }
 }
 
-/// Decodes a surface payload into `rgb`, rows from the smallest v.
-pub fn decodeSurface(bytes: []const u8, rgb: *[surface_side * surface_side * 3]u8) DecodeError!void {
+/// Decodes a surface payload into opaque `rgba`, rows from the smallest v.
+pub fn decodeSurface(bytes: []const u8, rgba: *[surface_side * surface_side * 4]u8) DecodeError!void {
     var width: c_int = 0;
     var height: c_int = 0;
     var channels: c_int = 0;
-    const pixels = stb.stbi_load_from_memory(bytes.ptr, @intCast(bytes.len), &width, &height, &channels, 3) orelse
+    const pixels = stb.stbi_load_from_memory(bytes.ptr, @intCast(bytes.len), &width, &height, &channels, 4) orelse
         return error.TileCorrupt;
     defer stb.stbi_image_free(pixels);
     if (width != surface_side or height != surface_side) return error.TileCorrupt;
-    @memcpy(rgb, pixels[0..rgb.len]);
+    @memcpy(rgba, pixels[0..rgba.len]);
 }
 
 const testing = std.testing;

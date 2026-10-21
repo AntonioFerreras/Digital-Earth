@@ -18,12 +18,15 @@ public Texture2DArray<float> earth_tile_water;
 // Encoded sRGB albedo, pixel-centred.
 public Texture2DArray<float4> earth_tile_surface;
 public SamplerState earth_tile_sampler;
-// One bit per indirection entry: a lookup that wanted a tile finer than the resident one
-// sets the wanted tile's bit, which the host reads back to stream it in.
+// One bit per indirection entry: a lookup sets the bit of the tile it wanted, which the
+// host reads back to stream it in or keep it.
 public RWStructuredBuffer<uint> earth_tile_requests;
 // Per height-layer indirection entry, the largest height in metres of the tile's samples,
 // or of its nearest ancestor present where the tile is absent.
 public StructuredBuffer<int> earth_tile_height_max;
+// Per height slot, BLOCK_ENTRIES maxima in metres of the slot's tile split into blocks
+// 1 to BLOCK_LEVELS levels below it, coarsest first, each level row by row.
+public StructuredBuffer<int> earth_tile_block_max;
 
 static const uint INDIRECTION_LEVEL_BITS = 4;
 // Asks for the finest level a layer has; lookups clamp it to the layer's last level.
@@ -38,6 +41,9 @@ public uint tile_level(float width)
     return uint(clamp(level, 0.0, float(TILE_LEVEL_FINEST)));
 }
 public static const uint TILE_INTERVALS = 192;
+// Block levels below each height tile; the finest blocks span 3 intervals.
+public static const uint BLOCK_LEVELS = 6;
+static const uint BLOCK_ENTRIES = ((1u << (2 * (BLOCK_LEVELS + 1))) - 4) / 3;
 static const uint TILE_BORDER = 2;
 static const uint HEIGHT_SIDE = TILE_INTERVALS + 1 + 2 * TILE_BORDER;
 static const uint SURFACE_SIDE = TILE_INTERVALS + 2 * TILE_BORDER;
@@ -123,8 +129,8 @@ public struct TileHit
     public uint2 tile;
     public uint index;
 
-    // `layer` is the layer's TileUniforms field; with `request`, a tile coarser than
-    // the level wanted sets the wanted tile's request bit.
+    // `layer` is the layer's TileUniforms field; with `request`, the lookup sets the
+    // wanted tile's request bit, which loads it or, once resident, keeps it.
     public __init(uint4 layer, FacePoint p, uint level_wanted, bool request)
     {
         face = p.face;
@@ -138,12 +144,34 @@ public struct TileHit
         // Reading first spares the atomic when the bit is already set, as it is for all
         // but the first of the many lookups that want one tile.
         uint bit = 1u << (index & 31);
-        if (request && level < level_asked && (earth_tile_requests[index >> 5] & bit) == 0)
+        if (request && (earth_tile_requests[index >> 5] & bit) == 0)
             InterlockedOr(earth_tile_requests[index >> 5], bit);
         float resident_side = float(1u << level);
         this.tile = tile >> (level_asked - level);
         this.index = layer.y + p.face * entry_count(layer.x + 1) + entry_count(level) + morton(this.tile);
         local = p.uv * resident_side - float2(this.tile);
+    }
+
+    // Moves the lookup to `p`, a point of the same resident tile.
+    [mutating]
+    public void move_to(FacePoint p)
+    {
+        local = p.uv * float(1u << level) - float2(tile);
+    }
+
+    // The largest height in metres a lookup can return in tile `area` of `area_level`,
+    // which holds this lookup's point: the indirection entry's maximum at or above the
+    // resident level, a block maximum of the resident tile below it.
+    public int area_max(uint area_level, uint2 area)
+    {
+        if (area_level <= level)
+        {
+            return earth_tile_height_max[earth_tiles.height.y + face * entry_count(earth_tiles.height.x + 1) +
+                                         entry_count(area_level) + morton(area)];
+        }
+        uint below = area_level - level;
+        uint2 block = area - (tile << below);
+        return earth_tile_block_max[slot * BLOCK_ENTRIES + ((1u << (2 * below)) - 4) / 3 + (block.y << below) + block.x];
     }
 
     // Continuous index into the bordered grid of a vertex-centred tile.
