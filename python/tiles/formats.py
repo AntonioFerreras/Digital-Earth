@@ -9,7 +9,10 @@ smallest v; columns along u.
 Run the round-trip self-test: pixi run -e py python python/tiles/formats.py
 """
 
+import functools
+import hashlib
 import io
+import mmap
 import os
 import struct
 from dataclasses import dataclass
@@ -27,6 +30,7 @@ LAYERS = {"height": 0, "surface": 1}
 CODECS = {"height": 0, "surface": 1}
 HEADER = struct.Struct("<4s7I")
 ENTRY = struct.Struct("<QIhh")
+ENTRY_DTYPE = np.dtype([("offset", "<u8"), ("size", "<u4"), ("min", "<i2"), ("max", "<i2")])
 ZSTD_LEVEL = 19
 JPEG_QUALITY = 90
 
@@ -47,6 +51,7 @@ def entry_index(level, x, y):
     return (4**level - 1) // 3 + morton(x, y)
 
 
+@functools.cache
 def tile_keys(last_level):
     """(level, x, y) of every entry, in file order."""
     keys = []
@@ -114,7 +119,11 @@ def decode_surface(payload):
 
 @dataclass
 class Tile:
-    """A finished tile: its payload (empty when absent) and height bounds."""
+    """A finished tile: its payload (empty when absent) and height bounds.
+
+    The payload may be a memoryview into a mapped file, so large sets of
+    tiles move between files without being held in memory.
+    """
     payload: bytes
     min: int = 0
     max: int = 0
@@ -132,14 +141,15 @@ def write_tiles(path, layer, face, last_level, tiles):
     offset = HEADER.size + ENTRY.size * len(keys)
     for key in keys:
         tile = tiles.get(key)
-        if tile is None or not tile.payload:
+        if tile is None or not len(tile.payload):
             entries.append(ENTRY.pack(0, 0, 0, 0))
             continue
-        if tile.payload not in offsets:
-            offsets[tile.payload] = offset
+        digest = hashlib.blake2b(tile.payload, digest_size=16).digest()
+        if digest not in offsets:
+            offsets[digest] = offset
             blobs.append(tile.payload)
             offset += len(tile.payload)
-        entries.append(ENTRY.pack(offsets[tile.payload], len(tile.payload), tile.min, tile.max))
+        entries.append(ENTRY.pack(offsets[digest], len(tile.payload), tile.min, tile.max))
     header = HEADER.pack(MAGIC, VERSION, LAYERS[layer], face, TILE_INTERVALS, BORDER, last_level, CODECS[layer])
     path = Path(path)
     temporary = path.with_name(path.name + ".tmp")
@@ -153,34 +163,39 @@ def write_tiles(path, layer, face, last_level, tiles):
     os.replace(temporary, path)
 
 
+def mapped(path):
+    """A read-only memoryview of the file at `path`, mapped rather than read."""
+    with open(path, "rb") as file:
+        if os.fstat(file.fileno()).st_size == 0:
+            return memoryview(b"")
+        return memoryview(mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ))
+
+
 class TileFile:
-    """A `.tiles` file read whole into memory."""
+    """A `.tiles` file, mapped read-only."""
 
     def __init__(self, path):
-        self.data = Path(path).read_bytes()
+        self.data = mapped(path)
         magic, version, layer, self.face, intervals, border, self.last_level, codec = HEADER.unpack_from(self.data)
         assert magic == MAGIC and version == VERSION, f"{path}: not a version {VERSION} tile file"
         assert intervals == TILE_INTERVALS and border == BORDER
         self.layer = {value: name for name, value in LAYERS.items()}[layer]
         assert codec == CODECS[self.layer]
-        self.entries = [ENTRY.unpack_from(self.data, HEADER.size + ENTRY.size * index)
-                        for index in range(entry_count(self.last_level))]
+        self.entries = np.frombuffer(self.data, dtype=ENTRY_DTYPE, count=entry_count(self.last_level),
+                                     offset=HEADER.size)
 
     def tile(self, level, x, y):
         """The Tile at (level, x, y), with an empty payload when absent."""
         if level > self.last_level:
             return Tile(b"")
-        offset, size, low, high = self.entries[entry_index(level, x, y)]
+        offset, size, low, high = self.entries[entry_index(level, x, y)].tolist()
         return Tile(self.data[offset:offset + size], low, high)
 
     def present(self):
         """{(level, x, y): Tile} of every present tile."""
-        tiles = {}
-        for key in tile_keys(self.last_level):
-            tile = self.tile(*key)
-            if tile.payload:
-                tiles[key] = tile
-        return tiles
+        keys = tile_keys(self.last_level)
+        return {keys[index]: Tile(self.data[offset:offset + size], low, high)
+                for index, (offset, size, low, high) in enumerate(self.entries.tolist()) if size}
 
     def decode(self, level, x, y):
         """The decoded tile ((height, water) or rgb), or None when absent."""

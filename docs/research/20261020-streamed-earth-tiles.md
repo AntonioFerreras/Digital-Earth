@@ -105,3 +105,23 @@ Albedo, bits per texel and PSNR against the source:
 - The C shim lacks what streaming needs: fences, recorded buffer-to-texture
   copies, persistent upload rings, non-blocking readback, BC formats, and more
   bindings (slang-rhi d825f483 has fences, copies, and BC formats).
+
+## Planet bake (python/tiles)
+
+- Water at every level comes from the GLO-90 water-body masks (Product
+  Handbook 5.0, table 8: 0 no water, 1 ocean, 2 lake, 3 river). Levels 8 and 9
+  average the masks on GLO-90's own 3" lattice. Levels 0 to 7 read two 15"
+  rasters baked once from all 26,475 masks (`sources/glo90/land.tif`,
+  `non_ocean.tif`, 85 MB with average overviews), where a geocell the bucket
+  lacks is ocean. Both paths average the same masks, so a lake appears at the
+  same place at every level; GEBCO's sign (the first Alps bake) put no lake
+  above sea level on levels 0 to 7.
+- Box-averaging the level 8 water planes into their ancestors would match
+  level 8 exactly but needs every level 8 tile before any coarse one, and
+  leaves no water where no level 8 tile exists; the 15" rasters give the
+  same averages up to the masks' 1.5" half-sample offset.
+- The Caspian's special geocells are lakes, so their level 8 and 9 heights are
+  the DEM's water surface (-28 m), while levels 0 to 7 keep GEBCO's lake bed.
+- The DEMs (about 110 GB) are never all on disk: each group of tiles under a
+  level 2 tile fetches its geocells (32 transfers at a time, about 40 MB/s
+  measured) while the previous group bakes, and drops them after.

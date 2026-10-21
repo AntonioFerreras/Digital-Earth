@@ -2,23 +2,24 @@
 into tiled GeoTIFFs with average overviews, and read as area averages.
 
 - GEBCO_2025 (sources/gebco): the 15" global grid, ice surface elevation.
-  Prepared into `gebco.tif` (heights) and `gebco_water.tif` (255 where the
-  grid is below sea level), both with average overviews.
+  Prepared into `gebco.tif` with average overviews.
 - Blue Marble NG `world.2004MM` (sources/bluemarble): eight 500 m JPEG tiles
   per month, on the same 15" grid as GEBCO. Prepared into one GeoTIFF per
   tile whose overviews average linear, not encoded, colour.
-- Copernicus GLO-90 (sources/glo90): the 1-degree DEM and water-body mask COGs
-  that a bake's region needs, copied over /vsicurl/ from the public bucket.
-  The bucket has no tile where a geocell holds no land, which reads as ocean.
+- Copernicus GLO-90 (sources/glo90): 1-degree DEM and water-body mask COGs,
+  copied from the public bucket. Every mask is kept and
+  prepared into land and non-ocean fractions on the 15" grid; the DEMs are
+  fetched in batches and dropped once their tiles are baked. The bucket has
+  no geocell without land, which reads as ocean.
 
 Both 15" sources are area-registered: cell (row, col) spans longitude
 -180 + col / 240 and latitude 90 - row / 240 onward. GLO-90 is
 point-registered: its sample centres sit on multiples of 3".
 """
 
-import shutil
 import subprocess
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from osgeo import gdal
@@ -106,11 +107,15 @@ def write_raster(path, columns, rows, bands, data_type, west, north, cells_per_d
 
 
 def prepare_gebco(data):
-    """Returns the prepared (heights, water) GeoTIFFs, fetching GEBCO first if needed."""
+    """Returns the prepared heights GeoTIFF, fetching GEBCO first if needed.
+
+    The netCDF is deleted once prepared: the GeoTIFF and its overviews hold
+    everything the bake reads.
+    """
     directory = data / "sources" / "gebco"
-    heights, water = directory / "gebco.tif", directory / "gebco_water.tif"
-    if heights.exists() and water.exists():
-        return heights, water
+    heights = directory / "gebco.tif"
+    if heights.exists():
+        return heights
     netcdf = directory / "GEBCO_2025.nc"
     if not netcdf.exists():
         archive = directory / "gebco_2025.zip"
@@ -122,20 +127,12 @@ def prepare_gebco(data):
     assert (source.RasterXSize, source.RasterYSize) == (GLOBAL_COLUMNS, GLOBAL_ROWS)
     band = source.GetRasterBand(1)
     strip_rows = 1350
-
-    def strips(convert):
-        for row in range(0, GLOBAL_ROWS, strip_rows):
-            yield row, convert(band.ReadAsArray(0, row, GLOBAL_COLUMNS, strip_rows))
-
-    if not heights.exists():
-        print("preparing gebco.tif")
-        write_raster(heights, GLOBAL_COLUMNS, GLOBAL_ROWS, 1, gdal.GDT_Int16, -180, 90, CELLS_PER_DEGREE,
-                     strips(lambda h: h))
-    if not water.exists():
-        print("preparing gebco_water.tif")
-        write_raster(water, GLOBAL_COLUMNS, GLOBAL_ROWS, 1, gdal.GDT_Byte, -180, 90, CELLS_PER_DEGREE,
-                     strips(lambda h: np.where(h < 0, 255, 0).astype(np.uint8)))
-    return heights, water
+    print("preparing gebco.tif")
+    write_raster(heights, GLOBAL_COLUMNS, GLOBAL_ROWS, 1, gdal.GDT_Int16, -180, 90, CELLS_PER_DEGREE,
+                 ((row, band.ReadAsArray(0, row, GLOBAL_COLUMNS, strip_rows))
+                  for row in range(0, GLOBAL_ROWS, strip_rows)))
+    netcdf.unlink()
+    return heights
 
 
 def prepare_blue_marble(data, month):
@@ -220,6 +217,12 @@ def glo90_name(lat, lon):
             f"{'E' if lon >= 0 else 'W'}{abs(lon):03d}_00_DEM")
 
 
+def glo90_corner(name):
+    """(lat, lon) of the south-west corner of geocell `name`."""
+    lat, lon = name.split("_")[4], name.split("_")[6]
+    return (int(lat[1:]) * (1 if lat[0] == "N" else -1), int(lon[1:]) * (1 if lon[0] == "E" else -1))
+
+
 def glo90_list(data):
     path = data / "sources" / "glo90" / "tileList.txt"
     download(f"{GLO90_URL}/tileList.txt", path)
@@ -232,15 +235,74 @@ def glo90_paths(data, name):
     return directory / f"{name}.tif", directory / f"{name.removesuffix('_DEM')}_WBM.tif"
 
 
-def fetch_glo90(data, names):
-    """Copies the DEM and water-body mask of each geocell in `names` over /vsicurl/."""
-    for name in sorted(names):
-        dem, wbm = glo90_paths(data, name)
-        remote = {dem: f"{name}/{dem.name}", wbm: f"{name}/AUXFILES/{wbm.name}"}
-        for path, key in remote.items():
-            if path.exists():
-                continue
-            path.parent.mkdir(parents=True, exist_ok=True)
-            partial = path.with_name(path.name + ".part")
-            gdal.CopyFile(f"/vsicurl/{GLO90_URL}/{key}", str(partial))
-            shutil.move(partial, path)
+def copy_remote(key, path):
+    """Copies the bucket's `key` to `path` through a partial file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(path.name + ".part")
+    subprocess.run(["curl", "-sSf", "--retry", "5", "--retry-all-errors", "-o", str(partial), f"{GLO90_URL}/{key}"],
+                   check=True)
+    partial.rename(path)
+
+
+def fetch_glo90(data, names, dem=True, workers=32):
+    """Copies the water-body mask, and the DEM if `dem`, of each geocell in `names`
+    from the public bucket, many at a time."""
+    copies = []
+    for name in names:
+        dem_path, wbm_path = glo90_paths(data, name)
+        copies.append((f"{name}/AUXFILES/{wbm_path.name}", wbm_path))
+        if dem:
+            copies.append((f"{name}/{dem_path.name}", dem_path))
+    with ThreadPoolExecutor(workers) as pool:
+        list(pool.map(lambda copy: copy_remote(*copy), [copy for copy in copies if not copy[1].exists()]))
+
+
+def drop_glo90_dems(data, names):
+    for name in names:
+        glo90_paths(data, name)[0].unlink(missing_ok=True)
+
+
+def prepare_glo90_masks(data):
+    """Returns the (land, non-ocean) fraction rasters on the 15" grid, from every
+    geocell's water-body mask; fractions run 0 to 255.
+
+    They store land rather than water so that the cells of geocells the bucket
+    lacks, never written, read as 0: all ocean. The masks' half-sample offset
+    (1.5") against the 15" cells is ignored.
+    """
+    directory = data / "sources" / "glo90"
+    paths = directory / "land.tif", directory / "non_ocean.tif"
+    if all(path.exists() for path in paths):
+        return paths
+    names = sorted(glo90_list(data))
+    print(f"fetching {len(names)} GLO-90 water-body masks")
+    fetch_glo90(data, names, dem=False)
+    options = ["TILED=YES", f"BLOCKXSIZE={CELLS_PER_DEGREE}", f"BLOCKYSIZE={CELLS_PER_DEGREE}", "COMPRESS=ZSTD",
+               "SPARSE_OK=TRUE", "BIGTIFF=YES"]
+    temporaries = [path.with_name(path.name + ".tmp.tif") for path in paths]
+    datasets = []
+    for temporary in temporaries:
+        dataset = gdal.GetDriverByName("GTiff").Create(str(temporary), GLOBAL_COLUMNS, GLOBAL_ROWS, 1,
+                                                       gdal.GDT_Byte, options)
+        dataset.SetGeoTransform((-180, 1 / CELLS_PER_DEGREE, 0, 90, 0, -1 / CELLS_PER_DEGREE))
+        dataset.SetProjection("EPSG:4326")
+        datasets.append(dataset)
+    print("preparing land.tif and non_ocean.tif")
+    for name in names:
+        wbm = gdal.Open(str(glo90_paths(data, name)[1])).ReadAsArray()
+        rows, columns = wbm.shape
+        # Geocells narrow in longitude toward the poles; repeating columns to a
+        # common multiple of 240 keeps the averages exact.
+        repeat = np.lcm(columns, CELLS_PER_DEGREE) // columns
+        lat, lon = glo90_corner(name)
+        for dataset, fraction in zip(datasets, (wbm == 0, wbm != WBM_OCEAN)):
+            cells = np.repeat(fraction.astype(np.float32), repeat, axis=1)
+            cells = cells.reshape(CELLS_PER_DEGREE, rows // CELLS_PER_DEGREE, CELLS_PER_DEGREE, -1).mean(axis=(1, 3))
+            dataset.GetRasterBand(1).WriteArray(np.rint(255 * cells).astype(np.uint8),
+                                                (lon + 180) * CELLS_PER_DEGREE, (89 - lat) * CELLS_PER_DEGREE)
+    for dataset in datasets:
+        dataset.BuildOverviews("AVERAGE", [2**k for k in range(1, OVERVIEW_LEVELS + 1)])
+    datasets = None
+    for temporary, path in zip(temporaries, paths):
+        temporary.rename(path)
+    return paths
