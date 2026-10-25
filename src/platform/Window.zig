@@ -4,7 +4,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
-const Io = std.Io;
 const c = @import("c");
 
 const Window = @This();
@@ -26,63 +25,16 @@ pub const Input = struct {
     held: KeySet = .empty,
     /// Pressed since the previous pump, auto-repeat excluded.
     pressed: KeySet = .empty,
-    /// Cursor travel while the right button is held, as a fraction of the window size
+    /// Cursor travel while the left button is held, as a fraction of the window size
     /// (x right, y down).
     drag: [2]f64 = .{ 0, 0 },
-    /// The file chosen in the dialog from `showOpenDialog`; valid until the next one opens.
-    opened_path: ?[]const u8 = null,
+    /// Cursor travel while the right button is held, in pixels (x right, y down).
+    right_drag: [2]f64 = .{ 0, 0 },
+    right_held: bool = false,
 };
 
 /// Upper bound on events handled per pump; the rest wait for the next frame.
 const events_per_pump_max = 1024;
-
-/// SDL may call the dialog back on another thread, even after the window is destroyed,
-/// so the slot outlives every window.
-var open_dialog: DialogSlot = .{};
-
-/// Hands the path chosen in one dialog from SDL's callback, on any thread, to `pump`.
-const DialogSlot = struct {
-    state: std.atomic.Value(State) = .init(.idle),
-    /// Written by the callback only while `open`, read by `pump` only once `ready`.
-    path_buffer: [Io.Dir.max_path_bytes]u8 = undefined,
-    path_len: usize = 0,
-
-    const State = enum(u8) { idle, open, ready };
-
-    /// Main thread only, which makes it the only writer of `open`.
-    fn begin(slot: *DialogSlot) bool {
-        return slot.state.cmpxchgStrong(.idle, .open, .monotonic, .monotonic) == null;
-    }
-
-    /// The returned path stays put until the next `begin`, which only the caller makes.
-    fn take(slot: *DialogSlot) ?[]const u8 {
-        if (slot.state.load(.acquire) != .ready) return null;
-        slot.state.store(.idle, .monotonic);
-        return slot.path_buffer[0..slot.path_len];
-    }
-
-    fn onChosen(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, filter: c_int) callconv(.c) void {
-        _ = filter;
-        const slot: *DialogSlot = @ptrCast(@alignCast(userdata));
-        assert(slot.state.load(.monotonic) == .open);
-        if (filelist == null) {
-            log.err("file dialog failed: {s}", .{c.SDL_GetError()});
-            slot.state.store(.idle, .release);
-            return;
-        }
-        // An empty list or path means the user cancelled.
-        const path = if (filelist[0] == null) "" else std.mem.span(filelist[0]);
-        const outcome: State = if (path.len == 0) .idle else if (path.len > slot.path_buffer.len) too_long: {
-            log.err("file dialog: path longer than {d} bytes", .{slot.path_buffer.len});
-            break :too_long .idle;
-        } else chosen: {
-            @memcpy(slot.path_buffer[0..path.len], path);
-            slot.path_len = path.len;
-            break :chosen .ready;
-        };
-        slot.state.store(outcome, .release);
-    }
-};
 
 pub fn init(title: [*:0]const u8, size: [2]u32) Error!Window {
     assert(size[0] > 0);
@@ -141,14 +93,6 @@ pub fn nativeHandle(window: Window) Error!c.en_window_handle {
     return handle;
 }
 
-/// Opens the native file-open dialog at `location` (the system's choice when null)
-/// unless one is already open; `pump` reports the choice. `filters` and `location` must
-/// stay valid until then.
-pub fn showOpenDialog(window: Window, filters: []const c.SDL_DialogFileFilter, location: ?[*:0]const u8) void {
-    if (!open_dialog.begin()) return;
-    c.SDL_ShowOpenFileDialog(DialogSlot.onChosen, &open_dialog, window.sdl_window, filters.ptr, @intCast(filters.len), location, false);
-}
-
 /// Drains pending events, forwarding each to ImGui, and returns the input the
 /// application may act on: keyboard and mouse input ImGui claims is withheld.
 /// Requires the ImGui context from `en_ui_init`.
@@ -168,11 +112,22 @@ pub fn pump(window: Window) Input {
             c.SDL_EVENT_KEY_DOWN => if (!event.key.repeat and !imgui_io.*.WantCaptureKeyboard) {
                 input.pressed.set(event.key.scancode);
             },
-            c.SDL_EVENT_MOUSE_MOTION => if ((event.motion.state & c.SDL_BUTTON_RMASK) != 0 and
-                !imgui_io.*.WantCaptureMouse and window_width > 0 and window_height > 0)
-            {
-                input.drag[0] += event.motion.xrel / @as(f64, @floatFromInt(window_width));
-                input.drag[1] += event.motion.yrel / @as(f64, @floatFromInt(window_height));
+            // The cursor hides while the left button looks around, and comes back where it was.
+            c.SDL_EVENT_MOUSE_BUTTON_DOWN => if (event.button.button == c.SDL_BUTTON_LEFT and !imgui_io.*.WantCaptureMouse) {
+                _ = c.SDL_SetWindowRelativeMouseMode(window.sdl_window, true);
+            },
+            c.SDL_EVENT_MOUSE_BUTTON_UP => if (event.button.button == c.SDL_BUTTON_LEFT) {
+                _ = c.SDL_SetWindowRelativeMouseMode(window.sdl_window, false);
+            },
+            c.SDL_EVENT_MOUSE_MOTION => if (!imgui_io.*.WantCaptureMouse) {
+                if ((event.motion.state & c.SDL_BUTTON_LMASK) != 0 and window_width > 0 and window_height > 0) {
+                    input.drag[0] += event.motion.xrel / @as(f64, @floatFromInt(window_width));
+                    input.drag[1] += event.motion.yrel / @as(f64, @floatFromInt(window_height));
+                }
+                if ((event.motion.state & c.SDL_BUTTON_RMASK) != 0) {
+                    input.right_drag[0] += event.motion.xrel;
+                    input.right_drag[1] += event.motion.yrel;
+                }
             },
             else => {},
         }
@@ -183,30 +138,6 @@ pub fn pump(window: Window) Input {
         assert(keys.len <= KeySet.bit_length);
         for (keys, 0..) |down, scancode| input.held.setValue(scancode, down);
     }
-    input.opened_path = open_dialog.take();
+    input.right_held = (c.SDL_GetMouseState(null, null) & c.SDL_BUTTON_RMASK) != 0;
     return input;
-}
-
-const testing = std.testing;
-
-test "the dialog slot hands over a chosen path once, and nothing on cancel or error" {
-    var slot: DialogSlot = .{};
-    try testing.expect(slot.begin());
-    try testing.expect(!slot.begin());
-    try testing.expectEqual(null, slot.take());
-    const chosen = [_][*c]const u8{ "/presets/florida.zon", null };
-    DialogSlot.onChosen(&slot, &chosen, 0);
-    try testing.expect(!slot.begin());
-    try testing.expectEqualStrings("/presets/florida.zon", slot.take().?);
-    try testing.expectEqual(null, slot.take());
-
-    const cancelled = [_][*c]const u8{null};
-    try testing.expect(slot.begin());
-    DialogSlot.onChosen(&slot, &cancelled, -1);
-    try testing.expectEqual(null, slot.take());
-
-    try testing.expect(slot.begin());
-    DialogSlot.onChosen(&slot, null, -1);
-    try testing.expectEqual(null, slot.take());
-    try testing.expect(slot.begin());
 }

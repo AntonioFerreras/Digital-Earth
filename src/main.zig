@@ -19,6 +19,7 @@ const usage =
     \\  render          offline render
     \\  datagen         MLP training data
     \\  bake-textures   decode Earth maps into the raw cache
+    \\  bake-probes     bake the cloud bench's probe field into a file, for validation
     \\  download        fetch the streamed terrain tiles (13 GB) into <data>/tiles/
     \\
     \\options:
@@ -36,11 +37,14 @@ const usage =
     \\  --lut <file.edgn>              scattering table of the bruneton mode, from
     \\                                 `datagen --sampling grid` (default: <data>/
 ++ assets.Lut4d.default_path ++ ", if present)\n" ++
+    \\  --cloud-volume <file.ecld>     volume of the cloud_bench mode, from python/clouds/convert_vdb.py
+    \\                                 (default: <data>/
+++ assets.CloudVolume.default_path ++ ", if present)\n" ++
     \\  --texture-quality q1|q2        Earth map set to render or bake (default: the config's)
     \\  --help                         this text
     \\
     \\render options:
-    \\  --mode debug|path_tracer|raymarch|neural|bruneton
+    \\  --mode debug|path_tracer|raymarch|neural|bruneton|cloud_bench
     \\                                 render mode (default: the config's)
     \\  --preset textured|symmetric    scene preset (default: the config's)
     \\  --width <px> --height <px>     image size (default: 1920 x 1080)
@@ -50,8 +54,21 @@ const usage =
     \\  --single-scattering            light scatters once only (one bounce; raymarch drops
     \\                                 its multiple-scattering table), for accuracy studies
     \\  --no-clouds                    leave the cloud shell out of presets that have one
+    \\  --clouds-only                  the clouds alone: no air and a black surface
+    \\  --bench-view reference|approximation|split|error
+    \\                                 what the cloud_bench mode shows (default: the config's)
     \\  --seed <n>                     first frame of the random-number key (default: 0);
     \\                                 renders seeded --spp apart are independent
+    \\  --probes <file.eprb>           the cloud bench's probe field, from bake-probes, instead
+    \\                                 of the probe cache, which is left alone
+    \\  --jobs <file.zon>              several images on one renderer: a list of
+    \\                                 .{ .config, .out, .out_linear, .bench_view, .spp }, each
+    \\                                 field optional, the mode and preset the command's
+    \\
+    \\bake-probes options (the config's walks, without the probe cache; see TESTING.md):
+    \\  --probes <file.eprb>           field to go on from (default: none)
+    \\  --out <file.eprb>              the baked field (required)
+    \\  --half <file.eprb>             also the field at half the walks, for the split-half noise
     \\
     \\datagen options (the symmetric scene's radiance at uvwz points):
     \\  --sampling uniform|grid        point set (default: uniform)
@@ -71,7 +88,7 @@ const usage =
     \\
 ;
 
-const Command = enum { view, render, datagen, @"bake-textures", download };
+const Command = enum { view, render, datagen, @"bake-textures", @"bake-probes", download };
 
 const Arguments = struct {
     command: Command = .view,
@@ -81,6 +98,13 @@ const Arguments = struct {
     config_path: ?[]const u8 = null,
     weights_path: ?[]const u8 = null,
     lut_path: ?[]const u8 = null,
+    cloud_volume_path: ?[]const u8 = null,
+    /// `--probes`, for both render and bake-probes.
+    probes_path: ?[]const u8 = null,
+    /// `--half`, for bake-probes.
+    half_path: ?[]const u8 = null,
+    /// `--jobs`, for render.
+    jobs_path: ?[]const u8 = null,
     texture_quality: ?assets.EarthMaps.Quality = null,
     texture_source_path: ?[]const u8 = null,
     /// `--out`, whose default depends on the command.
@@ -99,6 +123,8 @@ const RenderArguments = struct {
     out_linear_path: ?[]const u8 = null,
     single_scattering: bool = false,
     no_clouds: bool = false,
+    clouds_only: bool = false,
+    bench_view: ?render.scene.CloudBench.View = null,
 };
 
 const DatagenArguments = struct {
@@ -152,6 +178,10 @@ pub fn main(init: std.process.Init.Minimal) u8 {
             log.err("render failed: {t}", .{err});
             return 1;
         },
+        .@"bake-probes" => bakeProbes(gpa, io, arguments) catch |err| {
+            log.err("bake-probes failed: {t}", .{err});
+            return 1;
+        },
         .@"bake-textures" => bakeTextures(gpa, io, arguments) catch |err| {
             log.err("bake-textures failed: {t}", .{err});
             return 1;
@@ -190,6 +220,16 @@ fn parseArguments(args: []const [:0]const u8) ParseError!Arguments {
             arguments.weights_path = try nextValue(args, &index);
         } else if (std.mem.eql(u8, arg, "--lut")) {
             arguments.lut_path = try nextValue(args, &index);
+        } else if (std.mem.eql(u8, arg, "--cloud-volume")) {
+            arguments.cloud_volume_path = try nextValue(args, &index);
+        } else if (std.mem.eql(u8, arg, "--probes")) {
+            arguments.probes_path = try nextValue(args, &index);
+        } else if (std.mem.eql(u8, arg, "--jobs")) {
+            arguments.jobs_path = try nextValue(args, &index);
+        } else if (std.mem.eql(u8, arg, "--half")) {
+            arguments.half_path = try nextValue(args, &index);
+        } else if (std.mem.eql(u8, arg, "--bench-view")) {
+            arguments.render.bench_view = try parseEnum(render.scene.CloudBench.View, arg, try nextValue(args, &index));
         } else if (std.mem.eql(u8, arg, "--config")) {
             arguments.config_path = try nextValue(args, &index);
         } else if (std.mem.eql(u8, arg, "--mode")) {
@@ -210,6 +250,8 @@ fn parseArguments(args: []const [:0]const u8) ParseError!Arguments {
             arguments.render.single_scattering = true;
         } else if (std.mem.eql(u8, arg, "--no-clouds")) {
             arguments.render.no_clouds = true;
+        } else if (std.mem.eql(u8, arg, "--clouds-only")) {
+            arguments.render.clouds_only = true;
         } else if (std.mem.eql(u8, arg, "--texture-quality")) {
             arguments.texture_quality = try parseEnum(assets.EarthMaps.Quality, arg, try nextValue(args, &index));
         } else if (std.mem.eql(u8, arg, "--sampling")) {
@@ -355,91 +397,211 @@ fn view(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
         .earth_map_cache = if (cache_dir) |dir| .{ .io = io, .dir = dir } else null,
         .network = modeInput(io, data_root, arguments.weights_path, assets.Network.default_path),
         .lut4d = modeInput(io, data_root, arguments.lut_path, assets.Lut4d.default_path),
+        .cloud_volume = modeInput(io, data_root, arguments.cloud_volume_path, assets.CloudVolume.default_path),
         .tile_files = if (tile_files) |*files| files else null,
     });
     defer earth_viewer.deinit();
     try earth_viewer.run();
 }
 
+/// One image of `render`: its config (default: the command's), outputs and samples.
+const RenderJob = struct {
+    config: ?[]const u8 = null,
+    out: []const u8 = "render.png",
+    out_linear: ?[]const u8 = null,
+    bench_view: ?render.scene.CloudBench.View = null,
+    spp: u32 = 64,
+};
+
 /// Headless: renders `--spp` frames on a device without a window, then writes the
-/// display image as PNG and prints the timing.
+/// display image as PNG and prints the timing; with `--jobs`, each job's image in
+/// turn on the one renderer, which spares the setup of a process per image.
 fn renderImage(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
     const options = arguments.render;
     var config = try initialConfig(gpa, io, arguments);
     defer config.deinit(gpa);
-    if (options.mode) |mode| config.mode = mode;
-    if (options.preset) |preset| config.preset = preset;
+    applyRenderOverrides(&config, options, null);
     const data_root: assets.DataRoot = try .open(io, arguments.data_path);
     defer data_root.close(io);
+    var jobs_arena: std.heap.ArenaAllocator = .init(gpa);
+    defer jobs_arena.deinit();
+    const single = [_]RenderJob{.{ .out = arguments.out_path orelse "render.png", .out_linear = options.out_linear_path, .spp = options.sample_count }};
+    const jobs: []const RenderJob = if (arguments.jobs_path) |path| try loadJobs(gpa, jobs_arena.allocator(), io, path) else &single;
 
     const start = Io.Timestamp.now(io, .awake);
     const device = try initHeadlessDevice(gpa, io, arguments);
     defer device.deinit();
     var tile_files = openTileFiles(io, data_root);
     defer if (tile_files) |*files| files.close();
-    var renderer = init: {
-        var lut_dir = try data_root.openSubdir(io, .lut, .{});
-        defer lut_dir.close(io);
-        var luts: assets.Luts = try .load(gpa, io, lut_dir);
-        defer luts.deinit(gpa);
-        // Only a preset that samples the maps needs their cache.
-        const scene_flags: render.uniforms.SceneFlags = @bitCast(config.preset.sceneUniforms().config[0]);
-        var cache_dir: ?Io.Dir = if (scene_flags.earth_maps) try openCacheDir(io, data_root) else null;
-        defer if (cache_dir) |*dir| dir.close(io);
-        break :init try render.Renderer.init(gpa, device, &luts, .{
-            .size = options.size,
-            .mode = config.mode,
-            .preset = config.preset,
-            .single_scattering = options.single_scattering,
-            .clouds = config.clouds and !options.no_clouds,
-            .water = config.water,
-            .seed = arguments.seed,
-            .texture_quality = config.texture_quality,
-            .earth_map_cache = if (cache_dir) |dir| .{ .io = io, .dir = dir } else null,
-            .network = modeInput(io, data_root, arguments.weights_path, assets.Network.default_path),
-            .lut4d = modeInput(io, data_root, arguments.lut_path, assets.Lut4d.default_path),
-            .tile_files = if (tile_files) |*files| files else null,
-            .tiles = config.tiles,
-        });
-    };
+    const probe_field: render.Renderer.ProbeField = if (arguments.probes_path) |path| .{ .file = .{ .io = io, .dir = .cwd(), .path = path } } else .cache;
+    var renderer = try initOfflineRenderer(gpa, io, arguments, &config, options.size, data_root, device, if (tile_files) |*files| files else null, probe_field);
     defer renderer.deinit();
+    const pixels = try gpa.alloc(u8, @as(usize, options.size[0]) * options.size[1] * 4);
+    defer gpa.free(pixels);
+    log.info("setup {d:.0} ms", .{milliseconds(start.durationTo(Io.Timestamp.now(io, .awake)))});
 
-    const frame_view = config.camera.view(config.sun);
-    // Stream in the tiles the view wants, then accumulate every sample on them.
+    for (jobs) |job| {
+        if (job.spp == 0 or job.spp > render_sample_count_max) {
+            log.err("{s}: spp must lie in [1, {d}]", .{ job.out, render_sample_count_max });
+            return error.InvalidArguments;
+        }
+        var job_config = if (job.config) |path| viewer.Config.load(gpa, io, .cwd(), path) catch |err| {
+            log.err("loading {s} failed: {t}", .{ path, err });
+            return err;
+        } else try config.clone(gpa);
+        defer job_config.deinit(gpa);
+        applyRenderOverrides(&job_config, options, job.bench_view);
+        if (job_config.mode != config.mode or job_config.preset != config.preset) {
+            log.err("{s}: every job renders the command's mode and preset", .{job.out});
+            return error.InvalidArguments;
+        }
+        renderer.cloud_bench = job_config.cloud_bench;
+        renderer.restart();
+        const frame_view = job_config.camera.view(job_config.sunDirection());
+        try streamTiles(io, device, &renderer, frame_view, job_config.tone());
+        const render_start = Io.Timestamp.now(io, .awake);
+        for (0..job.spp) |_| try renderer.render(frame_view, job_config.tone());
+        try device.waitIdle();
+        const render_ms = milliseconds(render_start.durationTo(Io.Timestamp.now(io, .awake)));
+        std.debug.assert(renderer.sampleCount() == job.spp);
+
+        try renderer.image.read(device, 0, pixels);
+        try assets.Image.writePng(io, .cwd(), job.out, options.size[0], options.size[1], 4, pixels);
+        if (job.out_linear) |path| try writeLinear(gpa, io, &renderer, path);
+        std.debug.print("auto exposure {d:.4} -> {s}\n", .{ render.Post.autoExposure(job_config.camera.cosZenith(job_config.sunDirection())), job.out });
+        std.debug.print("{t} {t} {d}x{d}, {d} spp: {d:.1} ms ({d:.3} ms/spp) -> {s}\n", .{
+            job_config.mode, job_config.preset, options.size[0],                              options.size[1],
+            job.spp,         render_ms,         render_ms / @as(f64, @floatFromInt(job.spp)), job.out,
+        });
+    }
+}
+
+fn loadJobs(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: Io, path: []const u8) ![]const RenderJob {
+    const source = try Io.Dir.cwd().readFileAllocOptions(io, path, gpa, .limited(1 << 20), .of(u8), 0);
+    defer gpa.free(source);
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    return std.zon.parse.fromSlice([]const RenderJob, .{
+        .gpa = gpa,
+        .arena = arena,
+        .source = source,
+        .diagnostics = &diagnostics,
+    }) catch |err| {
+        if (err == error.ParseZon) diagnostics.log(path);
+        return err;
+    };
+}
+
+/// The command line's choices over a config's.
+fn applyRenderOverrides(config: *viewer.Config, options: RenderArguments, bench_view: ?render.scene.CloudBench.View) void {
+    if (options.mode) |mode| config.mode = mode;
+    if (options.preset) |preset| config.preset = preset;
+    if (bench_view orelse options.bench_view) |view_kind| config.cloud_bench.view = view_kind;
+}
+
+/// Streams in the tiles the view wants before its samples accumulate on them.
+fn streamTiles(io: Io, device: gpu.Device, renderer: *render.Renderer, frame_view: render.Renderer.View, tone: render.Post.Tone) !void {
     const warmup_start = Io.Timestamp.now(io, .awake);
     var warmup_frames: u32 = 0;
     while (!renderer.tilesSettled() and warmup_frames < tile_warmup_frames_max) : (warmup_frames += 1) {
-        try renderer.render(frame_view, config.tone());
+        try renderer.render(frame_view, tone);
         // Requests come back only once their frame is done; ahead of it they would not.
         try device.waitIdle();
     }
     if (warmup_frames > 0) {
-        try device.waitIdle();
         renderer.tiles_frozen = true;
         renderer.restart();
         const warmup_ms = warmup_start.durationTo(Io.Timestamp.now(io, .awake)).toMilliseconds();
         log.info("tiles streamed in {d} frames, {d} ms", .{ warmup_frames, warmup_ms });
     }
-    const render_start = Io.Timestamp.now(io, .awake);
-    for (0..options.sample_count) |_| try renderer.render(frame_view, config.tone());
-    try device.waitIdle();
-    const render_end = Io.Timestamp.now(io, .awake);
-    std.debug.assert(renderer.sampleCount() == options.sample_count);
+}
 
-    const pixels = try gpa.alloc(u8, @as(usize, options.size[0]) * options.size[1] * 4);
-    defer gpa.free(pixels);
-    const out_path = arguments.out_path orelse "render.png";
-    try renderer.image.read(device, 0, pixels);
-    try assets.Image.writePng(io, .cwd(), out_path, options.size[0], options.size[1], 4, pixels);
-    if (options.out_linear_path) |path| try writeLinear(gpa, io, &renderer, path);
+/// Bakes the cloud bench's probes to the config's walks, going on from the field in
+/// `--probes` or from none, into `--out`, without the probe cache, and prints the
+/// bake's time: its frames until the GPU is done, not the setup or the writes. With
+/// `--half`, the field at half the walks is written there on the way (TESTING.md).
+fn bakeProbes(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
+    const out_path = arguments.out_path orelse {
+        log.err("bake-probes needs --out", .{});
+        return error.InvalidArguments;
+    };
+    var config = try initialConfig(gpa, io, arguments);
+    defer config.deinit(gpa);
+    config.mode = .cloud_bench;
+    config.cloud_bench.view = .approximation;
+    const data_root: assets.DataRoot = try .open(io, arguments.data_path);
+    defer data_root.close(io);
+    const device = try initHeadlessDevice(gpa, io, arguments);
+    defer device.deinit();
+    const start_field: ?render.Renderer.InputFile = if (arguments.probes_path) |path| .{ .io = io, .dir = .cwd(), .path = path } else null;
+    var renderer = try initOfflineRenderer(gpa, io, arguments, &config, bake_size, data_root, device, null, .{ .file = start_field });
+    defer renderer.deinit();
+    const mode = &renderer.mode.cloud_bench;
+    const frame_view = config.camera.view(config.sunDirection());
+    const walks = config.cloud_bench.probe_walks;
+    var bake_ms: f64 = 0;
+    var half_ms: ?f64 = null;
+    const phases = [_]struct { path: ?[]const u8, walks: u32 }{
+        .{ .path = arguments.half_path, .walks = walks / 2 },
+        .{ .path = out_path, .walks = walks },
+    };
+    for (phases, 0..) |phase, index| {
+        const field_path = phase.path orelse continue;
+        renderer.cloud_bench.probe_walks = phase.walks;
+        const phase_start = Io.Timestamp.now(io, .awake);
+        try renderer.render(frame_view, config.tone());
+        while (mode.bakeProgress() != null) try renderer.render(frame_view, config.tone());
+        try device.waitIdle();
+        bake_ms += milliseconds(phase_start.durationTo(Io.Timestamp.now(io, .awake)));
+        if (index == 0) half_ms = bake_ms;
+        try mode.saveProbes(gpa, io, .cwd(), field_path);
+    }
+    std.debug.print("bake-probes: {d} walks in {d:.1} ms", .{ mode.probe_walks, bake_ms });
+    if (half_ms) |ms| std.debug.print(", {d} at {d:.1} ms -> {s}", .{ walks / 2, ms, arguments.half_path.? });
+    std.debug.print(" -> {s}\n", .{out_path});
+}
 
-    const setup_ms = milliseconds(start.durationTo(render_start));
-    const render_ms = milliseconds(render_start.durationTo(render_end));
-    const sample_count_f: f64 = @floatFromInt(options.sample_count);
-    std.debug.print("{t} {t} {d}x{d}, {d} spp: {d:.1} ms ({d:.3} ms/spp), setup {d:.0} ms -> {s}\n", .{
-        config.mode,                config.preset,        options.size[0],
-        options.size[1],            options.sample_count, render_ms,
-        render_ms / sample_count_f, setup_ms,             out_path,
+/// The bake renders an image only to drive its frames.
+const bake_size = [2]u32{ 16, 16 };
+
+/// The renderer of the offline commands, for `config` at `size`.
+fn initOfflineRenderer(
+    gpa: std.mem.Allocator,
+    io: Io,
+    arguments: Arguments,
+    config: *const viewer.Config,
+    size: [2]u32,
+    data_root: assets.DataRoot,
+    device: gpu.Device,
+    tile_files: ?*const render.TilePool.Files,
+    probe_field: render.Renderer.ProbeField,
+) !render.Renderer {
+    var lut_dir = try data_root.openSubdir(io, .lut, .{});
+    defer lut_dir.close(io);
+    var luts: assets.Luts = try .load(gpa, io, lut_dir);
+    defer luts.deinit(gpa);
+    // Only a preset that samples the maps needs their cache.
+    const scene_flags: render.uniforms.SceneFlags = @bitCast(config.preset.sceneUniforms().config[0]);
+    var cache_dir: ?Io.Dir = if (scene_flags.earth_maps) try openCacheDir(io, data_root) else null;
+    defer if (cache_dir) |*dir| dir.close(io);
+    return render.Renderer.init(gpa, device, &luts, .{
+        .size = size,
+        .mode = config.mode,
+        .preset = config.preset,
+        .single_scattering = arguments.render.single_scattering,
+        .clouds = config.clouds and !arguments.render.no_clouds,
+        .water = config.water,
+        .cloud_scattering = config.cloud_scattering,
+        .cloud_bench = config.cloud_bench,
+        .clouds_only = config.clouds_only or arguments.render.clouds_only,
+        .seed = arguments.seed,
+        .texture_quality = config.texture_quality,
+        .earth_map_cache = if (cache_dir) |dir| .{ .io = io, .dir = dir } else null,
+        .network = modeInput(io, data_root, arguments.weights_path, assets.Network.default_path),
+        .lut4d = modeInput(io, data_root, arguments.lut_path, assets.Lut4d.default_path),
+        .cloud_volume = modeInput(io, data_root, arguments.cloud_volume_path, assets.CloudVolume.default_path),
+        .probe_field = probe_field,
+        .tile_files = tile_files,
+        .tiles = config.tiles,
     });
 }
 
@@ -629,6 +791,14 @@ fn bakeTextures(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
 
 fn milliseconds(duration: Io.Duration) f64 {
     return @as(f64, @floatFromInt(duration.toNanoseconds())) / std.time.ns_per_ms;
+}
+
+test "bake-probes takes its fields' paths" {
+    const bake = try parseArguments(&.{ "bake-probes", "--probes", "a.eprb", "--out", "b.eprb", "--half", "c.eprb" });
+    try std.testing.expectEqual(Command.@"bake-probes", bake.command);
+    try std.testing.expectEqualStrings("a.eprb", bake.probes_path.?);
+    try std.testing.expectEqualStrings("b.eprb", bake.out_path.?);
+    try std.testing.expectEqualStrings("c.eprb", bake.half_path.?);
 }
 
 test "command line parsing" {

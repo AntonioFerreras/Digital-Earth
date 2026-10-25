@@ -32,7 +32,10 @@ public Texture2D<float4> earth_bounds;
 // Tile of map column `x` (texel units) under `layout`, a field of `earth_maps`.
 uint tile_of(float x, uint4 layout)
 {
-    return min(uint(x) / layout.z, (layout.x - 1) / layout.z);
+    // A float quotient instead of an integer division, which costs more than the
+    // fetch. Where it rounds across a tile edge, the taps fall within the half texel
+    // that the one-texel apron covers.
+    return min(uint(x / float(layout.z)), (layout.x - 1) / layout.z);
 }
 
 // Bilinear sample at map coordinates `uv` with hardware filtering, u repeating

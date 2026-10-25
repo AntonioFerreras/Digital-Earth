@@ -36,19 +36,10 @@ pub fn init(gpa: std.mem.Allocator, io: Io, data_root: DataRoot, startup: ?Rende
         try appendLabel(gpa, &labels, file.path);
     }
 
-    var names: std.ArrayList([]const u8) = .empty;
-    defer {
-        for (names.items) |name| gpa.free(name);
-        names.deinit(gpa);
-    }
-    listDirectory(gpa, io, data_root, &names) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.FileNotFound => {},
-        else => data_root.logFailure(Network.directory_path, err),
-    };
-    std.mem.sort([]const u8, names.items, {}, lessThan);
-    for (names.items) |name| {
-        const path = try std.fs.path.join(gpa, &.{ Network.directory_path, name });
+    const stems = try data_root.listStems(gpa, io, Network.directory_path, Network.file_extension);
+    defer DataRoot.freeStems(gpa, stems);
+    for (stems) |stem| {
+        const path = try std.mem.concat(gpa, u8, &.{ Network.directory_path, std.fs.path.sep_str, stem, Network.file_extension });
         errdefer gpa.free(path);
         if (startup) |file| {
             if (file.dir.handle == data_root.dir.handle and std.mem.eql(u8, file.path, path)) {
@@ -57,7 +48,7 @@ pub fn init(gpa: std.mem.Allocator, io: Io, data_root: DataRoot, startup: ?Rende
             }
         }
         try files.append(gpa, .{ .io = io, .dir = data_root.dir, .path = path });
-        try appendLabel(gpa, &labels, std.mem.cutSuffix(u8, name, Network.file_extension).?);
+        try appendLabel(gpa, &labels, stem);
     }
     const owned_labels = try labels.toOwnedSliceSentinel(gpa, 0);
     errdefer gpa.free(owned_labels);
@@ -69,20 +60,6 @@ pub fn deinit(list: *NetworkList, gpa: std.mem.Allocator) void {
     gpa.free(list.files);
     gpa.free(list.labels);
     list.* = undefined;
-}
-
-fn listDirectory(gpa: std.mem.Allocator, io: Io, data_root: DataRoot, names: *std.ArrayList([]const u8)) !void {
-    var dir = try data_root.dir.openDir(io, Network.directory_path, .{ .iterate = true });
-    defer dir.close(io);
-    var entries = dir.iterate();
-    while (try entries.next(io)) |entry| {
-        if (entry.kind == .directory or !std.mem.endsWith(u8, entry.name, Network.file_extension)) continue;
-        try names.append(gpa, try gpa.dupe(u8, entry.name));
-    }
-}
-
-fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-    return std.mem.lessThan(u8, a, b);
 }
 
 fn appendLabel(gpa: std.mem.Allocator, labels: *std.ArrayList(u8), text: []const u8) error{OutOfMemory}!void {

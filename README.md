@@ -125,7 +125,8 @@ A quick ray-marched preview:
 
 | Input | Action |
 | --- | --- |
-| right mouse drag | rotate the camera |
+| left mouse drag | rotate the camera |
+| right mouse drag | in the cloud bench, move the sun: sideways its azimuth, up and down its elevation |
 | `W` `A` `S` `D` | move; the speed scales with altitude |
 | `Space` / left `Ctrl` | move up / down |
 | left `Shift` | move three times faster |

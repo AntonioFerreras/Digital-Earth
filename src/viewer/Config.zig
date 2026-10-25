@@ -17,11 +17,15 @@ const Config = @This();
 
 camera: Camera = .{},
 sun: View.Sun = .{ .angle_degrees = 120, .path_rotation_degrees = 15 },
+/// The cloud bench's sun, which takes the place of `sun` there.
+bench_sun: BenchSun = .{},
 mode: Renderer.ModeKind = .debug,
 preset: scene.Preset = .textured,
 /// The original's default; the upload falls back to Q1 where Q2 does not fit.
 texture_quality: EarthMaps.Quality = .q2,
 exposure: f64 = 3.0,
+/// Sets `exposure` to `Post.autoExposure` of the sun's height at the camera.
+auto_exposure: bool = false,
 /// OpenDRT settings: a mild chroma boost over OpenDRT's look, contrast 0, the
 /// high-contrast tonescale.
 saturation: f64 = 1.2,
@@ -35,6 +39,14 @@ camera_response: []const u8 = "Neutral",
 /// Off removes the cloud shell from presets that have one.
 clouds: bool = true,
 water: scene.Water = .{},
+cloud_scattering: scene.CloudScattering = .{},
+cloud_bench: scene.CloudBench = .{},
+/// The clouds alone, without air and with a black surface.
+clouds_only: bool = false,
+/// The ray marcher reads distant cloud shadows from its shadow map; off marches them all.
+cloud_shadow_map: bool = true,
+/// At most this many bounces per path.
+bounce_limit: u32 = scene.atmosphere.bounce_count_max,
 /// The surface from the cube-face tiles, when they are baked; off uses the Earth maps.
 tiles: bool = true,
 gui_visible: bool = true,
@@ -73,6 +85,28 @@ pub fn setCameraResponse(config: *Config, gpa: std.mem.Allocator, name: []const 
 
 /// Far above any real config; guards against loading an unrelated file.
 const file_size_max = 64 * 1024;
+
+/// A sun by its height and azimuth over the cloud bench, whose vertical is +Y.
+pub const BenchSun = struct {
+    /// The cosine of the sun's zenith angle, which resolves the low sun of sunset
+    /// finely; below zero it has set, down to `Post.auto_exposure_table`'s lowest. The
+    /// default puts it 50 degrees high.
+    cos_zenith: f64 = 0.766,
+    /// From +Z towards +X.
+    azimuth_degrees: f64 = 65,
+
+    pub fn direction(sun: BenchSun) View.Vec3 {
+        const cos_zenith = std.math.clamp(sun.cos_zenith, -1, 1);
+        const sin_zenith = @sqrt(1 - cos_zenith * cos_zenith);
+        const azimuth = std.math.degreesToRadians(sun.azimuth_degrees);
+        return .{ sin_zenith * @sin(azimuth), cos_zenith, sin_zenith * @cos(azimuth) };
+    }
+};
+
+/// Towards the sun the config renders: the bench's own in the cloud bench.
+pub fn sunDirection(config: Config) View.Vec3 {
+    return if (config.mode == .cloud_bench) config.bench_sun.direction() else config.sun.direction();
+}
 
 pub const LoadError = Io.Dir.ReadFileAllocError || error{InvalidConfig};
 pub const SaveError = Io.Dir.WriteFileError || error{OutOfMemory};
@@ -210,28 +244,25 @@ test "invalid files are rejected" {
     try testing.expectError(error.FileNotFound, load(testing.allocator, testing.io, tmp.dir, "absent.zon"));
 }
 
+// The viewer saves user presets next to the shipped ones, so only these are checked.
 test "shipped presets load, name their camera response, and survive a save" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    var presets = try Io.Dir.cwd().openDir(testing.io, "presets", .{ .iterate = true });
+    var presets = try Io.Dir.cwd().openDir(testing.io, "presets", .{});
     defer presets.close(testing.io);
-    var iterator = presets.iterate();
     const camera_responses = std.StaticStringMap([]const u8).initComptime(.{
         .{ "apollo-11.zon", "FP2900ZG" },
         .{ "florida.zon", "Neutral" },
         .{ "sunset-hurricane.zon", "Neutral" },
+        .{ "wdas-cloud.zon", "Neutral" },
     });
-    var count: u32 = 0;
-    while (try iterator.next(testing.io)) |entry| {
-        if (!std.mem.endsWith(u8, entry.name, ".zon")) continue;
-        var preset = try load(testing.allocator, testing.io, presets, entry.name);
+    for (camera_responses.keys(), camera_responses.values()) |name, camera_response| {
+        var preset = try load(testing.allocator, testing.io, presets, name);
         defer preset.deinit(testing.allocator);
-        try testing.expectEqualStrings(camera_responses.get(entry.name).?, preset.camera_response);
-        try preset.save(testing.allocator, testing.io, tmp.dir, entry.name);
-        var reloaded = try load(testing.allocator, testing.io, tmp.dir, entry.name);
+        try testing.expectEqualStrings(camera_response, preset.camera_response);
+        try preset.save(testing.allocator, testing.io, tmp.dir, name);
+        var reloaded = try load(testing.allocator, testing.io, tmp.dir, name);
         defer reloaded.deinit(testing.allocator);
         try testing.expectEqualDeep(preset, reloaded);
-        count += 1;
     }
-    try testing.expectEqual(camera_responses.keys().len, count);
 }

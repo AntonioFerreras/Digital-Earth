@@ -31,14 +31,14 @@ const view: Renderer.View = .{
     .up = .{ 0, 1, 0 },
     .vertical_fov_degrees = 27,
     .aspect_scale = 1,
-    .sun = .{ .angle_degrees = 90, .path_rotation_degrees = 0 },
+    .sun_direction = (Renderer.View.Sun{ .angle_degrees = 90, .path_rotation_degrees = 0 }).direction(),
 };
 
 /// `view` with the sun at +Y (the original's angle 0 with its path tilted by -90
 /// degrees), lighting the planet's northern half.
 const overhead: Renderer.View = init: {
     var lit = view;
-    lit.sun = .{ .angle_degrees = 0, .path_rotation_degrees = -90 };
+    lit.sun_direction = (Renderer.View.Sun{ .angle_degrees = 0, .path_rotation_degrees = -90 }).direction();
     break :init lit;
 };
 
@@ -76,7 +76,7 @@ test "view changes reset accumulation, tone changes do not" {
     moved.vertical_fov_degrees = 30;
     try renderer.render(moved, tone);
     try testing.expectEqual(1, renderer.sampleCount());
-    moved.sun.angle_degrees = 91;
+    moved.sun_direction = (Renderer.View.Sun{ .angle_degrees = 91, .path_rotation_degrees = 0 }).direction();
     try renderer.render(moved, tone);
     try testing.expectEqual(1, renderer.sampleCount());
     // Without Earth maps the textured preset is refused and the accumulation kept.

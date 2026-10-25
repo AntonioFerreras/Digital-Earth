@@ -133,7 +133,7 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, luts: *const Luts, optio
     const datagen_param = try kernel.kernel.param("datagen");
     const points_param = try kernel.kernel.param("points");
     return .{
-        .shared = .{ .device = device, .luts = gpu_luts, .network = null, .lut4d = null, .earth_maps = earth_maps, .tiles = tiles },
+        .shared = .{ .device = device, .luts = gpu_luts, .network = null, .lut4d = null, .cloud_volume = null, .probe_field = .cache, .earth_maps = earth_maps, .tiles = tiles },
         .kernel = kernel,
         .datagen_param = datagen_param,
         .points_param = points_param,
@@ -179,6 +179,7 @@ pub fn evaluate(datagen: *Datagen, first_point: u32, records: []datagen_format.R
     var frame: Renderer.Frame = .{
         .uniforms = std.mem.zeroes(uniforms.FrameUniforms),
         .scene = scene.Preset.symmetric.sceneUniforms(),
+        .cloud_bench = std.mem.zeroes(uniforms.CloudBenchUniforms),
         .accum = datagen.accum,
     };
     frame.uniforms.frame = .{ datagen.options.seed, accum_width, datagen.accum.desc.height, 0 };

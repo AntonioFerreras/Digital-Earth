@@ -37,6 +37,9 @@ pub const Motion = struct {
     left: f64 = 0,
     up: f64 = 0,
     boost: bool = false,
+    /// A factor on the speed, which grows with altitude, for scenes far smaller than
+    /// the altitude they are seen from.
+    speed_scale: f64 = 1,
     /// Cursor travel as a fraction of the window size (x right, y down).
     drag: [2]f64 = .{ 0, 0 },
     up_mode: ?UpMode = null,
@@ -73,7 +76,7 @@ pub fn update(camera: *Camera, motion: Motion, dt_s: f64) bool {
             camera.up * splat(motion.up);
         const altitude_m = math.clamp(camera.altitude(), 0, planet_radius_m / 2);
         const boost: f64 = if (motion.boost) boost_factor else 1;
-        const moved = camera.position + direction * splat(speed_per_altitude_hz * altitude_m * boost * dt_s);
+        const moved = camera.position + direction * splat(speed_per_altitude_hz * altitude_m * boost * motion.speed_scale * dt_s);
         if (length(moved) >= planet_radius_m) camera.position = moved;
         changed = true;
     }
@@ -99,7 +102,7 @@ pub fn basis(camera: Camera) Basis {
     return .{ .forward = camera.forward, .right = right, .up = up };
 }
 
-pub fn view(camera: Camera, sun: View.Sun) View {
+pub fn view(camera: Camera, sun_direction: View.Vec3) View {
     const frame = camera.basis();
     return .{
         .position = camera.position,
@@ -108,8 +111,41 @@ pub fn view(camera: Camera, sun: View.Sun) View {
         .up = frame.up,
         .vertical_fov_degrees = camera.vertical_fov_degrees,
         .aspect_scale = camera.aspect_scale,
-        .sun = sun,
+        .sun_direction = sun_direction,
     };
+}
+
+/// The cosine of the zenith angle of `sun_direction` at the camera, against the
+/// planet's vertical there.
+pub fn cosZenith(camera: Camera, sun_direction: View.Vec3) f64 {
+    return @reduce(.Add, sun_direction * normalize(camera.position));
+}
+
+/// The local vertical at the camera and two horizontal axes: azimuth zero towards the
+/// world's +Z, as the cloud bench's sun takes it, and a quarter turn towards +X.
+pub const Horizon = struct {
+    up: Vec3,
+    north: Vec3,
+    east: Vec3,
+
+    pub fn elevationAzimuth(frame: Horizon, towards: Vec3) [2]f64 {
+        return .{
+            math.asin(math.clamp(dot(towards, frame.up), -1, 1)),
+            math.atan2(dot(towards, frame.east), dot(towards, frame.north)),
+        };
+    }
+
+    pub fn direction(frame: Horizon, elevation: f64, azimuth: f64) Vec3 {
+        const level = frame.north * splat(@cos(azimuth)) + frame.east * splat(@sin(azimuth));
+        return level * splat(@cos(elevation)) + frame.up * splat(@sin(elevation));
+    }
+};
+
+pub fn horizon(camera: Camera) Horizon {
+    const up = normalize(camera.position);
+    const reference: Vec3 = if (@abs(up[2]) < 0.9) .{ 0, 0, 1 } else .{ 1, 0, 0 };
+    const north = normalize(reference - up * splat(dot(reference, up)));
+    return .{ .up = up, .north = north, .east = cross(up, north) };
 }
 
 /// Unit vector to the left of the view, orthogonal to `forward`. Looking along `up`

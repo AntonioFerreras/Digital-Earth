@@ -182,4 +182,12 @@ public struct SpectralMediumBundle
                 first = medium;
         }
     }
+
+    // No air: nothing scatters or absorbs, whatever the densities.
+    [mutating]
+    public void remove()
+    {
+        extinction = 0.0;
+        scattering = 0.0;
+    }
 };

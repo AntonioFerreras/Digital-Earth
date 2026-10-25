@@ -44,6 +44,92 @@ pub const TonescalePreset = enum(u32) {
 
 pub const RecordError = gpu.Error || error{UnknownCameraResponse};
 
+/// The exposure for a sun of `cos_zenith` at the camera: `auto_exposure_table` by a
+/// monotone cubic, smooth and without overshoot between its points, held past its ends.
+pub fn autoExposure(cos_zenith: f64) f64 {
+    const table = auto_exposure_table;
+    if (cos_zenith <= table[0][0]) return table[0][1];
+    if (cos_zenith >= table[table.len - 1][0]) return table[table.len - 1][1];
+    var i: usize = 0;
+    while (cos_zenith > table[i + 1][0]) i += 1;
+    const h = table[i + 1][0] - table[i][0];
+    const t = (cos_zenith - table[i][0]) / h;
+    const t2 = t * t;
+    const t3 = t2 * t;
+    return (2 * t3 - 3 * t2 + 1) * table[i][1] + (t3 - 2 * t2 + t) * h * auto_exposure_slopes[i] +
+        (3 * t2 - 2 * t3) * table[i + 1][1] + (t3 - t2) * h * auto_exposure_slopes[i + 1];
+}
+
+/// (cos zenith, stops), cos zenith rising, from python/validation/auto_exposure.py: the
+/// sky shows as bright as under a sun 0.3 high at 3 stops all the way down to sunset,
+/// then dims smoothly to 10 stops at the lowest sun the viewer and validation allow.
+pub const auto_exposure_table = [_][2]f64{
+    .{ -0.07, 10.0000 },
+    .{ -0.06, 9.0336 },
+    .{ -0.05, 8.2263 },
+    .{ -0.04, 7.4908 },
+    .{ -0.03, 6.8790 },
+    .{ -0.02, 6.3434 },
+    .{ -0.01, 5.8588 },
+    .{ 0, 5.4114 },
+    .{ 0.02, 4.6601 },
+    .{ 0.04, 4.1727 },
+    .{ 0.06, 3.8436 },
+    .{ 0.08, 3.6158 },
+    .{ 0.1, 3.4600 },
+    .{ 0.12, 3.3524 },
+    .{ 0.14, 3.2730 },
+    .{ 0.16, 3.2066 },
+    .{ 0.18, 3.1550 },
+    .{ 0.2, 3.1136 },
+    .{ 0.22, 3.0790 },
+    .{ 0.24, 3.0508 },
+    .{ 0.26, 3.0314 },
+    .{ 0.28, 3.0143 },
+    .{ 0.3, 3.0000 },
+    .{ 0.35, 2.9721 },
+    .{ 0.4, 2.9557 },
+    .{ 0.45, 2.9395 },
+    .{ 0.5, 2.9286 },
+    .{ 0.55, 2.9210 },
+    .{ 0.6, 2.9128 },
+    .{ 0.65, 2.9079 },
+    .{ 0.7, 2.9017 },
+    .{ 0.75, 2.9020 },
+    .{ 0.8, 2.9086 },
+    .{ 0.85, 2.9238 },
+    .{ 0.9, 2.9941 },
+    .{ 0.95, 3.0503 },
+    .{ 1, 3.0843 },
+};
+
+/// The table's slopes by PCHIP (Fritsch and Butland): zero at its extrema, a weighted
+/// harmonic mean of the neighbouring secants elsewhere, which keeps each span monotone.
+const auto_exposure_slopes = slopes: {
+    const table = auto_exposure_table;
+    var secants: [table.len - 1]f64 = undefined;
+    var widths: [table.len - 1]f64 = undefined;
+    for (&secants, &widths, table[0 .. table.len - 1], table[1..]) |*secant, *width, low, high| {
+        width.* = high[0] - low[0];
+        secant.* = (high[1] - low[1]) / width.*;
+    }
+    var result: [table.len]f64 = undefined;
+    result[0] = secants[0];
+    result[table.len - 1] = secants[secants.len - 1];
+    for (1..table.len - 1) |k| {
+        const before = secants[k - 1];
+        const after = secants[k];
+        if (before * after <= 0) {
+            result[k] = 0;
+        } else {
+            const w1 = 2 * widths[k] + widths[k - 1];
+            const w2 = widths[k] + 2 * widths[k - 1];
+            result[k] = (w1 + w2) / (w1 / before + w2 / after);
+        }
+    }
+    break :slopes result;
+};
+
 pub fn init(device: gpu.Device) gpu.Kernel.LayoutError!Post {
     const kernel: gpu.Kernel = try .init(device, "post/display", "display_main", &.{});
     errdefer kernel.deinit();
@@ -88,4 +174,18 @@ pub fn record(
         .{ .param = post.params.get(.image), .resource = .{ .texture = image } },
     };
     try command_list.dispatch(post.kernel, &bindings, post.kernel.groupCount(.{ image.desc.width, image.desc.height, 1 }));
+}
+
+const testing = std.testing;
+
+test "auto exposure passes through its table, stays within each span, and holds past its ends" {
+    for (auto_exposure_table) |point| try testing.expectApproxEqAbs(point[1], autoExposure(point[0]), 1e-12);
+    for (auto_exposure_table[0 .. auto_exposure_table.len - 1], auto_exposure_table[1..]) |low, high| {
+        for (1..10) |step| {
+            const exposure = autoExposure(std.math.lerp(low[0], high[0], @as(f64, @floatFromInt(step)) / 10));
+            try testing.expect(exposure >= @min(low[1], high[1]) - 1e-12 and exposure <= @max(low[1], high[1]) + 1e-12);
+        }
+    }
+    try testing.expectEqual(auto_exposure_table[0][1], autoExposure(-1));
+    try testing.expectEqual(auto_exposure_table[auto_exposure_table.len - 1][1], autoExposure(2));
 }

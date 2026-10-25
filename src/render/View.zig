@@ -17,7 +17,8 @@ up: Vec3,
 vertical_fov_degrees: f64,
 /// Horizontal stretch of the image plane on top of the image aspect ratio.
 aspect_scale: f64,
-sun: Sun,
+/// Unit vector towards the sun.
+sun_direction: Vec3,
 
 pub const Vec3 = @Vector(3, f64);
 
@@ -29,6 +30,13 @@ pub const Sun = struct {
     angle_degrees: f64 = 60,
     /// Tilt of the sun's path about the X axis, the original's `sun_path_rot`.
     path_rotation_degrees: f64 = -45,
+
+    /// The original's light direction.
+    pub fn direction(sun: Sun) Vec3 {
+        const angle = math.degreesToRadians(sun.angle_degrees);
+        const rotation = math.degreesToRadians(sun.path_rotation_degrees);
+        return .{ -@sin(angle), @cos(angle) * -@sin(rotation), @cos(angle) * @cos(rotation) };
+    }
 };
 
 /// Writes the camera and sun fields of `uniforms` for an image of `image_size` pixels;
@@ -45,11 +53,7 @@ pub fn writeUniforms(view: View, uniforms: *FrameUniforms, image_size: [2]u32) v
     uniforms.camera_forward = vec4(view.forward, half_height);
     uniforms.camera_right = vec4(view.right, aspect * view.aspect_scale);
     uniforms.camera_up = vec4(view.up, 0);
-
-    // The original's light direction.
-    const angle = math.degreesToRadians(view.sun.angle_degrees);
-    const rotation = math.degreesToRadians(view.sun.path_rotation_degrees);
-    uniforms.sun_direction = vec4(.{ -@sin(angle), @cos(angle) * -@sin(rotation), @cos(angle) * @cos(rotation) }, 0);
+    uniforms.sun_direction = vec4(view.sun_direction, 0);
 }
 
 fn vec4(vector: Vec3, w: f64) [4]f32 {
@@ -66,7 +70,7 @@ test "uniforms carry the image-plane half height, aspect, and sun direction" {
         .up = .{ 0, 1, 0 },
         .vertical_fov_degrees = 90,
         .aspect_scale = 1.25,
-        .sun = .{ .angle_degrees = 90, .path_rotation_degrees = 0 },
+        .sun_direction = (Sun{ .angle_degrees = 90, .path_rotation_degrees = 0 }).direction(),
     };
     var uniforms = std.mem.zeroes(FrameUniforms);
     view.writeUniforms(&uniforms, .{ 200, 100 });

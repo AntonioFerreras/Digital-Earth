@@ -26,7 +26,9 @@ pub const SceneFlags = packed struct(u32) {
     calm_lakes: bool = false,
     wind_map: bool = false,
     roughness_texture: bool = false,
-    _: u18 = 0,
+    clouds_only: bool = false,
+    march_cloud_shadows: bool = false,
+    _: u16 = 0,
 };
 
 pub const SceneUniforms = extern struct {
@@ -35,6 +37,35 @@ pub const SceneUniforms = extern struct {
     surface: [4]f32,
     water: [4]f32,
     glint: [4]f32,
+    cloud_scattering: [4]f32,
+    cloud_profile: [4]f32,
+};
+
+pub const CloudBenchFlags = packed struct(u32) {
+    sky: bool = false,
+    ratio_tracking: bool = false,
+    sun_order3: bool = false,
+    probe_gather: bool = false,
+    forward_peak: bool = false,
+    p1_closure: bool = false,
+    adaptive_probes: bool = false,
+    photons: bool = false,
+    leaf_lengths: bool = false,
+    _: u23 = 0,
+};
+
+pub const CloudBenchUniforms = extern struct {
+    origin: [4]f32,
+    grid_min: [4]f32,
+    grid_size: [4]u32,
+    medium: [4]f32,
+    march: [4]f32,
+    options: [4]u32,
+    samples: [4]u32,
+    probe_origin: [4]f32,
+    probe_spacing: [4]f32,
+    probe_cells: [4]u32,
+    probe_counts: [4]u32,
 };
 
 /// Field names are those of `assets.EarthMaps.Role`.

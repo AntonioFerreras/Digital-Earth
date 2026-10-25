@@ -1,0 +1,13 @@
+.{
+    .camera = .{
+        .position = .{ -9589.01302, 6374694.5, -5118.25108 },
+        .forward = .{ 0.894703816, -0.133624236, 0.426203759 },
+        .up = .{ 0, 1, 0 },
+        .vertical_fov_degrees = 27.4663,
+        .aspect_scale = 1,
+    },
+    .bench_sun = .{ .cos_zenith = 0.643333, .azimuth_degrees = 65 },
+    .mode = .cloud_bench,
+    .preset = .symmetric,
+    .exposure = 2.9087,
+}

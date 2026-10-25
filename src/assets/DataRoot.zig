@@ -68,6 +68,44 @@ pub fn createSubdir(root: DataRoot, io: Io, subdir: Subdir) Io.Dir.CreateDirPath
     };
 }
 
+/// The stems of the files in `sub_path` named `<stem><extension>`, sorted, each owned
+/// like the slice (`freeStems`). A missing or unreadable directory lists nothing; an
+/// unreadable one is logged.
+pub fn listStems(root: DataRoot, gpa: std.mem.Allocator, io: Io, sub_path: []const u8, extension: []const u8) error{OutOfMemory}![][]u8 {
+    var stems: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (stems.items) |stem| gpa.free(stem);
+        stems.deinit(gpa);
+    }
+    root.appendStems(gpa, io, sub_path, extension, &stems) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.FileNotFound => {},
+        else => root.logFailure(sub_path, err),
+    };
+    std.mem.sort([]u8, stems.items, {}, lessThan);
+    return stems.toOwnedSlice(gpa);
+}
+
+pub fn freeStems(gpa: std.mem.Allocator, stems: [][]u8) void {
+    for (stems) |stem| gpa.free(stem);
+    gpa.free(stems);
+}
+
+fn appendStems(root: DataRoot, gpa: std.mem.Allocator, io: Io, sub_path: []const u8, extension: []const u8, stems: *std.ArrayList([]u8)) !void {
+    var dir = try root.dir.openDir(io, sub_path, .{ .iterate = true });
+    defer dir.close(io);
+    var entries = dir.iterate();
+    while (try entries.next(io)) |entry| {
+        if (entry.kind == .directory) continue;
+        const stem = std.mem.cutSuffix(u8, entry.name, extension) orelse continue;
+        try stems.append(gpa, try gpa.dupe(u8, stem));
+    }
+}
+
+fn lessThan(_: void, a: []u8, b: []u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
 /// Logs that `sub_path` under the root failed with `err`, naming the path as the user
 /// would type it; an absolute `sub_path` already is.
 pub fn logFailure(root: DataRoot, sub_path: []const u8, err: anyerror) void {

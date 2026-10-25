@@ -19,7 +19,8 @@
 //!   is the device. The mode owns everything it creates and frees it in `deinit`.
 //! - `record` adds exactly one sample to every pixel of `frame.accum`. It only records
 //!   dispatches into `command_list` (the renderer submits once per frame), and it never
-//!   reads GPU data back. Lookup-table bakes are recorded here too, before the sample.
+//!   reads GPU data back, but for the cloud bench's ProbeCache, which stores a finished
+//!   bake once. Lookup-table bakes are recorded here too, before the sample.
 //! - `invalidate` reports a new scene preset. A mode that bakes from `SceneUniforms`
 //!   marks its bake stale and rebakes in the next `record`; others ignore it. `init`
 //!   is followed by `invalidate` with the current preset.
@@ -68,6 +69,7 @@ const PathTracer = @import("PathTracer.zig");
 const RayMarcher = @import("RayMarcher.zig");
 const NeuralMode = @import("NeuralMode.zig");
 const BrunetonMode = @import("BrunetonMode.zig");
+const CloudBench = @import("CloudBench.zig");
 const GpuEarthMaps = @import("GpuEarthMaps.zig");
 const TilePool = @import("TilePool.zig");
 const TileStreamer = @import("TileStreamer.zig");
@@ -87,6 +89,16 @@ single_scattering: bool,
 /// Off renders `scene.withoutClouds` of the preset.
 clouds: bool,
 water: scene.Water,
+cloud_scattering: scene.CloudScattering,
+/// Set directly: the `cloud_bench` mode restarts its own accumulations as its
+/// settings require.
+cloud_bench: scene.CloudBench,
+/// On renders `scene.cloudsOnly` of the preset.
+clouds_only: bool,
+/// Off renders `scene.marchedCloudShadows` of the preset.
+cloud_shadow_map: bool,
+/// Renders `scene.withBounceLimit` of the preset.
+bounce_limit: u32,
 /// On renders `scene.withTiles` of the preset; only with `tile_files`.
 tiles: bool,
 /// Must outlive the renderer, which streams from them.
@@ -115,6 +127,10 @@ pub const Shared = struct {
     network: ?InputFile,
     /// For the `bruneton` mode, which reads it when it starts. The renderer owns the path.
     lut4d: ?InputFile,
+    /// For the `cloud_bench` mode, which reads it when it starts. The renderer owns the path.
+    cloud_volume: ?InputFile,
+    /// The `cloud_bench` mode's probes. The renderer owns the path.
+    probe_field: ProbeField,
     /// Placeholders (`quality == null`) until a mode samples the maps under a preset
     /// that needs them; an upload then stays bound across mode and preset changes.
     earth_maps: GpuEarthMaps,
@@ -128,6 +144,8 @@ pub const Frame = struct {
     /// `frame[3]` the seed.
     uniforms: uniforms.FrameUniforms,
     scene: uniforms.SceneUniforms,
+    /// Read by the `cloud_bench` mode only.
+    cloud_bench: uniforms.CloudBenchUniforms,
     /// Sums of the samples so far; rows count from the bottom of the image.
     accum: gpu.Texture,
 };
@@ -140,7 +158,15 @@ pub const InputFile = struct {
     path: []const u8,
 };
 
-pub const ModeKind = enum { debug, path_tracer, raymarch, neural, bruneton };
+/// Where the `cloud_bench` mode's probes come from: the probe cache, which resumes and
+/// keeps their bakes, or for validation (TESTING.md) a field read once from a file, or
+/// none, which the cache is never read for nor written by.
+pub const ProbeField = union(enum) {
+    cache,
+    file: ?InputFile,
+};
+
+pub const ModeKind = enum { debug, path_tracer, raymarch, neural, bruneton, cloud_bench };
 
 pub const Mode = union(ModeKind) {
     debug: DebugMode,
@@ -148,6 +174,7 @@ pub const Mode = union(ModeKind) {
     raymarch: RayMarcher,
     neural: NeuralMode,
     bruneton: BrunetonMode,
+    cloud_bench: CloudBench,
 
     comptime {
         for (@typeInfo(Mode).@"union".field_types) |T| {
@@ -193,6 +220,11 @@ pub const Options = struct {
     single_scattering: bool = false,
     clouds: bool = true,
     water: scene.Water = .{},
+    cloud_scattering: scene.CloudScattering = .{},
+    cloud_bench: scene.CloudBench = .{},
+    clouds_only: bool = false,
+    cloud_shadow_map: bool = true,
+    bounce_limit: u32 = scene.atmosphere.bounce_count_max,
     /// Keys the random numbers of frame i by i + seed, so renders seeded `n` samples
     /// apart are independent and together equal one longer render.
     seed: u32 = 0,
@@ -204,6 +236,10 @@ pub const Options = struct {
     network: ?InputFile = null,
     /// For the `bruneton` mode, which fails to start without it; the path is copied.
     lut4d: ?InputFile = null,
+    /// For the `cloud_bench` mode, which fails to start without it; the path is copied.
+    cloud_volume: ?InputFile = null,
+    /// The path is copied.
+    probe_field: ProbeField = .cache,
     /// With them, scenes with the Earth maps take their surface from the tiles while
     /// `tiles` is on.
     tile_files: ?*const TilePool.Files = null,
@@ -211,7 +247,7 @@ pub const Options = struct {
 };
 
 pub const InitError = GpuEarthMaps.LoadError || TilePool.LoadError || gpu.Kernel.LayoutError ||
-    NeuralMode.InitError || BrunetonMode.InitError || error{EarthMapsMissing};
+    NeuralMode.InitError || BrunetonMode.InitError || CloudBench.InitError || error{EarthMapsMissing};
 
 /// Compiles the display and mode kernels, uploads `luts`, which the caller may free
 /// afterwards, and uploads the Earth maps of `options.texture_quality` if the mode
@@ -224,7 +260,23 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, luts: *const Luts, optio
     errdefer freeInputFile(gpa, network);
     const lut4d = try copyInputFile(gpa, options.lut4d);
     errdefer freeInputFile(gpa, lut4d);
-    var shared: Shared = .{ .device = device, .luts = gpu_luts, .network = network, .lut4d = lut4d, .earth_maps = undefined, .tiles = undefined };
+    const cloud_volume = try copyInputFile(gpa, options.cloud_volume);
+    errdefer freeInputFile(gpa, cloud_volume);
+    const probe_field: ProbeField = switch (options.probe_field) {
+        .cache => .cache,
+        .file => |file| .{ .file = try copyInputFile(gpa, file) },
+    };
+    errdefer if (probe_field == .file) freeInputFile(gpa, probe_field.file);
+    var shared: Shared = .{
+        .device = device,
+        .luts = gpu_luts,
+        .network = network,
+        .lut4d = lut4d,
+        .cloud_volume = cloud_volume,
+        .probe_field = probe_field,
+        .earth_maps = undefined,
+        .tiles = undefined,
+    };
     shared.earth_maps = try .placeholder(device);
     errdefer shared.earth_maps.deinit();
     shared.tiles = if (options.tile_files) |files| try .load(gpa, device, files) else try .placeholder(gpa, device);
@@ -248,6 +300,11 @@ pub fn init(gpa: std.mem.Allocator, device: gpu.Device, luts: *const Luts, optio
         .single_scattering = options.single_scattering,
         .clouds = options.clouds,
         .water = options.water,
+        .cloud_scattering = options.cloud_scattering,
+        .cloud_bench = options.cloud_bench,
+        .clouds_only = options.clouds_only,
+        .cloud_shadow_map = options.cloud_shadow_map,
+        .bounce_limit = options.bounce_limit,
         .tiles = options.tiles and options.tile_files != null,
         .tile_files = options.tile_files,
         .tile_streamer = tile_streamer,
@@ -270,6 +327,8 @@ pub fn deinit(renderer: *Renderer) void {
     if (renderer.tile_streamer) |*streamer| streamer.deinit(renderer.gpa);
     renderer.shared.tiles.deinit(renderer.gpa);
     renderer.shared.earth_maps.deinit();
+    freeInputFile(renderer.gpa, renderer.shared.cloud_volume);
+    if (renderer.shared.probe_field == .file) freeInputFile(renderer.gpa, renderer.shared.probe_field.file);
     freeInputFile(renderer.gpa, renderer.shared.lut4d);
     freeInputFile(renderer.gpa, renderer.shared.network);
     renderer.shared.luts.deinit(renderer.gpa);
@@ -305,6 +364,7 @@ pub fn render(renderer: *Renderer, view: View, tone: Post.Tone) Post.RecordError
     const frame: Frame = .{
         .uniforms = frame_uniforms,
         .scene = renderer.sceneUniforms(),
+        .cloud_bench = renderer.cloud_bench.benchUniforms(renderer.single_scattering),
         .accum = renderer.accum,
     };
     const command_list: gpu.CommandList = try .begin(renderer.shared.device);
@@ -394,6 +454,31 @@ pub fn setClouds(renderer: *Renderer, clouds: bool) void {
     renderer.restart();
 }
 
+/// Caps the bounces of every path; single scattering caps them at one regardless.
+pub fn setBounceLimit(renderer: *Renderer, limit: u32) void {
+    if (renderer.bounce_limit == limit) return;
+    renderer.bounce_limit = limit;
+    renderer.restart();
+}
+
+pub fn setCloudsOnly(renderer: *Renderer, clouds_only: bool) void {
+    if (renderer.clouds_only == clouds_only) return;
+    renderer.clouds_only = clouds_only;
+    renderer.restart();
+}
+
+pub fn setCloudShadowMap(renderer: *Renderer, cloud_shadow_map: bool) void {
+    if (renderer.cloud_shadow_map == cloud_shadow_map) return;
+    renderer.cloud_shadow_map = cloud_shadow_map;
+    renderer.restart();
+}
+
+pub fn setCloudScattering(renderer: *Renderer, cloud_scattering: scene.CloudScattering) void {
+    if (std.meta.eql(renderer.cloud_scattering, cloud_scattering)) return;
+    renderer.cloud_scattering = cloud_scattering;
+    renderer.restart();
+}
+
 pub fn setWater(renderer: *Renderer, water: scene.Water) void {
     if (std.meta.eql(renderer.water, water)) return;
     renderer.water = water;
@@ -405,6 +490,10 @@ fn sceneUniforms(renderer: *const Renderer) uniforms.SceneUniforms {
     var result = renderer.preset.sceneUniforms();
     if (!renderer.clouds) result = scene.withoutClouds(result);
     result = scene.withWater(result, renderer.water);
+    result = scene.withCloudScattering(result, renderer.cloud_scattering);
+    if (renderer.clouds_only) result = scene.cloudsOnly(result);
+    if (!renderer.cloud_shadow_map) result = scene.marchedCloudShadows(result);
+    result = scene.withBounceLimit(result, renderer.bounce_limit);
     if (renderer.tiles) result = scene.withTiles(result);
     if (renderer.single_scattering) result = scene.singleScattering(result);
     return result;

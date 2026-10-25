@@ -28,6 +28,10 @@ pub const Scancode = u16;
 /// Everything one frame of input asks for.
 pub const Intent = struct {
     motion: Camera.Motion,
+    /// Right-button travel in pixels, which moves the cloud bench's sun, and whether the
+    /// button is still down.
+    sun_drag: [2]f64,
+    sun_drag_held: bool,
     save_config: bool,
     load_config: bool,
     screenshot: bool,
@@ -54,6 +58,8 @@ pub fn map(controls: Controls, input: Window.Input) Intent {
                 null,
             .teleport = pressed.isSet(controls.teleport),
         },
+        .sun_drag = input.right_drag,
+        .sun_drag_held = input.right_held,
         .save_config = pressed.isSet(controls.save_config),
         .load_config = pressed.isSet(controls.load_config),
         .screenshot = pressed.isSet(controls.screenshot),

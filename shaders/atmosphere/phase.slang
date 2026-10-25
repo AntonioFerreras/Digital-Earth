@@ -54,6 +54,11 @@ public float draine_phase(float cos_theta, float g, float alpha)
         / (4.0 * (1.0 + alpha * (1.0 + 2.0 * g * g) / 3.0) * PI * pow(1.0 + g * g - 2.0 * g * cos_theta, 1.5));
 }
 
+public float draine_mean_cosine(float g, float alpha)
+{
+    return g * (1.0 + alpha * (3.0 + 2.0 * g * g) / 5.0) / (1.0 + alpha * (1.0 + 2.0 * g * g) / 3.0);
+}
+
 public float3 sample_draine_phase(float2 u, float3 view, float g, float a)
 {
     float xi = u.x;
@@ -78,31 +83,78 @@ public float3 sample_draine_phase(float2 u, float3 view, float g, float a)
     return phase_direction((1.0 + g2 - root * root) / (2.0 * g), u.y, view);
 }
 
-// HG + Draine mixture fitted to water droplets of 8 um diameter. `reduce_peak`
-// (scatters after the first) swaps the fitted HG g of ~0.984 for a broader 0.91.
+// HG + Draine mixture fitted to water droplets of diameter `d` um, 5 to 50.
 struct CloudPhaseFit
 {
     float g_hg;
     float g_draine;
     float alpha_draine;
     float w_draine;
+
+    __init(float d)
+    {
+        g_hg = exp(-0.0990567 / (d - 1.67154));
+        g_draine = exp(-2.20679 / (d + 3.91029) - 0.428934);
+        alpha_draine = exp(3.62489 - 8.29288 / (d + 5.52825));
+        w_draine = exp(-0.599085 / (d - 0.641583) - 0.665888);
+    }
+
+    float evaluate(float cos_theta)
+    {
+        return lerp(hg_phase(cos_theta, g_hg), draine_phase(cos_theta, g_draine, alpha_draine), w_draine);
+    }
+
+    float mean_cosine()
+    {
+        return lerp(g_hg, draine_mean_cosine(g_draine, alpha_draine), w_draine);
+    }
 };
 
+// The clouds' droplets of 8 um. `reduce_peak` (scatters after the first) swaps the
+// fitted HG g of ~0.984 for a broader 0.91.
 CloudPhaseFit cloud_phase_fit(bool reduce_peak)
 {
-    const float d = 8.0;
-    CloudPhaseFit fit;
-    fit.g_hg = reduce_peak ? 0.91 : exp(-0.0990567 / (d - 1.67154));
-    fit.g_draine = exp(-2.20679 / (d + 3.91029) - 0.428934);
-    fit.alpha_draine = exp(3.62489 - 8.29288 / (d + 5.52825));
-    fit.w_draine = exp(-0.599085 / (d - 0.641583) - 0.665888);
+    CloudPhaseFit fit = CloudPhaseFit(8.0);
+    if (reduce_peak)
+        fit.g_hg = 0.91;
     return fit;
+}
+
+// The share of the forward peak, the Henyey-Greenstein lobe, and the rest, Draine's
+// lobe, for a delta-M split (Wiscombe 1977) that takes the peak as scattered straight on.
+public float cloud_phase_peak(bool reduce_peak)
+{
+    return 1.0 - cloud_phase_fit(reduce_peak).w_draine;
+}
+
+public float cloud_phase_broad_mean_cosine(bool reduce_peak)
+{
+    CloudPhaseFit fit = cloud_phase_fit(reduce_peak);
+    return draine_mean_cosine(fit.g_draine, fit.alpha_draine);
+}
+
+public float3 sample_cloud_phase_broad(float3 u, float3 view, bool reduce_peak)
+{
+    CloudPhaseFit fit = cloud_phase_fit(reduce_peak);
+    return sample_draine_phase(u.yz, view, fit.g_draine, fit.alpha_draine);
 }
 
 public float cloud_phase(float cos_theta, bool reduce_peak)
 {
-    CloudPhaseFit fit = cloud_phase_fit(reduce_peak);
-    return lerp(hg_phase(cos_theta, fit.g_hg), draine_phase(cos_theta, fit.g_draine, fit.alpha_draine), fit.w_draine);
+    return cloud_phase_fit(reduce_peak).evaluate(cos_theta);
+}
+
+public float cloud_phase_mean_cosine(bool reduce_peak)
+{
+    return cloud_phase_fit(reduce_peak).mean_cosine();
+}
+
+// The mixture for droplets of diameter `d` um with its HG lobe's g replaced by `g_hg`.
+public float cloud_phase_for_droplets(float cos_theta, float d, float g_hg)
+{
+    CloudPhaseFit fit = CloudPhaseFit(d);
+    fit.g_hg = g_hg;
+    return fit.evaluate(cos_theta);
 }
 
 // u.x picks the lobe, u.yz sample it.

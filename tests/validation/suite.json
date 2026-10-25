@@ -1,0 +1,13 @@
+{
+  "views": "tests/validation/views",
+  "size": 2048,
+  "gt": {
+    "field_walks": 20000,
+    "pt_spp": 4096,
+    "field_spp": 1024
+  },
+  "test": {
+    "walks": 512,
+    "spp": 64
+  }
+}

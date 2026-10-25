@@ -10,7 +10,7 @@ const CommandList = @This();
 handle: *c.en_cmd,
 
 /// A bounded stack array holds the converted bindings of one dispatch.
-pub const bindings_max = 32;
+pub const bindings_max = 48;
 
 pub const Binding = struct {
     param: gpu.Kernel.Param,

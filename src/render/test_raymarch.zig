@@ -9,6 +9,7 @@ const gpu = @import("../gpu.zig");
 const Luts = @import("../assets/Luts.zig");
 const createTestDevice = @import("../gpu/test_gpu.zig").createTestDevice;
 const GpuLuts = @import("GpuLuts.zig");
+const MultipleScatteringLut = @import("MultipleScatteringLut.zig");
 const RayMarcher = @import("RayMarcher.zig");
 const Renderer = @import("Renderer.zig");
 const scene = @import("scene.zig");
@@ -33,6 +34,8 @@ const Fixture = struct {
             .luts = try .init(testing.allocator, device, &luts),
             .network = null,
             .lut4d = null,
+            .cloud_volume = null,
+            .probe_field = .cache,
             .earth_maps = undefined,
             .tiles = undefined,
         };
@@ -46,7 +49,7 @@ const Fixture = struct {
 
         const scene_uniforms = scene.Preset.textured.sceneUniforms();
         const command_list: gpu.CommandList = try .begin(device);
-        const recorded = mode.bake(command_list, &shared, &scene_uniforms);
+        const recorded = mode.multiple_scattering.bake(command_list, &shared, &scene_uniforms);
         try command_list.submit(null);
         try recorded;
         try device.waitIdle();
@@ -88,7 +91,7 @@ const Fixture = struct {
             .{ .param = try kernel.param("ozone_profile"), .resource = .{ .buffer = fixture.shared.luts.ozone_profile } },
             .{ .param = try kernel.param("linear_clamp"), .resource = .{ .sampler = fixture.shared.luts.linear_clamp } },
             .{ .param = try kernel.param("column_density_lut"), .resource = .{ .texture = fixture.shared.luts.column_density } },
-            .{ .param = try kernel.param("multiple_scattering_lut"), .resource = .{ .texture = fixture.mode.multiple_scattering } },
+            .{ .param = try kernel.param("multiple_scattering_lut"), .resource = .{ .texture = fixture.mode.multiple_scattering.texture } },
             .{ .param = try kernel.param("cie"), .resource = .{ .buffer = fixture.shared.luts.cie } },
         }, kernel.groupCount(.{ case_count, 1, 1 }));
         try command_list.submit(null);
@@ -134,7 +137,7 @@ test "multiple-scattering LUT matches its bake and is physical" {
     var fixture: Fixture = try .init();
     defer fixture.deinit();
 
-    const size = RayMarcher.multiple_scattering_size;
+    const size = MultipleScatteringLut.size;
     // Texel centres and bundle members: the lookup there must return the bake's value
     // exactly. Slice i holds the bundle of u = i / (slices - 1).
     const texels = [_][4]u32{ .{ 31, 0, 45, 1 }, .{ 20, 5, 17, 0 }, .{ 16, 16, 87, 2 }, .{ 10, 2, 58, 3 }, .{ 0, 31, 0, 0 }, .{ 25, 28, 127, 3 } };
@@ -159,10 +162,10 @@ test "multiple-scattering LUT matches its bake and is physical" {
     const slice_size = size[0] * size[1];
     const table = try testing.allocator.alloc([4]f32, slice_size * size[2]);
     defer testing.allocator.free(table);
-    try testing.expectEqual(gpu.Texture.Format.rgba32_float, fixture.mode.multiple_scattering.desc.format);
+    try testing.expectEqual(gpu.Texture.Format.rgba32_float, fixture.mode.multiple_scattering.texture.desc.format);
     for (0..size[2]) |slice| {
         const texels_out = table[slice * slice_size ..][0..slice_size];
-        try fixture.mode.multiple_scattering.read(fixture.device, @intCast(slice), std.mem.sliceAsBytes(texels_out));
+        try fixture.mode.multiple_scattering.texture.read(fixture.device, @intCast(slice), std.mem.sliceAsBytes(texels_out));
     }
     for (table) |texel| {
         for (texel) |value| try testing.expect(std.math.isFinite(value) and value >= 0);

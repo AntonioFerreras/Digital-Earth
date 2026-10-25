@@ -43,6 +43,11 @@ public static const uint SCENE_CALM_LAKES = 1u << 11;
 // procedural roughness texture over it.
 public static const uint SCENE_WIND_MAP = 1u << 12;
 public static const uint SCENE_ROUGHNESS_TEXTURE = 1u << 13;
+// The clouds alone: no air and a black surface, to study the clouds' light.
+public static const uint SCENE_CLOUDS_ONLY = 1u << 14;
+// Temporary switch: the ray marcher marches every cloud shadow instead of reading
+// distant ones from its shadow map.
+public static const uint SCENE_MARCH_CLOUD_SHADOWS = 1u << 15;
 
 public struct SceneUniforms {
     // x: SCENE_* flags, y: max bounces, z: first bounce with Russian roulette, w: unused.
@@ -60,7 +65,89 @@ public struct SceneUniforms {
     // texture's streak length in wavelengths; z: its warp in coarsest wavelengths per
     // unit of noise; w: the factor on the slope variance the wind adds.
     public float4 glint;
+    // The clouds' multiple scattering, after Nubis Cubed (clouds/multiple_scattering.slang):
+    // x its strength; its attenuation rates per optical depth towards the sun, y for views
+    // away from the sun and, for views towards it, z at a cloud's surface and w at
+    // `cloud_profile.z` inside it.
+    public float4 cloud_scattering;
+    // x: how far the dimensional profile dims the multiply scattered light towards a
+    // cloud's edge and the sky's light towards its core, 0 to 1; y and z: the depths
+    // inside a cloud, as optical depths at full density, over which the profile rises
+    // from 0 to 1 and the attenuation towards the sun relaxes; w: the secondary
+    // scattering phase's HG g.
+    public float4 cloud_profile;
 };
+
+// The cloud bench's sky shines; without it only the sun lights the cloud.
+public static const uint CLOUD_BENCH_SKY = 1u << 0;
+// The probes' walks estimate the sun's transmittance by ratio tracking, not a march
+// (modes/cloud_bench_probes.slang).
+public static const uint CLOUD_BENCH_RATIO_TRACKING = 1u << 1;
+// The probes fit the sun's log fluence through order 3 instead of 2.
+public static const uint CLOUD_BENCH_SUN_ORDER3 = 1u << 2;
+// The approximation follows one scatter of its view at full resolution and reads the
+// probes only past it (modes/cloud_bench.slang).
+public static const uint CLOUD_BENCH_PROBE_GATHER = 1u << 3;
+// The approximation takes the forward peak of its view's scatter as straight on, its
+// light carried along the view at full resolution (modes/cloud_bench.slang).
+public static const uint CLOUD_BENCH_FORWARD_PEAK = 1u << 4;
+// The approximation scatters the probes' light by P1 instead of a von Mises-Fisher
+// closure (modes/cloud_bench.slang).
+public static const uint CLOUD_BENCH_P1_CLOSURE = 1u << 5;
+// The probes lie in src/render/ProbeLayout.zig's adaptive layout, not its dense grid;
+// read by src/render/CloudBench.zig alone.
+public static const uint CLOUD_BENCH_ADAPTIVE_PROBES = 1u << 6;
+// The probes bake from light traced forward into the cloud instead of walks from
+// them, whose sky transfer then holds only the sky's light before it scatters
+// (modes/cloud_bench_probes.slang).
+public static const uint CLOUD_BENCH_PHOTONS = 1u << 7;
+// The photons add exact path lengths per leaf instead of points along the path
+// (modes/cloud_bench_probes.slang).
+public static const uint CLOUD_BENCH_LEAF_LENGTHS = 1u << 8;
+
+
+// The cloud bench (modes/cloud_bench.slang): one density grid in a frame of its own,
+// "cloud units", axis-aligned with the planet-centred frame.
+public struct CloudBenchUniforms {
+    // xyz: where the cloud frame's origin lies, planet-centred metres; w: metres per
+    // cloud unit.
+    public float4 origin;
+    // xyz: the grid's minimum corner, cloud units; w: the voxel edge.
+    public float4 grid_min;
+    // xyz: voxels per axis; w: voxels per majorant cell edge.
+    public uint4 grid_size;
+    // x: extinction per metre at unit density; yzw: unused.
+    public float4 medium;
+    // x: the approximation's view steps, as a multiple of those at MARCH_STEP_VOXELS;
+    // y, z: the walk levels of its march along the view and towards the sun; w: unused.
+    public float4 march;
+    // x: the view (CLOUD_BENCH_VIEW_*), y: bounces per path, z: CLOUD_BENCH_* flags,
+    // w: the probes' walks at which their bake stops.
+    public uint4 options;
+    // x: the reference's samples before this frame, y: the approximation's, z: the
+    // probes' walks; w: unused.
+    public uint4 samples;
+    // src/render/ProbeLayout.zig's. xyz: lattice point zero, cloud units; w: the
+    // adaptive layout's ratio of spacing to depth inside the cloud.
+    public float4 probe_origin;
+    // xyz: the finest cells' edges, cloud units; w: unused.
+    public float4 probe_spacing;
+    // xyz: the finest cells per axis; w: the adaptive layout's probe budget.
+    public uint4 probe_cells;
+    // x: probes, y: leaves, z: the bake's rounds per frame; w: unused.
+    public uint4 probe_counts;
+};
+
+public static const uint CLOUD_BENCH_VIEW_REFERENCE = 0;
+public static const uint CLOUD_BENCH_VIEW_APPROXIMATION = 1;
+// The reference left of the image's centre, the approximation right of it.
+public static const uint CLOUD_BENCH_VIEW_SPLIT = 2;
+// The reference tinted by the approximation's error: red where it is brighter, blue
+// where darker, fully at a factor of two.
+public static const uint CLOUD_BENCH_VIEW_ERROR = 3;
+// The approximation's cloud opacity along the view, grey; python/clouds/score.py
+// takes it to find the cloud.
+public static const uint CLOUD_BENCH_VIEW_COVERAGE = 4;
 
 // Tile layout of each Earth map (src/assets/TilePlan.zig), one field per
 // assets.EarthMaps.Role: x map width, y map height, z tile width, w apron.

@@ -40,6 +40,10 @@ zstandard = ">=0.25.0,<0.26"
 pillow = ">=13.0.0,<14"
 # python/tiles/publish.py uploads the tiles to the dataset `earth download` reads.
 huggingface_hub = ">=2.2.0,<3"
+# python/clouds/convert_vdb.py reads the cloud bench's VDB volumes and takes their
+# distance transform; SciPy 1.16 needs a NumPy 2, which taichi rules out.
+openvdb = ">=13"
+scipy = ">=1.14,<1.16"
 
 [feature.py.pypi-dependencies]
 torch = "*"

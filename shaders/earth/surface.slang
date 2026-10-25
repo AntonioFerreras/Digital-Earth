@@ -283,9 +283,15 @@ public Reflectance surface_reflectance(SurfaceSample s, StructuredBuffer<float> 
 // albedo, the shading the symmetric scene (and the MLP trained on it) used.
 public SurfaceResponse surface_brdf(SurfaceSample s, Reflectance albedo, float3 v, float3 l, SceneUniforms scene)
 {
+    SurfaceResponse response;
+    if ((scene.config.x & SCENE_CLOUDS_ONLY) != 0)
+    {
+        response.brdf = 0.0;
+        response.n_dot_l = saturate(dot(s.normal, l));
+        return response;
+    }
     if ((scene.config.x & SCENE_EARTH_MAPS) != 0)
         return earth_brdf(albedo, s.water, v, s.normal, l);
-    SurfaceResponse response;
     response.brdf = albedo.land / PI * 0.5;
     response.n_dot_l = saturate(dot(s.normal, l));
     return response;
