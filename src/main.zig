@@ -538,6 +538,11 @@ fn bakeProbes(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
     const mode = &renderer.mode.cloud_bench;
     const frame_view = config.camera.view(config.sunDirection());
     const walks = config.cloud_bench.probe_walks;
+    // A frame that bakes nothing lays the probes out, so that the timings leave the
+    // layout's build out.
+    renderer.cloud_bench.probe_walks = 0;
+    try renderer.render(frame_view, config.tone());
+    try device.waitIdle();
     var bake_ms: f64 = 0;
     var half_ms: ?f64 = null;
     const phases = [_]struct { path: ?[]const u8, walks: u32 }{

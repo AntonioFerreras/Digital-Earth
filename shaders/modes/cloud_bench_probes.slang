@@ -206,10 +206,19 @@ void deposit(uint probe, float4 value, bool collided, uint bin, float basis[SH_C
     }
 }
 
+// The scattered light of this thread's photon in the leaf it last crossed, per corner,
+// not yet added to the probes.
+static uint splat_slot = NO_LEAF;
+static float4 splat[8] = { float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0) };
+
 // Adds `weight` times the path from `pos` along `dir` up to `length` to the probes, at
 // points a finest cell apart from `next` on, which carries over to the path's next
-// part: each point's cell length to one corner of its leaf, drawn by its trilinear
-// weight, over the probe's integral of that weight, a kernel estimate of the fluence.
+// part: each point's cell length times its leaf's corners' trilinear weights, over each
+// probe's integral of its weight, a kernel estimate of the fluence. Scattered light goes
+// to all eight corners, summed in registers until the photon leaves the leaf, across
+// collisions, as the noise of drawing one corner would otherwise dominate the bins'.
+// Light that has not collided feeds nine harmonics per corner, too many for that, and
+// goes to one corner drawn by its weight.
 void deposit_points(float3 pos, float3 dir, float length, inout float next, float weight, bool collided, uint bin,
                     float basis[SH_COUNT], inout Rng rng)
 {
@@ -227,12 +236,36 @@ void deposit_points(float3 pos, float3 dir, float length, inout float next, floa
         uint level = leaf >> LEAF_SLOT_BITS;
         uint slot = leaf & ((1u << LEAF_SLOT_BITS) - 1);
         float3 within = (lattice - float3((cell >> level) << level)) / float(1u << level);
+        if (collided)
+        {
+            if (slot != splat_slot)
+                flush_splat(bin);
+            splat_slot = slot;
+            float weights[8] = corner_weights(within);
+            for (uint corner = 0; corner < 8; corner++)
+                splat[corner] += weights[corner] * weight * step * float4(1.0, dir);
+            continue;
+        }
         float4 pick = rng.next4();
         uint corner = (pick.x < within.x ? 1u : 0u) | (pick.y < within.y ? 2u : 0u) | (pick.z < within.z ? 4u : 0u);
         uint probe = bench_probe_corners[slot * 8 + corner];
         deposit(probe, weight * step / bench_probe_volumes[probe] * float4(1.0, dir), collided, bin, basis);
     }
     next -= length;
+}
+
+void flush_splat(uint bin)
+{
+    if (splat_slot == NO_LEAF)
+        return;
+    for (uint corner = 0; corner < 8; corner++)
+    {
+        uint probe = bench_probe_corners[splat_slot * 8 + corner];
+        if (splat[corner].x > 0.0)
+            add_sum(bench_probe_sun_bins_raw, probe * SUN_BIN_COUNT + bin, splat[corner] / bench_probe_volumes[probe]);
+        splat[corner] = 0.0;
+    }
+    splat_slot = NO_LEAF;
 }
 
 // Of a leaf's corners, their trilinear weights at `within` the leaf, x in bit 0.
@@ -306,19 +339,15 @@ void deposit_path(float3 pos, float3 dir, float length, float weight, bool colli
 
 // The adjoint of `bake_probes`: light enters the grid's box from a uniform direction,
 // at a uniform point of the box's area seen from there, and `deposit_path`, with
-// CLOUD_BENCH_LEAF_LENGTHS, or `deposit_points` adds its path to the probes. Light past its first collision feeds the sun's bin of its entry
-// direction, and before it the sky's transfer; `light_probes` takes the sky's
-// scattered light from the bins. One dispatch adds as much as one walk per probe.
-[shader("compute")]
-[numthreads(PROBE_GROUP_SIZE, 1, 1)]
-void trace_photons(uint3 thread: SV_DispatchThreadID)
+// CLOUD_BENCH_LEAF_LENGTHS, or `deposit_points` adds its path to the probes. Light past
+// its first collision feeds the sun's bin of its entry direction, and before it the
+// sky's transfer; `light_probes` takes the sky's scattered light from the bins. A
+// round adds as much as one walk per probe.
+void trace_photon(uint photon, uint round)
 {
-    uint photon = thread.x;
     uint photon_count = bench.probe_counts.x;
-    if (photon >= photon_count)
-        return;
     BenchVolume volume = BenchVolume();
-    Rng rng = Rng(uint2(photon, 1), bench.samples.z);
+    Rng rng = Rng(uint2(photon, 1), round);
     float3 from = sample_sphere_uniform(rng.next4().xy);
     float3 dir = -from;
     float3 extent = volume.grid_extent;
@@ -347,6 +376,34 @@ void trace_photons(uint3 thread: SV_DispatchThreadID)
         collided = true;
         dir = sample_cloud_phase(rng.next4().xyz, dir, true);
     }
+    flush_splat(bin);
+}
+
+// A dispatch traces `bench.samples.w` rounds from `bench.samples.z` on. Each thread takes
+// their photons one after another from the counter, so that a warp stays full while its
+// longest paths finish, and the rounds' tails overlap.
+RWByteAddressBuffer bench_photon_counter;
+
+[shader("compute")]
+[numthreads(PROBE_GROUP_SIZE, 1, 1)]
+void trace_photons(uint3 thread: SV_DispatchThreadID)
+{
+    uint photon_count = bench.probe_counts.x;
+    for (;;)
+    {
+        uint index;
+        bench_photon_counter.InterlockedAdd(0, 1, index);
+        if (index >= photon_count * bench.samples.w)
+            return;
+        trace_photon(index % photon_count, bench.samples.z + index / photon_count);
+    }
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void reset_photon_counter()
+{
+    bench_photon_counter.Store(0, 0);
 }
 
 // A walk starts at the probe looking along a uniform direction and follows the light

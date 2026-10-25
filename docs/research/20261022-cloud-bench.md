@@ -539,3 +539,477 @@ The approximation at 1024 x 1024, 32 spp, minimum of six runs, in ms per sample:
   the error against the reference from 0.0043 to 0.0050 in view 00.
 
 The defaults became sun cells 4 and view steps 0.4.
+
+## Control variates for the walks
+
+Tried for the backward walks, as the photons' rest would feed every probe downstream
+rather than one. A walk adds the probes' prediction of its rest at a collision, then
+goes on with probability q at weight 1 / q and takes the prediction off again: the
+expectation is the plain walk's whatever the prediction. The prediction is P1 of prior
+sums over the walks' first direction, averaged over the phase's next direction,
+phi - 3 g F . dir, for each of the 9 harmonics and 64 bins, interpolated over the
+leaf around the collision. The prior sums were a copy of the probes' sums, kept in two
+buffers beside them (300 MB at 2^18 probes), their walk count in the uniforms, so that
+the walks read them while adding to the live sums. The code was reverted. Against a
+20000-round photon field, view 00's volume, 256 walks per probe:
+
+| bake                                              | time   | sky error median | sun error median | sky total ratio |
+| ------------------------------------------------- | ------ | ---------------- | ---------------- | --------------- |
+| plain walks                                       | 13.6 s | 0.021            | 0.429            | 1.0001          |
+| q 0.5 every collision, prior refreshed as walks double (128 walks) | 4.9 s | 0.116 | 0.897 | -1.97 |
+| q 0.5 every collision, prior frozen after 64 plain walks, prediction clamped at 0 | 5.8 s | 0.090 | 0.621 | 1.0875 |
+| q 0.25 at the first collision only, same prior    | 8.2 s  | 0.036            | 0.646            | 1.0002          |
+| photons, 128 rounds                               | 3.4 s  | 0.022            | 0.381            | 1.0002          |
+
+- **A prior refreshed from walks with control variates diverges.** Each refresh feeds
+  the last one's noise into every neighbour's prediction; a few probes grow without
+  bound and the totals turn negative.
+- **Roulette at every collision grows the variance with depth**, as a walk's weight
+  doubles per collision while its correction does not shrink.
+- **Once at the first collision it is unbiased but loses**: 1.7 times faster than
+  plain walks at 2.9 times their variance, about half their efficiency, and photons
+  lead both. The prediction is too poor to pay: the sun's 64 bins from 64 walks are
+  mostly noise, and P1 misses how a walk's value turns with its direction near the
+  cloud's edge.
+- **A converged prior does not save it.** With the 20000-round photon field as the
+  prior, its sky transfer taking the bins' scattered sky light, 256 walks at q 0.25 take
+  7.5 s and their split halves give a sun sigma of 0.999 and a sky sigma of 0.056,
+  against plain walks' 0.574 and 0.030: per second, 0.60 and 0.53 times plain walks,
+  where photons are 4.95 and 3.31 times. The residual is P1's error, not the prior's
+  noise: two moments cannot predict the light the phase's peak picks out. And a walk
+  that always stops at its first collision still pays its flight, its sun march and
+  the prediction's 584 reads, so even a perfect prediction would leave walks short of
+  photons.
+
+## Photon connections
+
+Each photon collision also sends M rays drawn from the phase, which add their path to
+the probes at a finest cell's spacing out to a reach R, at the transmittance from the
+collision that ratio tracking estimates against the density's bound; the photon's own
+next part then adds only its path beyond R. In expectation the rays are the part of
+that next part within R, so the field is the same, and every collision feeds the
+probes around it in M directions. View 00's volume, 256 rounds, split-half sigma,
+efficiency as 1 / (sigma^2 x seconds) against none:
+
+| M | R (cells) | time   | sun sigma | sky sigma | efficiency sun | efficiency sky |
+| - | --------- | ------ | --------- | --------- | -------------- | -------------- |
+| 0 |           | 2.47 s | 0.343     | 0.0231    | 1.00           | 1.00           |
+| 1 | 1         | 3.21 s | 0.295     | 0.0230    | 1.04           | 0.78           |
+| 2 | 0.5       | 3.23 s | 0.284     | 0.0220    | 1.11           | 0.85           |
+| 2 | 1         | 4.17 s | 0.252     | 0.0212    | 1.10           | 0.70           |
+| 3 | 1         | 5.01 s | 0.232     | 0.0205    | 1.08           | 0.62           |
+| 4 | 1         | 5.81 s | 0.221     | 0.0202    | 1.03           | 0.56           |
+| 2 | 2         | 7.18 s | 0.217     | 0.0204    | 0.86           | 0.44           |
+| 16 | 2        |        | 0.156     | 0.0179    |                |                |
+
+- **Unbiased:** the sky's total against the 20000-round field stays within 0.05 % of 1,
+  and the sun's ratio by brightness decile moves towards 1 as the noise falls.
+- **The noise falls but the cost rises as fast.** Each ray costs about a third of a
+  round, mostly its atomic deposits; sigma falls more slowly than the time grows, so
+  efficiency peaks at 1.1 for the sun and only loses for the sky, whose noise is the
+  light that never collides. The rays' light is local and correlated with the photon's
+  own next part, so they add little a further round would not.
+- **One deposit per ray at a uniform distance out to R**, to make the reach free,
+  loses more: ratio tracking out to R then costs what the deposits saved, and one
+  point per ray is noisier.
+- Timings while the scratch volume was full ran 1.7 times slow; the table is from two
+  later passes that agree within 2 %.
+- The code was reverted. It had two bake settings, `photon_connections` (M) and
+  `photon_connection_reach` (R in finest cells), and passed the volume's largest
+  majorant to the shader as the ratio-tracking bound.
+
+## Bake timings without the layout
+
+`earth bake-probes` timed the probes' layout build with the bake until now, 0.5 to 2 s
+of CPU time that varied from run to run. It now lays the probes out in a frame of its
+own before the timer starts. The efficiency ratios of the two sections above carry
+that time in both of their rows, so they understate the costs of the variants and
+overstate their efficiency. At the corrected timing, 256 rounds of plain photons take
+1.94 s.
+
+## Guided photon emission
+
+Photons enter the grid's box from a uniform direction at a uniform point of its
+projected area. Guided emission draws a share of them instead from a distribution
+learned over emission cells: a sun bin, a box face, and a cell of a 16 x 16 grid on
+that face, 49152 cells. Each photon is weighted by uniform over the mixture's density.
+This stays unbiased, as the uniform share covers every cell.
+
+- **Learning.** Every photon scores its emission cell during the first 64 rounds. Its
+  score is the sum over its deposits of the square of the deposit, at the uniform
+  emission's weight, relative to the probe's sum per round in that bin. That relative
+  amount is capped at one round's worth.
+- **The level.** A bin's level is floored at a tenth of the probe's mean over bins.
+  For light that has not collided, the level is the probe's sky fluence.
+- **The distribution.** As the rounds double, each cell gets its uniform measure times
+  sqrt(mean score / mean cost), with cost as 1 + collisions. This minimizes the
+  probes' summed relative variance per unit time.
+
+View 00's volume, efficiency against plain photons:
+
+| guided share | rounds | time   | sun sigma | sky sigma | efficiency sun | efficiency sky | sun error | sky total |
+| ------------ | ------ | ------ | --------- | --------- | -------------- | -------------- | --------- | --------- |
+| 0            | 256    | 1.94 s | 0.344     | 0.0231    | 1.00           | 1.00           | 0.228     | 0.9997    |
+| 0.8          | 256    | 2.29 s | 0.283     | 0.0199    | 1.26           | 1.15           | 0.186     | 0.9998    |
+| 0.95         | 256    | 2.42 s | 0.273     | 0.0202    | 1.27           | 1.06           | 0.179     | 1.0001    |
+| 0            | 1024   | 7.28 s | 0.126     | 0.0116    | 1.00           | 1.00           | 0.073     | 1.0000    |
+| 0.8          | 1024   | 8.79 s | 0.104     | 0.0100    | 1.21           | 1.12           | 0.062     | 1.0001    |
+
+- **It wins, but modestly.** The variance falls by a factor of 1.5, but guided photons
+  cost about a fifth more each, as they go where the cloud is thick and bounce longer.
+  Learning in every round, rather than the first 64, cost 5 % more time for the same
+  noise.
+- **Why the gain is small.** Within a bin, nearly every photon that reaches a dark
+  probe has diffused through the cloud from its lit side. Where it enters changes
+  little about where it ends up.
+
+**Sweep, with the diffusion tail below on** (stop depth 16, p 0.5), 256 rounds:
+
+| variant                          | time   | sun sigma | sky sigma | sun error |
+| -------------------------------- | ------ | --------- | --------- | --------- |
+| no guiding                       | 1.82 s | 0.137     | 0.0248    | 0.101     |
+| share 0.8, learning 16 rounds    | 2.19 s | 0.116     | 0.0211    | 0.089     |
+| share 0.8, learning 32 rounds    | 2.19 s | 0.116     | 0.0212    | 0.089     |
+| share 0.8, learning 64 rounds    | 2.22 s | 0.116     | 0.0213    | 0.089     |
+| share 0.8, learning 128 rounds   | 2.17 s | 0.116     | 0.0213    | 0.089     |
+| share 0.8, learning 256 rounds   | 2.20 s | 0.116     | 0.0213    | 0.089     |
+| share 0.5                        | 2.04 s | 0.122     | 0.0221    | 0.092     |
+| share 0.95                       | 2.36 s | 0.113     | 0.0216    | 0.088     |
+| level floor 0.01 instead of 0.1  | 2.17 s | 0.116     | 0.0213    | 0.089     |
+| level floor 1 instead of 0.1     | 2.20 s | 0.116     | 0.0212    | 0.089     |
+
+- **Nothing moves it.** Letting the field converge longer before the distribution is
+  learned changes nothing: 16 rounds learn as good a distribution as 256. The share
+  and the level floor only trade noise for time. Every variant lands within the
+  timings' noise of 1.15 times as efficient.
+- **The ceiling.** The cells' learned means under uniform emission (256 rounds, share
+  1e-6) bound what any guided emission can win under this score. Without the cost,
+  the ideal distribution would cut the variance by 1.90. With it, E[s] E[c] /
+  E[sqrt(s c)]^2 is only 1.05: the cells whose photons score most are those that bounce
+  longest. Over bins alone the bound is 1.00, over bins and faces 1.01.
+- The measured 1.15 beats that bound because the score, the probes' summed relative
+  variance, is not the median noise that the table measures. A score closer to the
+  median could gain a little more, but not beyond the variance-only 1.9.
+- The learning rounds became a setting, `photon_guiding_rounds`, now 32 by default.
+
+## Diffusion tail for deep photons
+
+Photons truncated after K collisions show where the light goes and where the time
+goes. 256 rounds:
+
+| K   | bake   | sky total | sun ratio, brightest decile |
+| --- | ------ | --------- | --------------------------- |
+| 16  | 0.82 s | 0.49      | 0.17                        |
+| 64  | 1.08 s | 0.72      | 0.55                        |
+| 256 | 1.34 s | 0.91      | 0.91                        |
+| all | 1.94 s | 1.00      | 1.00                        |
+
+The brightest probes lie in the dense core, where light bounces thousands of times.
+Orders past 16 carry five sixths of their light, and those orders take 58 % of the
+trace.
+
+**The scheme.** A photon stops at a collision once `bench_sun_reach` there, the least
+optical depth towards any sun bin, exceeds a stop depth. Its weight becomes a source in
+its sun bin on a grid of 16-voxel cells (63 x 43 x 77). A cell-centred diffusion solve
+then gives every bin's fluence from its sources:
+
+- D = 1 / (3 sigma_t (1 - g)), with g = 0.819, the mean cosine of the photons' phase
+  past the first scatter;
+- harmonic-mean coupling between cells;
+- Marshak faces where a cell borders the box or a cell thinner than an optical depth
+  of 1.
+
+Each probe takes phi and -D grad phi of the trilinear interpolant into its bins. This is
+the transfer between probes: one stopped photon feeds every probe through a
+deterministic solve, with none of the noise of its own remaining path. The solve was
+first a prototype in Python (scipy's sparse LU, about 5 s on the CPU per field), left
+out of the timings up to the GPU solver's table at the end of this section.
+
+**Pure diffusion is biased low.** Stopping at depth 8, 256 rounds:
+
+- the sun's noise falls from 0.344 to 0.109 in half the time, 19 times as efficient;
+- but the sky's total falls to 0.90, and the sun's ratio by decile to 0.85 to 0.96;
+- against the true tail (the reference less the stopped photons' own light), the
+  diffusion tail carries 65 % of the light, 76 % even in the brightest decile.
+
+The cloud is one to two transport mean free paths deep at its median, so leakage
+through its surface sets the tail's level.
+
+- **The extrapolation length** moves the tail from 0.65 of the truth to 0.87 when
+  doubled, and to 1.28 when quadrupled, with the wrong shape over the deciles either
+  way.
+- **8-voxel cells** do worse, 0.36. Thin pockets inside the cloud turn into vacuum
+  that light escapes into, where in truth it crosses them.
+- **Stopping deeper** (12, 16) or later (16 collisions) only trades bias for gain.
+
+**An unbiased correction cannot keep the gain.** Suppose a share of the stopped
+photons goes on, and the solve is used as a control variate on their walks. Each
+survivor's residual still holds the noise of its own path given its stop, and that
+noise is the very noise that the solve removed. A biased correction is needed instead.
+
+**Calibrated by survivors.** A share p of the stopped photons goes on regardless:
+
+- each survivor adds its source to a second grid, and its fluence after the stop to a
+  per-probe sum, kept per group of 4 x 4 neighbouring bins;
+- a second solve gives the survivors' own diffusion response;
+- each probe's tail in each group is the full solve's tail times the ratio of the
+  survivors' walked fluence to their solved fluence;
+- where the solve leaves a group dark that survivors did light, the survivors' own sum
+  over p takes its place.
+
+With the true tail as the ratio, the error floor that the solve's shape over bins
+leaves is a sun error of 0.092 for one group per probe, 0.060 for four, and 0.033 for
+sixteen. With survivors, sixteen groups are noisier than four (0.149 against 0.100 at
+256 rounds), and smoothing the ratio over neighbouring cells costs more bias than it
+saves noise.
+
+Sun error is the median relative error against the 20000-round field. Stop depth 16,
+p 0.5, four groups:
+
+| bake                           | rounds | time   | sun sigma | sun error | sun error p90 | sky error | sky total |
+| ------------------------------ | ------ | ------ | --------- | --------- | ------------- | --------- | --------- |
+| photons                        | 64     | 0.59 s | 0.712     | 0.600     | 0.999         | 0.0313    | 0.9993    |
+| diffusion tail                 | 64     | 0.68 s | 0.322     | 0.207     | 0.886         | 0.0340    | 0.9967    |
+| diffusion tail, guided 0.8     | 64     | 0.68 s | 0.261     | 0.176     | 0.762         | 0.0297    | 0.9970    |
+| photons                        | 256    | 2.05 s | 0.344     | 0.228     | 0.908         | 0.0157    | 0.9997    |
+| diffusion tail                 | 256    | 1.84 s | 0.137     | 0.101     | 0.436         | 0.0175    | 0.9971    |
+| diffusion tail, guided 0.8     | 256    | 2.10 s | 0.116     | 0.089     | 0.382         | 0.0153    | 0.9970    |
+| photons                        | 512    | 3.71 s | 0.213     | 0.128     | 0.680         | 0.0112    | 0.9999    |
+| photons                        | 1024   | 7.39 s | 0.126     | 0.073     | 0.402         | 0.0080    | 1.0000    |
+| diffusion tail                 | 1024   | 6.41 s | 0.066     | 0.057     | 0.244         | 0.0092    | 0.9974    |
+| diffusion tail, guided 0.8     | 1024   | 7.83 s | 0.057     | 0.051     | 0.224         | 0.0081    | 0.9973    |
+
+- **The sun converges two to three times sooner.** The tail with guiding reaches at 256
+  rounds the error that plain photons reach at about 800, and at 1024 rounds it beats
+  them by 30 %, by 45 % at the 90th percentile.
+- **Its bias is small.** The sun's ratio by decile stays within 1.1 % at 1024 rounds.
+  The sky's total is 0.3 % low.
+- **The sky alone gains nothing.** Its noise is mostly light that never collides, and
+  the calibration ratios add a little noise of their own. Guiding makes up for that.
+- **Shallower stops lose.** Stop depth 8 or 12 gains more early (0.183 at 64 rounds) but
+  floors higher. A survival share of 0.25 saves time but is noisier, and loses at
+  equal time.
+- **The solve on the GPU.** Red-black SOR, overrelaxed by 1.8, over all bins and
+  survivor groups at once. It is warm-started from the last solve, as the sources per
+  round settle. Offline, from zero, the system converges to a relative error of 5e-5
+  in 100 sweeps (PCG with a Jacobi preconditioner needs about the same; the
+  coefficients vary by less than a factor of 7). Warm-started, 25 sweeps give the
+  same field as 400 at 256 rounds, and lose 0.001 of sun error at 64 rounds. The bake
+  uses 50, about 10 ms per solve, at each refit. The GPU's field matches the Python
+  prototype's: sun error 0.101, p90 0.435, sky total 0.9971 at 256 rounds.
+
+The same comparison with the GPU solve, its time included:
+
+| bake                       | rounds | time   | sun sigma | sun error | sun error p90 | sky error | sky total |
+| -------------------------- | ------ | ------ | --------- | --------- | ------------- | --------- | --------- |
+| photons                    | 64     | 0.74 s | 0.712     | 0.600     | 0.999         | 0.0313    | 0.9993    |
+| diffusion tail             | 64     | 0.51 s | 0.320     | 0.207     | 0.886         | 0.0340    | 0.9967    |
+| diffusion tail, guided 0.8 | 64     | 0.61 s | 0.260     | 0.176     | 0.760         | 0.0298    | 0.9968    |
+| photons                    | 1024   | 7.77 s | 0.126     | 0.073     | 0.402         | 0.0080    | 1.0000    |
+| diffusion tail             | 1024   | 7.05 s | 0.066     | 0.057     | 0.244         | 0.0092    | 0.9975    |
+| diffusion tail, guided 0.8 | 1024   | 8.49 s | 0.058     | 0.052     | 0.225         | 0.0081    | 0.9973    |
+
+At equal time the sun is 7 to 9 times as efficient at 64 rounds, and 4 times at 1024.
+
+**Broken in renders.** The field metrics above miss what the image shows. On
+presets/wdas-cloud-0.zon (extinction 0.2), the approximation rendered from 2048 rounds
+against one from 8192 rounds of plain photons:
+
+| bake           | log2 error p90 | after a 15 px blur |
+| -------------- | -------------- | ------------------ |
+| photons        | 0.053          | 0.039              |
+| guided 0.8     | 0.049          | 0.032              |
+| diffusion tail | 0.135          | 0.120              |
+
+- **Bands** on the shadowed side, a diffusion cell apart: the flux of the trilinear
+  interpolant jumps at every cell face, and the march shows the flux.
+- **Bright blobs:** each probe's calibration ratio rests on its own few survivors.
+- **Bias** of up to a third in the shadowed interior, and the lower right too dark. The
+  per-group calibration does not correct the solve's shape at this density.
+
+The tail is therefore off by default, and the presets use guided emission only.
+
+**State.** In the worktree, uncommitted, off unless `photon_stop_depth` is set:
+
+- `trace_photons` stops the photons, keeps the survivors, and sums the sources;
+- the `*_diffusion*` kernels of shaders/modes/cloud_bench_probes.slang set up and solve
+  the system and add the calibrated tail into `Probes.sun_totals`, which the fit and
+  the lighting read;
+- a field with the tail holds it added. Its sources are not stored, so ProbeCache keeps
+  no field with a tail, and its key marks one with a flag so that the file format stays
+  as it is.
+
+`python/validation/bake_sweep.py`, untracked, ran the sweeps above. For example:
+
+```sh
+pixi run -e py python python/validation/bake_sweep.py <scratch dir> <reference.eprb> 256 \
+    photons: tail:photon_stop_depth=16,photon_survival=0.5 guided:photon_stop_depth=16,photon_survival=0.5,photon_guiding=0.8
+```
+
+## Splitting and Russian roulette of photons
+
+Guided emission showed that where a photon enters says little about which dark probe
+it lights; the choice that matters is made inside the cloud. A weight window now
+follows each photon. At every collision its target weight is its emitted weight times
+(the level of the nearest probe in its sun bin, over the level at its first collision)
+to a power, `photon_splitting`. The level is the probe's sum per round, floored as the
+guided score floors it.
+
+- Above twice the target, the photon splits into copies, each scattering on its own,
+  up to 8 waiting copies per thread.
+- Below half, it survives Russian roulette at the target weight.
+- Both keep each photon's expected deposits, so the bake stays unbiased whatever the
+  levels are. The levels come from earlier deposits, independent of the photon's own
+  future.
+
+Photons thus multiply as they diffuse towards dim probes and thin out where the probes
+are already bright. The exponent trades between equal absolute noise (0) and equal
+relative noise (1).
+
+View 00's volume, against the 20000-round field:
+
+| bake                     | rounds | time    | sun sigma | sky sigma | eff. sun | eff. sky | sun error | p90   | sky total |
+| ------------------------ | ------ | ------- | --------- | --------- | -------- | -------- | --------- | ----- | --------- |
+| photons                  | 256    | 2.02 s  | 0.344     | 0.0231    | 1.00     | 1.00     | 0.228     | 0.908 | 0.9997    |
+| splitting 0.5            | 256    | 3.27 s  | 0.195     | 0.0223    | 1.93     | 0.67     | 0.116     | 0.593 | 0.9998    |
+| splitting 0.75           | 256    | 4.58 s  | 0.145     | 0.0225    | 2.48     | 0.47     | 0.092     | 0.387 | 0.9996    |
+| guided 0.8               | 256    | 2.55 s  | 0.283     | 0.0198    | 1.17     | 1.08     | 0.186     | 0.836 | 0.9999    |
+| guided, splitting 0.25   | 256    | 3.02 s  | 0.233     | 0.0197    | 1.45     | 0.92     | 0.142     | 0.722 | 0.9998    |
+| guided, splitting 0.5    | 256    | 3.87 s  | 0.159     | 0.0191    | 2.42     | 0.76     | 0.097     | 0.483 | 0.9997    |
+| guided, splitting 0.75   | 256    | 5.17 s  | 0.121     | 0.0193    | 3.17     | 0.56     | 0.078     | 0.320 | 0.9997    |
+| guided, splitting 1      | 256    | 8.71 s  | 0.111     | 0.0212    | 2.24     | 0.27     | 0.075     | 0.262 | 0.9985    |
+| photons                  | 1024   | 7.82 s  | 0.126     | 0.0116    | 1.00     | 1.00     | 0.073     | 0.402 | 1.0000    |
+| guided, splitting 0.5    | 1024   | 13.80 s | 0.064     | 0.0096    | 2.21     | 0.83     | 0.042     | 0.172 | 0.9999    |
+| guided, splitting 1      | 1024   | 28.34 s | 0.047     | 0.0097    | 1.96     | 0.39     | 0.035     | 0.117 | 0.9996    |
+
+The guided rows' efficiencies are against plain photons, rescaled from the guided
+baseline of their sweep.
+
+- **The sun gains two to three times,** most at 0.75 with guiding, and its tail of
+  dark probes most of all: the 90th percentile falls by more than the median.
+- **The sky loses.** Its noise is mostly light that never collides, which splitting
+  does not touch, while the split paths cost time.
+- **No bias shows.** At 1024 rounds the sun's ratios by decile lie within 0.996 to
+  1.003. At 256 rounds the strongest window reads 1 % low, shrinking with rounds, as
+  the noise's skew does.
+- **In the image** (presets/wdas-cloud-0.zon, extinction 0.2), guided splitting at 0.75
+  and 1024 rounds against plain photons at 2048, both against 8192 rounds of plain
+  photons: log2 error p90 0.037 against 0.053, and 0.021 against 0.039 after a 15 px
+  blur, which shows the noise at low frequencies, at 38 s against 24 s. Its error is
+  fine-grained, without the blotches of plain photons, and without any structure.
+- A dense cloud costs splitting more: there each round took 3.2 times as long as plain
+  photons, against 2.6 times on view 00.
+
+**At 2048 rounds the gains shrink.** Efficiency is 1 / (sigma^2 x the bake's wall-clock
+time), against plain photons; the errors are at equal rounds.
+
+| bake                   | time    | sun sigma | sky sigma | eff. sun | eff. sky | sun error | p90   | sky total |
+| ---------------------- | ------- | --------- | --------- | -------- | -------- | --------- | ----- | --------- |
+| photons                | 15.41 s | 0.075     | 0.0082    | 1.00     | 1.00     | 0.046     | 0.225 | 1.0001    |
+| guided 0.8             | 18.82 s | 0.063     | 0.0070    | 1.16     | 1.13     | 0.040     | 0.191 | 1.0000    |
+| splitting 0.75         | 30.99 s | 0.041     | 0.0078    | 1.66     | 0.55     | 0.030     | 0.105 | 1.0000    |
+| guided, splitting 0.5  | 26.96 s | 0.042     | 0.0067    | 1.79     | 0.85     | 0.030     | 0.113 | 0.9999    |
+| guided, splitting 0.75 | 35.62 s | 0.036     | 0.0066    | 1.89     | 0.66     | 0.027     | 0.095 | 1.0000    |
+
+- Guided splitting at 0.75 falls from 3.17 times as efficient on the sun at 256 rounds to
+  1.89 at 2048, splitting alone from 2.48 to 1.66. Guiding alone holds its 1.16.
+- The dark probes still gain most: the sun's 90th-percentile error at equal rounds falls
+  from 0.225 to 0.095, and the decile ratios lose the skew plain photons keep in the
+  dimmest tenth.
+- The sky loses at equal time: guided splitting at 0.75 would reach a sky sigma of about
+  0.0100 in plain photons' 15.4 s, against their 0.0082.
+
+**State.** In the worktree, uncommitted; `photon_splitting` defaults to zero: it trades the sky for the sun (next section). The copies
+wait on a per-thread stack, so a thread that splits runs longer than its warp; a queue
+of copies served by later passes would even the work out.
+
+## Cheaper rounds and the corners' noise
+
+Splitting and guiding move photons between the sun's dim and bright bins. That cannot
+help both the sun and the sky:
+
+- **The sky's noise is scattered light.** At 2048 rounds of plain photons, light that
+  never collided has a sigma of 0.0014, the scattered light 0.0070 (two thirds of the
+  variance), though 77 % of the sky's light is scattered.
+- **It is spread evenly.** Splitting by the probe's mean level instead of its bin's,
+  which sends photons to dim probes rather than dim directions, leaves the sky's sigma
+  at 0.0082. A randomly shifted Kronecker sequence over the photons' entry (direction,
+  face, point) gains the sky 2 % and the sun nothing.
+
+So the sky gains only from cheaper photons, or from less noise per photon at no cost.
+Three ways were found and two kept. All figures are at 2048 rounds of view 00.
+
+**Where a round's time goes.** At 512 rounds of plain photons, 4.0 s: without any
+deposits 2.9 s, without the uncollided ones 3.6 s, without the scattered ones 3.7 s.
+Tracing takes 72 %.
+
+**Persistent threads (kept).** A round was a dispatch of one photon per probe, about
+what the GPU holds at once, and photons' paths run from a few collisions to thousands.
+Each round therefore ended in a long tail with most of the GPU idle, and each warp
+waited on its longest photon. Now a dispatch traces all of a frame's rounds (up to the
+next rebuild of the guided emission), and each thread takes photons from a counter
+until they are done. The fields are bit-identical.
+
+| plain photons                                     | time    |
+| ------------------------------------------------- | ------- |
+| a dispatch per round                              | 15.25 s |
+| a dispatch per frame, a thread per photon (8 rounds per frame)   | 9.64 s  |
+| the same, 32 rounds per frame                     | 8.46 s  |
+| a dispatch per frame, persistent threads (8)      | 8.64 s  |
+| persistent threads (32)                           | 7.48 s  |
+
+Splitting gains more, as its copies no longer stall whole warps: guided splitting at
+0.75 went from 35.6 s to 15.5 s.
+
+**Scattered light to all eight corners (kept).** Each point along a path went to one
+corner of its leaf, drawn by its trilinear weight. That draw was a large share of the
+noise: depositing every point to all eight corners by weight cuts the sun's variance by
+3.7 and the sky's by 2.5. It costs eight times the atomics, so:
+
+- **Only scattered light** is spread over the corners. It takes four floats per corner,
+  and holds most of the sky's noise. Light that has not collided feeds nine harmonics,
+  36 floats per corner, and keeps its single drawn corner.
+- **The corners' sums wait in registers** until the photon leaves the leaf, across its
+  collisions: in the dense core a path's parts between collisions are mostly shorter
+  than the points' spacing.
+
+| bake (32 rounds per frame)                        | time    | sun sigma | sky sigma | sun error | p90   |
+| ------------------------------------------------- | ------- | --------- | --------- | --------- | ----- |
+| one drawn corner                                  | 8.04 s  | 0.075     | 0.0082    | 0.046     | 0.225 |
+| all corners, every point flushed at once          | 21.62 s | 0.039     | 0.0052    | 0.028     | 0.102 |
+| all corners for scattered light only              | 15.56 s | 0.039     | 0.0059    | 0.028     | 0.102 |
+| the same, summed per leaf across collisions       | 14.45 s | 0.039     | 0.0059    | 0.028     | 0.102 |
+
+- **Wider spacing loses.** Points two finest cells apart take 11.36 s but raise the
+  sigmas to 0.046 and 0.0071; four apart, 9.14 s for 0.066 and 0.0097.
+- **Exact lengths per leaf lose.** `leaf_lengths` with all corners takes 40.10 s, as the
+  paths cross mostly fine leaves.
+
+**The similarity relation (not kept).** Past K collisions, photons scattered
+isotropically through the extinction times (1 - g), keeping the diffusion coefficient:
+1.6 times faster, but at K = 32 the bright probes come out 2 % too bright, at K = 8 the
+dense core 8 % too dark, at K = 4 20 %. Dropping only the phase's forward peak (delta-M)
+leaves the core 7 to 12 % too dark at any K, as the peak's mean cosine is 0.91, not 1.
+
+**Together.** The kept bake against the one before, plain photons, 2048 rounds:
+
+| bake                                  | time    | sun sigma | sky sigma | eff. sun | eff. sky | sun error | p90   | sky total |
+| ------------------------------------- | ------- | --------- | --------- | -------- | -------- | --------- | ----- | --------- |
+| before                                | 15.25 s | 0.075     | 0.0082    | 1.00     | 1.00     | 0.046     | 0.225 | 1.0001    |
+| now, 8 rounds per frame               | 15.85 s | 0.039     | 0.0059    | 3.56     | 1.86     | 0.028     | 0.102 | 1.0001    |
+| now, 32 rounds per frame              | 14.52 s | 0.039     | 0.0059    | 3.88     | 2.03     | 0.028     | 0.102 | 1.0001    |
+| now, guided 0.8                       | 19.34 s | 0.034     | 0.0052    | 3.84     | 1.96     | 0.026     | 0.093 | 1.0000    |
+| now, splitting 0.5                    | 17.17 s | 0.029     | 0.0058    | 5.94     | 1.78     | 0.023     | 0.079 | 1.0001    |
+
+The sun's ratios by decile lie within 0.997 to 1.005. Guiding no longer pays for its
+longer photons, and splitting still trades the sky for the sun; both stay off.
+
+In the image (presets/wdas-cloud-0.zon, extinction 0.2, 2048 rounds against 8192 of the
+old bake): log2 error p90 0.037 against 0.053, after a 15 px blur 0.021 against 0.039,
+in 19.8 s against 24.0 s, with fine-grained noise and none of the old bake's blotches.
+
+**Code kept.** Only the persistent threads and the eight-corner deposits of scattered
+light remain in the code, always on. The diffusion tail, the guided emission and
+splitting were removed; the sections above record what they did. At 2048 rounds the
+bake as kept takes 15.48 s at 8 rounds per frame, 14.21 s at 32, with a sun sigma of
+0.039 and a sky sigma of 0.0059.

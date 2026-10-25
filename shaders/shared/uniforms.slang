@@ -125,7 +125,7 @@ public struct CloudBenchUniforms {
     // w: the probes' walks at which their bake stops.
     public uint4 options;
     // x: the reference's samples before this frame, y: the approximation's, z: the
-    // probes' walks; w: unused.
+    // probes' walks; w: the photons' rounds in a dispatch of their trace.
     public uint4 samples;
     // src/render/ProbeLayout.zig's. xyz: lattice point zero, cloud units; w: the
     // adaptive layout's ratio of spacing to depth inside the cloud.

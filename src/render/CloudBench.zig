@@ -37,6 +37,9 @@ sun_bake: BenchKernel,
 probe_bake: BenchKernel,
 photon_clear: BenchKernel,
 photon_trace: BenchKernel,
+photon_counter_reset: BenchKernel,
+/// The photons `trace_photons` has handed out in its dispatch.
+photon_counter: gpu.Buffer,
 probe_fit: BenchKernel,
 probe_lighting: BenchKernel,
 probe_fill: BenchKernel,
@@ -117,6 +120,7 @@ const Global = enum {
     bench_probe_sun_bins,
     bench_probe_transfer_raw,
     bench_probe_sun_bins_raw,
+    bench_photon_counter,
     bench_probe_volumes,
     bench_probe_sun,
     bench_probe_light_values,
@@ -365,6 +369,16 @@ pub fn init(gpa: std.mem.Allocator, shared: *const Renderer.Shared) InitError!Cl
     errdefer photon_clear.mode_kernel.deinit();
     const photon_trace: BenchKernel = try .init(device, "modes/cloud_bench_probes", "trace_photons");
     errdefer photon_trace.mode_kernel.deinit();
+    const photon_counter_reset: BenchKernel = try .init(device, "modes/cloud_bench_probes", "reset_photon_counter");
+    errdefer photon_counter_reset.mode_kernel.deinit();
+    const photon_counter: gpu.Buffer = try .init(device, .{
+        .size = @sizeOf(u32),
+        .element_size = @sizeOf(u32),
+        .usage = .{ .shader_resource = true, .unordered_access = true },
+        .memory = .device,
+        .label = "cloud bench photon counter",
+    }, null);
+    errdefer photon_counter.deinit();
     const probe_fit: BenchKernel = try .init(device, "modes/cloud_bench_probes", "fit_probes");
     errdefer probe_fit.mode_kernel.deinit();
     const probe_lighting: BenchKernel = try .init(device, "modes/cloud_bench_probes", "light_probes");
@@ -449,6 +463,8 @@ pub fn init(gpa: std.mem.Allocator, shared: *const Renderer.Shared) InitError!Cl
         .probe_bake = probe_bake,
         .photon_clear = photon_clear,
         .photon_trace = photon_trace,
+        .photon_counter_reset = photon_counter_reset,
+        .photon_counter = photon_counter,
         .probe_fit = probe_fit,
         .probe_lighting = probe_lighting,
         .probe_fill = probe_fill,
@@ -493,6 +509,7 @@ pub fn deinit(mode: *CloudBench, gpa: std.mem.Allocator) void {
     if (mode.accumulations) |accumulations| accumulations.deinit();
     if (mode.probes) |probes| probes.deinit();
     mode.occupancy.deinit(gpa);
+    mode.photon_counter.deinit();
     mode.sun_reach.deinit();
     mode.sun_least.deinit();
     mode.cloud_shadow_placeholder.deinit();
@@ -509,6 +526,7 @@ pub fn deinit(mode: *CloudBench, gpa: std.mem.Allocator) void {
     mode.probe_lighting.mode_kernel.deinit();
     mode.probe_fit.mode_kernel.deinit();
     mode.probe_bake.mode_kernel.deinit();
+    mode.photon_counter_reset.mode_kernel.deinit();
     mode.photon_trace.mode_kernel.deinit();
     mode.photon_clear.mode_kernel.deinit();
     mode.sun_bake.mode_kernel.deinit();
@@ -602,16 +620,20 @@ pub fn record(
             try mode.dispatch(mode.sun_reach_bake.mode_kernel, mode.sun_reach_bake.params, command_list, shared, &bench_frame, mode.sun_reach_bake.mode_kernel.kernel.groupCount(cells));
             mode.sun_reach_extinction = extinction;
         }
-        for (0..rounds_per_frame) |_| {
-            if (mode.probe_walks >= walk_limit) break;
-            bench_frame.cloud_bench.samples = .{ 0, 0, mode.probe_walks, 0 };
-            if (!flags.photons) {
+        const frame_walks = @min(rounds_per_frame, walk_limit -| mode.probe_walks);
+        if (!flags.photons) {
+            for (0..frame_walks) |_| {
+                bench_frame.cloud_bench.samples = .{ 0, 0, mode.probe_walks, 0 };
                 try mode.dispatch(mode.probe_bake.mode_kernel, mode.probe_bake.params, command_list, shared, &bench_frame, probe_groups);
-            } else {
-                if (mode.probe_walks == 0) try mode.dispatch(mode.photon_clear.mode_kernel, mode.photon_clear.params, command_list, shared, &bench_frame, probe_groups);
-                try mode.dispatch(mode.photon_trace.mode_kernel, mode.photon_trace.params, command_list, shared, &bench_frame, probe_groups);
+                mode.probe_walks += 1;
             }
-            mode.probe_walks += 1;
+        } else if (frame_walks > 0) {
+            // One dispatch traces the frame's rounds together.
+            bench_frame.cloud_bench.samples = .{ 0, 0, mode.probe_walks, frame_walks };
+            if (mode.probe_walks == 0) try mode.dispatch(mode.photon_clear.mode_kernel, mode.photon_clear.params, command_list, shared, &bench_frame, probe_groups);
+            try mode.dispatch(mode.photon_counter_reset.mode_kernel, mode.photon_counter_reset.params, command_list, shared, &bench_frame, .{ 1, 1, 1 });
+            try mode.dispatch(mode.photon_trace.mode_kernel, mode.photon_trace.params, command_list, shared, &bench_frame, probe_groups);
+            mode.probe_walks += frame_walks;
         }
         bench_frame.cloud_bench.samples = .{ 0, 0, mode.probe_walks, 0 };
         var probe_fit_key: ProbeFitKey = .{ .probe = probe_key, .walks = mode.probe_walks, .sun_order3 = flags.sun_order3 };
@@ -799,6 +821,7 @@ fn dispatch(
                 .bench_probe_corners => .{ .buffer = mode.probes.?.corners },
                 .bench_probe_transfer, .bench_probe_transfer_raw => .{ .buffer = mode.probes.?.transfer },
                 .bench_probe_sun_bins, .bench_probe_sun_bins_raw => .{ .buffer = mode.probes.?.sun_bins },
+                .bench_photon_counter => .{ .buffer = mode.photon_counter },
                 .bench_probe_volumes => .{ .buffer = mode.probes.?.volumes },
                 .bench_probe_sun => .{ .buffer = mode.probes.?.sun },
                 .bench_probe_light_values => .{ .buffer = mode.probes.?.light },
