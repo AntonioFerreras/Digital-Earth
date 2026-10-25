@@ -1053,3 +1053,21 @@ through empty space alone could gain, at most about a tenth.
 **Together.** 2048 rounds of view 00 now take 11.4 s against 15.25 s before the
 persistent threads, with a sun sigma of 0.039 against 0.075 and a sky sigma of 0.0059
 against 0.0082: the sun 5.0 times as efficient, the sky 2.6 times.
+
+## The probe layout on the GPU
+
+Before a bake can start, the probes are laid out. On the CPU, opening the bench built
+the volume's occupancy grid in 3.5 s, one thread over all 823 million voxels, and the
+adaptive layout's search took 314 ms: three trial builds of 60 to 90 ms of cell depths
+(three passes over the occupancy grid), 3 ms of pyramid and 35 ms of tree each.
+
+src/render/LayoutDepths.zig now marks the occupancy on the GPU from the density
+already there, and measures each trial's cell depths there too. The host still decides
+which occupancy texels each cell overlaps, so the depths, and the layouts, are
+bit-identical to the CPU's: a test compares both at four cell sizes, and the fields
+match the 20000-round reference baked on the old layout. The tree numbers its probes
+through an array over the lattice instead of a hash map, in the same order.
+
+The layout now takes 55 ms (per trial: 10 ms of depths, 3 ms of pyramid, 10 ms of
+tree), and `earth bake-probes` starts its bake 3.5 s sooner: the whole process takes
+3.5 s for 8 rounds, against 7.5 s.

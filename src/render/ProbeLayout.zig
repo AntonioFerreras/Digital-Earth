@@ -2,7 +2,9 @@
 //! of them a point interpolates: the corners of the leaves of an octree of cells over
 //! the volume's box, finest along the cloud's surface and coarser with depth
 //! (docs/outlines/20261023-adaptive-cloud-probes.md), or of a dense grid. A point finds
-//! its finest cell's leaf and interpolates that leaf's eight corners.
+//! its finest cell's leaf and interpolates that leaf's eight corners. The cells' depths
+//! inside the cloud come from a `DepthSource`: src/render/LayoutDepths.zig measures them
+//! on the GPU, and `Occupancy` on the CPU for the tests.
 
 const ProbeLayout = @This();
 
@@ -11,6 +13,7 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const CloudVolume = @import("../assets/CloudVolume.zig");
+const gpu = @import("../gpu.zig");
 
 /// Lattice point zero and the finest cells' edges, cloud units.
 origin: [3]f32,
@@ -41,15 +44,32 @@ pub fn deinit(layout: *ProbeLayout, gpa: Allocator) void {
     layout.* = undefined;
 }
 
-/// The volume at its distance texture's resolution: per texel, the distance inside the
-/// cloud's surface, or -1 where none of the density that the march's trilinear filter
-/// reads from within the texel is above zero.
-pub const Occupancy = struct {
+/// The volume's occupancy grid, at its distance texture's resolution.
+pub const Grid = struct {
     size: [3]u32,
     texel: f32,
     min_corner: [3]f32,
     /// The voxel grid's, cloud units.
     extent: [3]f32,
+
+    pub fn init(volume: *const CloudVolume) Grid {
+        var extent: [3]f32 = undefined;
+        for (&extent, volume.size) |*e, s| e.* = @as(f32, @floatFromInt(s)) * volume.voxel;
+        return .{ .size = volume.distance_size, .texel = CloudVolume.distance_downsample * volume.voxel, .min_corner = volume.min_corner, .extent = extent };
+    }
+};
+
+/// Measures the `Depths` of the finest cells of edge `h0`, `cells` per axis.
+pub const DepthSource = struct {
+    context: *const anyopaque,
+    measure: *const fn (context: *const anyopaque, gpa: Allocator, io: Io, h0: f32, cells: [3]u32) BuildError!Depths,
+};
+
+/// The occupancy on the CPU, the reference of LayoutDepths.zig's: per texel of `grid`,
+/// the distance inside the cloud's surface, or -1 where none of the density that the
+/// march's trilinear filter reads from within the texel is above zero.
+pub const Occupancy = struct {
+    grid: Grid,
     values: []f16,
 
     pub fn init(gpa: Allocator, volume: *const CloudVolume) Allocator.Error!Occupancy {
@@ -85,9 +105,15 @@ pub const Occupancy = struct {
                 }
             }
         }
-        var extent: [3]f32 = undefined;
-        for (&extent, volume.size) |*e, s| e.* = @as(f32, @floatFromInt(s)) * volume.voxel;
-        return .{ .size = size, .texel = d * volume.voxel, .min_corner = volume.min_corner, .extent = extent, .values = values };
+        return .{ .grid = .init(volume), .values = values };
+    }
+
+    pub fn depthSource(occupancy: *const Occupancy) DepthSource {
+        return .{ .context = occupancy, .measure = measure };
+    }
+
+    fn measure(context: *const anyopaque, gpa: Allocator, io: Io, h0: f32, cells: [3]u32) BuildError!Depths {
+        return cellDepths(gpa, io, @ptrCast(@alignCast(context)), h0, cells);
     }
 
     pub fn deinit(occupancy: *Occupancy, gpa: Allocator) void {
@@ -129,10 +155,10 @@ pub const Occupancy = struct {
 
 /// `resolution` probes per axis, at the centres of as many equal cells of the box, x
 /// fastest; a point beyond the outermost ones takes theirs.
-pub fn dense(gpa: Allocator, occupancy: *const Occupancy, resolution: u32) Allocator.Error!ProbeLayout {
+pub fn dense(gpa: Allocator, grid: Grid, resolution: u32) Allocator.Error!ProbeLayout {
     var spacing: [3]f32 = undefined;
     var origin: [3]f32 = undefined;
-    for (&spacing, &origin, occupancy.extent, occupancy.min_corner) |*s, *o, extent, min| {
+    for (&spacing, &origin, grid.extent, grid.min_corner) |*s, *o, extent, min| {
         s.* = extent / @as(f32, @floatFromInt(resolution));
         o.* = min + 0.5 * s.*;
     }
@@ -167,17 +193,17 @@ pub fn dense(gpa: Allocator, occupancy: *const Occupancy, resolution: u32) Alloc
 /// h0, the finest cells' edge, is searched for. The count falls with h0 nearly as a
 /// power of it, so the search takes secant steps in the logarithms, from the dense
 /// grid's spacing, aiming a little under the budget.
-pub fn adaptive(gpa: Allocator, io: Io, occupancy: *const Occupancy, budget: u32, depth_ratio: f32) BuildError!ProbeLayout {
+pub fn adaptive(gpa: Allocator, io: Io, grid: Grid, depths: DepthSource, budget: u32, depth_ratio: f32) BuildError!ProbeLayout {
     var best: ?ProbeLayout = null;
     errdefer if (best) |*layout| layout.deinit(gpa);
-    const extent_max = @reduce(.Max, @as(@Vector(3, f32), occupancy.extent));
+    const extent_max = @reduce(.Max, @as(@Vector(3, f32), grid.extent));
     const target = @log(search_aim * @as(f64, @floatFromInt(budget)));
     var previous: ?[2]f64 = null;
     var log_h: f64 = @log(extent_max / 64);
     for (0..search_steps) |_| {
         // Below a texel, a texel could overlap three cells.
-        const h0: f32 = @max(@as(f32, @floatCast(@exp(log_h))), occupancy.texel);
-        var layout = try build(gpa, io, occupancy, h0, depth_ratio);
+        const h0: f32 = @max(@as(f32, @floatCast(@exp(log_h))), grid.texel);
+        var layout = try build(gpa, io, grid, depths, h0, depth_ratio);
         const count = layout.positions.len;
         if (count <= budget and (best == null or count > best.?.positions.len)) {
             if (best) |*old| old.deinit(gpa);
@@ -185,7 +211,7 @@ pub fn adaptive(gpa: Allocator, io: Io, occupancy: *const Occupancy, budget: u32
         } else layout.deinit(gpa);
         if (best) |found| {
             if (@as(f64, @floatFromInt(found.positions.len)) >= search_tolerance * @as(f64, @floatFromInt(budget))) break;
-            if (found.spacing[0] == occupancy.texel) break;
+            if (found.spacing[0] == grid.texel) break;
         }
         const point = [2]f64{ @log(@as(f64, h0)), @log(@as(f64, @floatFromInt(@max(count, 1)))) };
         var slope: f64 = search_slope;
@@ -196,10 +222,10 @@ pub fn adaptive(gpa: Allocator, io: Io, occupancy: *const Occupancy, budget: u32
         previous = point;
         log_h = point[0] + (target - point[1]) / slope;
     }
-    return best orelse build(gpa, io, occupancy, extent_max / 4, depth_ratio);
+    return best orelse build(gpa, io, grid, depths, extent_max / 4, depth_ratio);
 }
 
-pub const BuildError = Allocator.Error || Io.Cancelable;
+pub const BuildError = Allocator.Error || Io.Cancelable || gpu.Error;
 
 const search_steps = 8;
 /// A layout within this share of the budget ends the search.
@@ -212,11 +238,11 @@ const search_slope = -2.3;
 const search_slope_min = -0.5;
 
 /// The adaptive layout for finest cells of edge `h0`.
-fn build(gpa: Allocator, io: Io, occupancy: *const Occupancy, h0: f32, depth_ratio: f32) BuildError!ProbeLayout {
-    assert(h0 >= occupancy.texel);
+fn build(gpa: Allocator, io: Io, grid: Grid, source: DepthSource, h0: f32, depth_ratio: f32) BuildError!ProbeLayout {
+    assert(h0 >= grid.texel);
     var cells: [3]u32 = undefined;
-    for (&cells, occupancy.extent) |*n, extent| n.* = @intFromFloat(@ceil(extent / h0));
-    var depths = try cellDepths(gpa, io, occupancy, h0, cells);
+    for (&cells, grid.extent) |*n, extent| n.* = @intFromFloat(@ceil(extent / h0));
+    var depths = try source.measure(source.context, gpa, io, h0, cells);
     defer depths.deinit(gpa);
 
     // Levels per finest cell, padded to whole roots, and their minima per block of
@@ -258,16 +284,18 @@ fn build(gpa: Allocator, io: Io, occupancy: *const Occupancy, h0: f32, depth_rat
         };
     }
 
-    var builder: Builder = .{ .cells = cells };
+    var builder: Builder = .{ .cells = cells, .points = .{ padded[0] + 1, padded[1] + 1, padded[2] + 1 } };
     errdefer builder.deinit(gpa);
     builder.cell_leaves = try gpa.alloc(u32, @as(usize, cells[0]) * cells[1] * cells[2]);
     @memset(builder.cell_leaves, no_leaf);
+    builder.probes = try gpa.alloc(u32, @as(usize, builder.points[0]) * builder.points[1] * builder.points[2]);
+    @memset(builder.probes, no_probe);
     const roots = blockCount(padded, level_max);
     for (0..roots[2]) |z| for (0..roots[1]) |y| for (0..roots[0]) |x| {
         try builder.visit(gpa, &pyramid, padded, level_max, .{ @intCast(x), @intCast(y), @intCast(z) });
     };
 
-    const origin = occupancy.min_corner;
+    const origin = grid.min_corner;
     const positions = try gpa.alloc([4]f32, builder.lattice.items.len);
     errdefer gpa.free(positions);
     for (positions, builder.lattice.items) |*position, point| {
@@ -275,7 +303,7 @@ fn build(gpa: Allocator, io: Io, occupancy: *const Occupancy, h0: f32, depth_rat
         position[3] = 0;
     }
     const corners = try builder.corners.toOwnedSlice(gpa);
-    builder.probes.deinit(gpa);
+    gpa.free(builder.probes);
     builder.lattice.deinit(gpa);
     return .{
         .origin = origin,
@@ -288,6 +316,7 @@ fn build(gpa: Allocator, io: Io, occupancy: *const Occupancy, h0: f32, depth_rat
 }
 
 const not_needed = std.math.maxInt(u8);
+const no_probe = std.math.maxInt(u32);
 
 fn blockCount(padded: [3]u32, level: usize) [3]u32 {
     return .{ padded[0] >> @intCast(level), padded[1] >> @intCast(level), padded[2] >> @intCast(level) };
@@ -295,16 +324,19 @@ fn blockCount(padded: [3]u32, level: usize) [3]u32 {
 
 const Builder = struct {
     cells: [3]u32,
+    /// Lattice points per axis, of the padded roots' cells.
+    points: [3]u32,
     cell_leaves: []u32 = &.{},
     corners: std.ArrayList([8]u32) = .empty,
-    /// Probe per lattice point, and the lattice point per probe.
-    probes: std.AutoHashMapUnmanaged([3]u32, u32) = .empty,
+    /// Probe per lattice point, x fastest, numbered in the order the leaves reach them,
+    /// and the lattice point per probe.
+    probes: []u32 = &.{},
     lattice: std.ArrayList([3]u32) = .empty,
 
     fn deinit(builder: *Builder, gpa: Allocator) void {
         gpa.free(builder.cell_leaves);
         builder.corners.deinit(gpa);
-        builder.probes.deinit(gpa);
+        gpa.free(builder.probes);
         builder.lattice.deinit(gpa);
     }
 
@@ -327,12 +359,12 @@ const Builder = struct {
         var corner: [8]u32 = undefined;
         for (&corner, 0..) |*probe, bits| {
             const point = [3]u32{ first[0] + span * @as(u32, @intCast(bits & 1)), first[1] + span * @as(u32, @intCast(bits >> 1 & 1)), first[2] + span * @as(u32, @intCast(bits >> 2)) };
-            const entry = try builder.probes.getOrPut(gpa, point);
-            if (!entry.found_existing) {
-                entry.value_ptr.* = @intCast(builder.lattice.items.len);
+            const entry = &builder.probes[point[0] + builder.points[0] * (point[1] + builder.points[1] * point[2])];
+            if (entry.* == no_probe) {
+                entry.* = @intCast(builder.lattice.items.len);
                 try builder.lattice.append(gpa, point);
             }
-            probe.* = entry.value_ptr.*;
+            probe.* = entry.*;
         }
         try builder.corners.append(gpa, corner);
         const encoded: u32 = @bitCast(Leaf{ .slot = slot, .level = level });
@@ -346,11 +378,11 @@ const Builder = struct {
 
 /// Per cell of a grid, x fastest: whether it holds cloud, and the least distance
 /// inside the cloud over it, zero where it also holds air.
-const Depths = struct {
+pub const Depths = struct {
     occupied: []bool,
     depth: []f32,
 
-    fn init(gpa: Allocator, size: [3]u32) Allocator.Error!Depths {
+    pub fn init(gpa: Allocator, size: [3]u32) Allocator.Error!Depths {
         const count = @as(usize, size[0]) * size[1] * size[2];
         const occupied = try gpa.alloc(bool, count);
         errdefer gpa.free(occupied);
@@ -360,7 +392,7 @@ const Depths = struct {
         return .{ .occupied = occupied, .depth = depth };
     }
 
-    fn deinit(depths: *Depths, gpa: Allocator) void {
+    pub fn deinit(depths: *Depths, gpa: Allocator) void {
         gpa.free(depths.occupied);
         gpa.free(depths.depth);
         depths.* = undefined;
@@ -370,12 +402,43 @@ const Depths = struct {
 /// `Depths` of the finest cells of edge `h0`, reduced from the occupancy one axis at a
 /// time. A texel counts in every cell it overlaps, as points of each lie in it.
 fn cellDepths(gpa: Allocator, io: Io, occupancy: *const Occupancy, h0: f32, cells: [3]u32) BuildError!Depths {
-    const t = occupancy.size;
-    var x_pass = try reduceAxis(true, gpa, io, occupancy, t, 0, cells[0], occupancy.texel, h0);
+    const t = occupancy.grid.size;
+    const texel = occupancy.grid.texel;
+    var x_pass = try reduceAxis(true, gpa, io, occupancy, t, 0, cells[0], texel, h0);
     defer x_pass.deinit(gpa);
-    var y_pass = try reduceAxis(false, gpa, io, &x_pass, .{ cells[0], t[1], t[2] }, 1, cells[1], occupancy.texel, h0);
+    var y_pass = try reduceAxis(false, gpa, io, &x_pass, .{ cells[0], t[1], t[2] }, 1, cells[1], texel, h0);
     defer y_pass.deinit(gpa);
-    return reduceAxis(false, gpa, io, &y_pass, .{ cells[0], cells[1], t[2] }, 2, cells[2], occupancy.texel, h0);
+    return reduceAxis(false, gpa, io, &y_pass, .{ cells[0], cells[1], t[2] }, 2, cells[2], texel, h0);
+}
+
+/// The first and last of `cell_count` cells of edge `h0` that texel `i` overlaps: a
+/// texel no wider than a cell overlaps at most two.
+fn cellsOfTexel(i: usize, texel: f32, h0: f32, cell_count: u32) [2]u32 {
+    const start = @as(f32, @floatFromInt(i)) * texel;
+    return .{
+        @min(@as(u32, @intFromFloat(start / h0)), cell_count - 1),
+        @min(@as(u32, @intFromFloat(@ceil((start + texel) / h0))) -| 1, cell_count - 1),
+    };
+}
+
+/// Per cell of edge `h0` along x, then y, then z, the first and last texel of `grid`
+/// that overlaps it, as `cellDepths` counts them.
+pub fn texelRanges(gpa: Allocator, grid: Grid, h0: f32, cells: [3]u32) Allocator.Error![][2]u32 {
+    const ranges = try gpa.alloc([2]u32, cells[0] + cells[1] + cells[2]);
+    @memset(ranges, .{ std.math.maxInt(u32), 0 });
+    var first: usize = 0;
+    for (grid.size, cells) |texels, cell_count| {
+        const axis = ranges[first..][0..cell_count];
+        for (0..texels) |i| {
+            const overlapped = cellsOfTexel(i, grid.texel, h0, cell_count);
+            for (overlapped[0]..overlapped[1] + 1) |cell| {
+                axis[cell][0] = @min(axis[cell][0], @as(u32, @intCast(i)));
+                axis[cell][1] = @max(axis[cell][1], @as(u32, @intCast(i)));
+            }
+        }
+        first += cell_count;
+    }
+    return ranges;
 }
 
 fn reduceAxis(
@@ -393,16 +456,9 @@ fn reduceAxis(
     out_size[axis] = cell_count;
     var out: Depths = try .init(gpa, out_size);
     errdefer out.deinit(gpa);
-    // A texel no wider than a cell overlaps at most two.
     const cells_of = try gpa.alloc([2]u32, size[axis]);
     defer gpa.free(cells_of);
-    for (cells_of, 0..) |*cells, i| {
-        const start = @as(f32, @floatFromInt(i)) * texel;
-        cells.* = .{
-            @min(@as(u32, @intFromFloat(start / h0)), cell_count - 1),
-            @min(@as(u32, @intFromFloat(@ceil((start + texel) / h0))) -| 1, cell_count - 1),
-        };
-    }
+    for (cells_of, 0..) |*cells, i| cells.* = cellsOfTexel(i, texel, h0, cell_count);
     // Bands of the outermost axis that is kept write cells of their own.
     const band_axis: usize = if (axis == 2) 1 else 2;
     const band = std.math.divCeil(u32, size[band_axis], reduce_bands) catch unreachable;
@@ -516,7 +572,7 @@ test "every cell that holds cloud has a leaf whose corners are its own" {
     defer ball.deinit(gpa);
     var occupancy: Occupancy = try .init(gpa, &ball.volume);
     defer occupancy.deinit(gpa);
-    var layout = try build(gpa, testing.io, &occupancy, 2, 2.5);
+    var layout = try build(gpa, testing.io, occupancy.grid, occupancy.depthSource(), 2, 2.5);
     defer layout.deinit(gpa);
     const n = layout.cells;
     var leaves_by_level: [level_max + 1]u32 = @splat(0);
@@ -547,7 +603,7 @@ test "leaves sharing a corner share its probe" {
     defer ball.deinit(gpa);
     var occupancy: Occupancy = try .init(gpa, &ball.volume);
     defer occupancy.deinit(gpa);
-    var layout = try build(gpa, testing.io, &occupancy, 2, 2.5);
+    var layout = try build(gpa, testing.io, occupancy.grid, occupancy.depthSource(), 2, 2.5);
     defer layout.deinit(gpa);
     var seen: std.AutoHashMapUnmanaged([3]u32, void) = .empty;
     defer seen.deinit(gpa);
@@ -563,9 +619,9 @@ test "the adaptive layout keeps within its budget, and a larger one refines it" 
     defer ball.deinit(gpa);
     var occupancy: Occupancy = try .init(gpa, &ball.volume);
     defer occupancy.deinit(gpa);
-    var small = try adaptive(gpa, testing.io, &occupancy, 2000, 2.5);
+    var small = try adaptive(gpa, testing.io, occupancy.grid, occupancy.depthSource(), 2000, 2.5);
     defer small.deinit(gpa);
-    var large = try adaptive(gpa, testing.io, &occupancy, 8000, 2.5);
+    var large = try adaptive(gpa, testing.io, occupancy.grid, occupancy.depthSource(), 8000, 2.5);
     defer large.deinit(gpa);
     try testing.expect(small.positions.len <= 2000);
     try testing.expect(large.positions.len <= 8000);
@@ -578,11 +634,49 @@ test "the dense layout's probes are its cells' corners" {
     defer ball.deinit(gpa);
     var occupancy: Occupancy = try .init(gpa, &ball.volume);
     defer occupancy.deinit(gpa);
-    var layout = try dense(gpa, &occupancy, 4);
+    var layout = try dense(gpa, occupancy.grid, 4);
     defer layout.deinit(gpa);
     try testing.expectEqual(64, layout.positions.len);
     try testing.expectEqual(27, layout.corners.len);
     try testing.expectEqualSlices(f32, &.{ 2, 2, 2, 0 }, &layout.positions[0]);
     try testing.expectEqualSlices(f32, &.{ 14, 14, 14, 0 }, &layout.positions[63]);
     try testing.expectEqual(@as(u32, 63), layout.corners[26][7]);
+}
+
+test "the GPU's depths, and so its layouts, are the CPU's" {
+    const LayoutDepths = @import("LayoutDepths.zig");
+    const uploadVolume = @import("CloudBench.zig").uploadVolume;
+    const createTestDevice = @import("../gpu/test_gpu.zig").createTestDevice;
+    const device = try createTestDevice();
+    defer device.deinit();
+    const gpa = testing.allocator;
+    var ball: Ball = try .init(gpa, 64, 24);
+    defer ball.deinit(gpa);
+    var occupancy: Occupancy = try .init(gpa, &ball.volume);
+    defer occupancy.deinit(gpa);
+    const density = try uploadVolume(device, ball.volume.size, ball.density, .{ .shader_resource = true }, "ball density");
+    defer density.deinit();
+    var layout_depths: LayoutDepths = try .init(device, &ball.volume, density);
+    defer layout_depths.deinit();
+    const cpu = occupancy.depthSource();
+    const on_gpu = layout_depths.source();
+    for ([_]f32{ 2, 2.6, 3.3, 8 }) |h0| {
+        var cells: [3]u32 = undefined;
+        for (&cells, occupancy.grid.extent) |*n, extent| n.* = @intFromFloat(@ceil(extent / h0));
+        var expected = try cpu.measure(cpu.context, gpa, testing.io, h0, cells);
+        defer expected.deinit(gpa);
+        var measured = try on_gpu.measure(on_gpu.context, gpa, testing.io, h0, cells);
+        defer measured.deinit(gpa);
+        try testing.expectEqualSlices(bool, expected.occupied, measured.occupied);
+        for (expected.occupied, expected.depth, measured.depth) |occupied, a, b| {
+            if (occupied) try testing.expectEqual(a, b);
+        }
+        var from_cpu = try build(gpa, testing.io, occupancy.grid, cpu, h0, 2.5);
+        defer from_cpu.deinit(gpa);
+        var from_gpu = try build(gpa, testing.io, layout_depths.grid, on_gpu, h0, 2.5);
+        defer from_gpu.deinit(gpa);
+        try testing.expectEqualSlices([4]f32, from_cpu.positions, from_gpu.positions);
+        try testing.expectEqualSlices([8]u32, from_cpu.corners, from_gpu.corners);
+        try testing.expectEqualSlices(u32, from_cpu.cell_leaves, from_gpu.cell_leaves);
+    }
 }

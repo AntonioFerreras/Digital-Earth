@@ -17,6 +17,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const gpu = @import("../gpu.zig");
 const CloudVolume = @import("../assets/CloudVolume.zig");
+const LayoutDepths = @import("LayoutDepths.zig");
 const uniforms = @import("uniforms.zig");
 const scene = @import("scene.zig");
 const ModeKernel = @import("ModeKernel.zig");
@@ -57,8 +58,8 @@ sun: gpu.Texture,
 sun_least: gpu.Texture,
 sun_reach: gpu.Texture,
 sun_reach_extinction: ?f32,
-/// The volume as ProbeLayout builds layouts from it.
-occupancy: ProbeLayout.Occupancy,
+/// The volume's occupancy, from which ProbeLayout builds layouts.
+layout_depths: LayoutDepths,
 /// Null until the first frame lays them out.
 probes: ?Probes,
 /// A layout asked for, built once asked for `layout_settle_frames` frames running, so
@@ -392,9 +393,9 @@ pub fn init(gpa: std.mem.Allocator, shared: *const Renderer.Shared) InitError!Cl
     const atmosphere: MultipleScatteringLut = try .init(device);
     errdefer atmosphere.deinit();
 
-    const density = try uploadVolume(device, volume.size, volume.density, "cloud bench density");
+    const density = try uploadVolume(device, volume.size, volume.density, .{ .shader_resource = true }, "cloud bench density");
     errdefer density.deinit();
-    const majorant = try uploadVolume(device, volume.cells, volume.majorant, "cloud bench majorants");
+    const majorant = try uploadVolume(device, volume.cells, volume.majorant, .{ .shader_resource = true }, "cloud bench majorants");
     errdefer majorant.deinit();
     const majorant_2 = try uploadCoarserMajorants(gpa, device, volume.cells, volume.majorant, 2, "cloud bench majorants x2");
     errdefer majorant_2.deinit();
@@ -442,8 +443,8 @@ pub fn init(gpa: std.mem.Allocator, shared: *const Renderer.Shared) InitError!Cl
         .label = "cloud bench sun reach",
     });
     errdefer sun_reach.deinit();
-    var occupancy: ProbeLayout.Occupancy = try .init(gpa, &volume);
-    errdefer occupancy.deinit(gpa);
+    var layout_depths: LayoutDepths = try .init(device, &volume, density);
+    errdefer layout_depths.deinit();
     const cloud_shadow_placeholder: gpu.Texture = try .init(device, .{
         .kind = .@"2d_array",
         .format = .r16_float,
@@ -479,7 +480,7 @@ pub fn init(gpa: std.mem.Allocator, shared: *const Renderer.Shared) InitError!Cl
         .sun_least = sun_least,
         .sun_reach = sun_reach,
         .sun_reach_extinction = null,
-        .occupancy = occupancy,
+        .layout_depths = layout_depths,
         .probes = null,
         .layout_request = null,
         .atmosphere = atmosphere,
@@ -508,7 +509,7 @@ pub fn deinit(mode: *CloudBench, gpa: std.mem.Allocator) void {
     mode.storeProbes(gpa) catch |err| log.warn("probes not stored: {t}", .{err});
     if (mode.accumulations) |accumulations| accumulations.deinit();
     if (mode.probes) |probes| probes.deinit();
-    mode.occupancy.deinit(gpa);
+    mode.layout_depths.deinit();
     mode.photon_counter.deinit();
     mode.sun_reach.deinit();
     mode.sun_least.deinit();
@@ -748,13 +749,13 @@ fn requestLayout(mode: *CloudBench, device: gpu.Device, key: LayoutKey) gpu.Erro
     const gpa = std.heap.page_allocator;
     const start = std.Io.Timestamp.now(mode.data.io, .awake);
     var layout = if (key.adaptive)
-        ProbeLayout.adaptive(gpa, mode.data.io, &mode.occupancy, key.budget, key.depth_ratio) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
+        ProbeLayout.adaptive(gpa, mode.data.io, mode.layout_depths.grid, mode.layout_depths.source(), key.budget, key.depth_ratio) catch |err| switch (err) {
             // The renderer's thread is never canceled.
             error.Canceled => unreachable,
+            else => |other| return other,
         }
     else
-        try ProbeLayout.dense(gpa, &mode.occupancy, dense_resolution);
+        try ProbeLayout.dense(gpa, mode.layout_depths.grid, dense_resolution);
     defer layout.deinit(gpa);
     log.info("probe layout: {d} probes in {d} leaves, finest spacing {d:.2}, built in {d} ms", .{
         layout.positions.len, layout.corners.len, layout.spacing[0], start.untilNow(mode.data.io, .awake).toMilliseconds(),
@@ -844,16 +845,18 @@ fn findParams(kernel: gpu.Kernel) gpu.Kernel.LayoutError!Params {
     return params;
 }
 
-/// A single-channel half-float 3D texture of `values`, x fastest.
-fn uploadVolume(device: gpu.Device, size: [3]u32, values: []const f16, label: [*:0]const u8) gpu.Error!gpu.Texture {
+/// A single-channel half-float 3D texture of `values`, x fastest, for `usage`.
+pub fn uploadVolume(device: gpu.Device, size: [3]u32, values: []const f16, usage: gpu.Texture.Usage, label: [*:0]const u8) gpu.Error!gpu.Texture {
     assert(values.len == @as(u64, size[0]) * size[1] * size[2]);
+    var texture_usage = usage;
+    texture_usage.copy_destination = true;
     const texture: gpu.Texture = try .init(device, .{
         .kind = .@"3d",
         .format = .r16_float,
         .width = size[0],
         .height = size[1],
         .depth_or_layers = size[2],
-        .usage = .{ .shader_resource = true, .copy_destination = true },
+        .usage = texture_usage,
         .label = label,
     });
     errdefer texture.deinit();
@@ -887,7 +890,7 @@ fn uploadCoarserMajorants(
     const coarse = try gpa.alloc(f16, @as(usize, coarse_cells[0]) * coarse_cells[1] * coarse_cells[2]);
     defer gpa.free(coarse);
     coarserMajorants(cells, majorant, factor, coarse_cells, coarse);
-    return uploadVolume(device, coarse_cells, coarse, label);
+    return uploadVolume(device, coarse_cells, coarse, .{ .shader_resource = true }, label);
 }
 
 /// Each of `coarse`, a cell `factor` times as large per axis, bounds the cells of
