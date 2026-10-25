@@ -36,8 +36,10 @@ StructuredBuffer<float4> bench_probe_positions;
 // Element probe * SH_COUNT + j: the probe's sums over its walks of the sky's transfer
 // for harmonic j, x: phi_j, yzw: F_j.
 RWStructuredBuffer<float4> bench_probe_transfer;
-// Element probe * SUN_BIN_COUNT + b: the probe's sums over its walks of the sun's light
-// from directions in bin b of the equal-area octahedral map, x: phi, yzw: F.
+// Element b * probes + probe: the probe's sums over its walks of the sun's light from
+// directions in bin b of the equal-area octahedral map, x: phi, yzw: F. Bin-major, as a
+// photon feeds one bin, so that its deposits at neighbouring probes share cache lines;
+// src/render/ProbeCache.zig stores them probe-major.
 RWStructuredBuffer<float4> bench_probe_sun_bins;
 // The two sums above as raw bytes, for the photons' atomic adds.
 RWByteAddressBuffer bench_probe_transfer_raw;
@@ -180,7 +182,7 @@ void clear_probe_sums(uint3 thread: SV_DispatchThreadID)
     if (probe >= bench.probe_counts.x)
         return;
     for (uint b = 0; b < SUN_BIN_COUNT; b++)
-        bench_probe_sun_bins[probe * SUN_BIN_COUNT + b] = 0.0;
+        bench_probe_sun_bins[b * bench.probe_counts.x + probe] = 0.0;
     for (uint j = 0; j < SH_COUNT; j++)
         bench_probe_transfer[probe * SH_COUNT + j] = 0.0;
 }
@@ -198,7 +200,7 @@ void add_sum(RWByteAddressBuffer sums, uint element, float4 value)
 void deposit(uint probe, float4 value, bool collided, uint bin, float basis[SH_COUNT])
 {
     if (collided)
-        add_sum(bench_probe_sun_bins_raw, probe * SUN_BIN_COUNT + bin, value);
+        add_sum(bench_probe_sun_bins_raw, bin * bench.probe_counts.x + probe, value);
     else
     {
         for (uint j = 0; j < SH_COUNT; j++)
@@ -262,7 +264,7 @@ void flush_splat(uint bin)
     {
         uint probe = bench_probe_corners[splat_slot * 8 + corner];
         if (splat[corner].x > 0.0)
-            add_sum(bench_probe_sun_bins_raw, probe * SUN_BIN_COUNT + bin, splat[corner] / bench_probe_volumes[probe]);
+            add_sum(bench_probe_sun_bins_raw, bin * bench.probe_counts.x + probe, splat[corner] / bench_probe_volumes[probe]);
         splat[corner] = 0.0;
     }
     splat_slot = NO_LEAF;
@@ -423,11 +425,11 @@ void bake_probes(uint3 thread: SV_DispatchThreadID)
     uint probe = thread.x;
     if (probe >= bench.probe_counts.x)
         return;
-    uint first_bin = probe * SUN_BIN_COUNT;
+    uint probes = bench.probe_counts.x;
     if (bench.samples.z == 0)
     {
         for (uint b = 0; b < SUN_BIN_COUNT; b++)
-            bench_probe_sun_bins[first_bin + b] = 0.0;
+            bench_probe_sun_bins[b * probes + probe] = 0.0;
     }
     BenchVolume volume = BenchVolume();
     bool ratio_tracking = (bench.options.z & CLOUD_BENCH_RATIO_TRACKING) != 0;
@@ -454,7 +456,7 @@ void bake_probes(uint3 thread: SV_DispatchThreadID)
                 sunlit = sun_depth > SUN_DEPTH_MAX ? 0.0 : exp(-sun_depth);
             }
             if (sunlit > 0.0)
-                bench_probe_sun_bins[first_bin + sun_bin(towards_sun)] += sunlit * arrival;
+                bench_probe_sun_bins[sun_bin(towards_sun) * probes + probe] += sunlit * arrival;
         }
         dir = sample_cloud_phase(rng.next4().xyz, dir, true);
         t = sample_collision(volume, pos, dir, FLOAT_MAX, rng);
@@ -478,10 +480,10 @@ void fit_probes(uint3 thread: SV_DispatchThreadID)
     uint probe = thread.x;
     if (probe >= bench.probe_counts.x)
         return;
-    uint first_bin = probe * SUN_BIN_COUNT;
+    uint probes = bench.probe_counts.x;
     float brightest = 0.0;
     for (uint b = 0; b < SUN_BIN_COUNT; b++)
-        brightest = max(brightest, bench_probe_sun_bins[first_bin + b].x);
+        brightest = max(brightest, bench_probe_sun_bins[b * probes + probe].x);
     SunTransfer fit;
     for (uint j = 0; j < SH3_COUNT; j++)
         fit.log_fluence[j] = 0.0;
@@ -494,7 +496,7 @@ void fit_probes(uint3 thread: SV_DispatchThreadID)
         float bin_solid_angle = 4.0 * PI / float(SUN_BIN_COUNT);
         for (uint b = 0; b < SUN_BIN_COUNT; b++)
         {
-            float4 sum = bench_probe_sun_bins[first_bin + b];
+            float4 sum = bench_probe_sun_bins[b * probes + probe];
             float basis[SH3_COUNT] = sh3_basis(bin_direction(b, 0.5));
             float log_fluence = log(max(sum.x, SUN_FLOOR * brightest) * to_fluence);
             for (uint j = 0; j < sun_harmonics(); j++)
@@ -537,7 +539,7 @@ void light_probes(uint3 thread: SV_DispatchThreadID)
             float3 radiance = 0.0;
             for (uint j = 0; j < SH_COUNT; j++)
                 radiance += bench_sun.Load(int3(1 + j, 0, 0)).rgb * basis[j];
-            float4 bin = 4.0 * PI / walks * bench_probe_sun_bins[probe * SUN_BIN_COUNT + b];
+            float4 bin = 4.0 * PI / walks * bench_probe_sun_bins[b * bench.probe_counts.x + probe];
             for (uint c = 0; c < 3; c++)
                 light[c] += radiance[c] * bin;
         }

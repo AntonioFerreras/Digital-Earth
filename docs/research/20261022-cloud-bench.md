@@ -1013,3 +1013,43 @@ light remain in the code, always on. The diffusion tail, the guided emission and
 splitting were removed; the sections above record what they did. At 2048 rounds the
 bake as kept takes 15.48 s at 8 rounds per frame, 14.21 s at 32, with a sun sigma of
 0.039 and a sky sigma of 0.0059.
+
+## Where the kept bake spends its time
+
+View 00, 512 rounds, 8 per frame: 4.04 s. Without the eight-corner deposits 1.81 s,
+without the uncollided sky's deposits 3.84 s, with no deposits at all 1.69 s. The
+corners' deposits took 55 % of the bake.
+
+**What the corners cost.** Over 8 rounds the photons deposit 35.6 million points and
+change leaf at 22.6 million of them, 70 % in finest leaves: in the dense core a path
+steps from one finest cell to the next. Each change adds about five corners to the
+probes, 114 million atomic additions of four floats.
+
+- **Not the number of atomics.** Spreading only phi over the corners and adding the
+  flux at one drawn corner halves them, but saves 5 % (3.86 s). Keeping the sums of the
+  corners the next leaf shares saves 2.5 % (3.94 s).
+- **Not registers.** A per-thread cache of 16 to 64 probes, which a diffusing photon
+  might revisit, spills to local memory: 6.2 to 16.5 s.
+- **Where they land.** A probe's 64 bins lay in one kilobyte, so a leaf's eight corners
+  fell on eight cache lines. Probes are numbered in the octree's depth-first order, so
+  neighbouring probes have nearby numbers. Laid out bin-major, a photon's deposits,
+  all in one bin, fall on neighbouring addresses.
+
+**Kept: bin-major sun bins.** The GPU's buffer is bin-major; ProbeCache transposes it
+to the files' probe-major order on save and back on load, so the files are unchanged.
+At 2048 rounds the bake takes 12.68 s against 15.48 s, with the same field.
+
+**Kept: longer dispatches offline.** `bake-probes` traces at least 32 rounds per
+dispatch, as no viewer waits on it: 2048 rounds take 11.38 s at 32, 11.25 s at 64,
+11.21 s at 128.
+
+**The tracing.** Over 8 rounds: 63.5 million segments between collisions, 61.5 million
+real collisions out of 88.1 million tentative ones (30 % null), and 299.5 million steps
+through majorant cells of 8 voxels, 4.7 per segment. Walking coarser majorant cells,
+16 or 32 voxels, is slower (3.06 s, 3.38 s, against 2.99 s at 512 rounds): the null
+collisions in the cloud cost more than the steps saved. Only a walk that steps coarsely
+through empty space alone could gain, at most about a tenth.
+
+**Together.** 2048 rounds of view 00 now take 11.4 s against 15.25 s before the
+persistent threads, with a sun sigma of 0.039 against 0.075 and a sky sigma of 0.0059
+against 0.0082: the sun 5.0 times as efficient, the sky 2.6 times.

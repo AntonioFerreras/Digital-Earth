@@ -2,7 +2,8 @@
 //! sums, under <data>/cache/probes, one file per `Key`, so that a bake resumes where
 //! the last one with the same settings stopped, or in a file of the caller's, as
 //! validation keeps its fields (TESTING.md). Fits and lighting follow from the sums
-//! and are not stored.
+//! and are not stored. The sun's bins are probe-major in the file and bin-major on the
+//! GPU (shaders/modes/cloud_bench_probes.slang).
 
 const std = @import("std");
 const Io = std.Io;
@@ -37,6 +38,9 @@ pub const Key = extern struct {
 pub const walks_min = 64;
 
 const format_version = 3;
+/// SUN_BIN_COUNT in shaders/modes/cloud_bench_probes.slang, of four floats each.
+const sun_bin_count = 64;
+const SunBin = [4 * @sizeOf(f32)]u8;
 const magic = "EPROBE01";
 const directory = "cache/probes";
 
@@ -84,7 +88,10 @@ pub fn load(
     if (!std.mem.eql(u8, &header.magic, magic) or !std.meta.eql(header.key, key)) return error.InvalidProbeCache;
     const sums = bytes[@sizeOf(Header)..];
     try transfer.upload(device, 0, sums[0..transfer.size]);
-    try sun_bins.upload(device, 0, sums[transfer.size..]);
+    const bin_major = try gpa.alloc(SunBin, sun_bins.size / @sizeOf(SunBin));
+    defer gpa.free(bin_major);
+    transpose(bin_major, std.mem.bytesAsSlice(SunBin, sums[transfer.size..]), sun_bin_count);
+    try sun_bins.upload(device, 0, std.mem.sliceAsBytes(bin_major));
     return header.walks;
 }
 
@@ -107,13 +114,25 @@ pub fn save(
     @memcpy(bytes[0..@sizeOf(Header)], std.mem.asBytes(&header));
     const sums = bytes[@sizeOf(Header)..];
     try transfer.read(device, 0, sums[0..transfer.size]);
-    try sun_bins.read(device, 0, sums[transfer.size..]);
+    const bin_major = try gpa.alloc(SunBin, sun_bins.size / @sizeOf(SunBin));
+    defer gpa.free(bin_major);
+    try sun_bins.read(device, 0, std.mem.sliceAsBytes(bin_major));
+    transpose(std.mem.bytesAsSlice(SunBin, sums[transfer.size..]), bin_major, bin_major.len / sun_bin_count);
     if (std.fs.path.dirname(sub_path)) |parent| try dir.createDirPath(io, parent);
     // Written aside and renamed, so that an interrupted save leaves the old file whole.
     const part = try std.mem.concat(gpa, u8, &.{ sub_path, ".part" });
     defer gpa.free(part);
     try dir.writeFile(io, .{ .sub_path = part, .data = bytes });
     try dir.rename(part, dir, sub_path, io);
+}
+
+/// `target` as `source` transposed, `source` holding rows of `columns` elements.
+fn transpose(target: []SunBin, source: []const SunBin, columns: usize) void {
+    std.debug.assert(target.len == source.len and source.len % columns == 0);
+    const rows = source.len / columns;
+    for (0..rows) |row| {
+        for (0..columns) |column| target[column * rows + row] = source[row * columns + column];
+    }
 }
 
 /// Deletes the file at `sub_path`, if there is one.
@@ -125,6 +144,13 @@ pub fn delete(io: Io, dir: Io.Dir, sub_path: []const u8) !void {
 }
 
 const testing = std.testing;
+
+test "transpose swaps rows and columns" {
+    const source = [_]SunBin{ @splat(1), @splat(2), @splat(3), @splat(4), @splat(5), @splat(6) };
+    var target: [6]SunBin = undefined;
+    transpose(&target, &source, 3);
+    try testing.expectEqualSlices(SunBin, &.{ @splat(1), @splat(4), @splat(2), @splat(5), @splat(3), @splat(6) }, &target);
+}
 
 test "each key has a file of its own" {
     const walks: Key = .{

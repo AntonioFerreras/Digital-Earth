@@ -528,6 +528,9 @@ fn bakeProbes(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
     defer config.deinit(gpa);
     config.mode = .cloud_bench;
     config.cloud_bench.view = .approximation;
+    // Without a viewer to keep responsive, longer dispatches overlap more photon rounds;
+    // the field does not depend on them.
+    config.cloud_bench.probe_rounds_per_frame = @max(config.cloud_bench.probe_rounds_per_frame, bake_rounds_per_frame);
     const data_root: assets.DataRoot = try .open(io, arguments.data_path);
     defer data_root.close(io);
     const device = try initHeadlessDevice(gpa, io, arguments);
@@ -567,6 +570,8 @@ fn bakeProbes(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
 
 /// The bake renders an image only to drive its frames.
 const bake_size = [2]u32{ 16, 16 };
+/// Short enough for a dispatch not to stall a display GPU for long.
+const bake_rounds_per_frame = 32;
 
 /// The renderer of the offline commands, for `config` at `size`.
 fn initOfflineRenderer(
