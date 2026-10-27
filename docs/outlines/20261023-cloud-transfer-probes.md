@@ -24,18 +24,24 @@ cloud's shape, not where the light is.
 The light arriving at the probe from distant light, in the P1 form of the diffusion
 approximation, (phi + 3 F . w) / 4 pi along w, as functions of the light's direction:
 
-- **Sky:** linear in its radiance. Per spherical harmonic j of order 2 of the sky,
-  phi_j and F_j: 36 values. The sky is smooth over directions, and integrating a
-  smooth light needs only the transfer's low orders.
+- **Sky:** linear in its radiance. Per spherical harmonic j of order 3 of the sky,
+  phi_j and F_j: 64 values, phi_0 a float and every other a byte over
+  +-sqrt(2 l + 1) phi_0, which bounds it. The sky is smooth over directions, and
+  integrating a smooth light needs only the transfer's low orders; order 3 resolves
+  the horizon's band at sunset, which order 2 smears into the sky's mean.
 - **Sun:** one direction, which a probe in its shadow receives orders of magnitude
   more weakly than directions where the cloud is thin; a linear fit of few harmonics
-  rings below zero there. So log phi(s) is fitted, through order 2 (9 values) or 3
-  (16), and F / phi, which lies within the unit ball, through order 1 (12 values).
-  The sun's single scattering is marched exactly, so this transfer holds sunlight
-  scattered on its way only.
+  rings below zero there. So log phi(s) is fitted, through order 5 (36 values; a
+  setting fits order 3 from the same bins), and
+  F / phi, which lies within the unit ball, through order 1 (12 values); the constant
+  harmonic is a float, every other value a byte over the field's range of that
+  coefficient. The sun's single scattering is marched exactly, so this transfer holds
+  sunlight scattered on its way only.
 
-57 values a probe at order 2, 64 at order 3. At runtime the lighting pass contracts
-them with the present sun and the sky's harmonics into phi and F per colour channel.
+120 bytes a probe, 52 the sun's and 68 the sky's, fitted once from the bake's sums
+and bins, which then leave the runtime. At every change of the light the lighting
+pass contracts them with the present sun and the sky's harmonics into phi and F per
+colour channel.
 The march scatters them towards the viewer through a phase of first moment g by the
 M1 closure: the light taken as a von Mises-Fisher lobe about F with the same phi and
 F, whose mean cosine the phase multiplies by g. P1, (phi + 3 g F . -dir) / 4 pi, goes

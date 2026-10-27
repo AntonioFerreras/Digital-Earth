@@ -23,19 +23,14 @@ public float rayleigh_density(float h, float sea_level_density)
     return 3.68082 * exp(-x * x / 532307548.4168) / sea_level_density;
 }
 
-// Smoothed OPAC aerosol profile.
+// Elterman's 1968 profile below the tropopause as a boundary layer and a free
+// troposphere each falling exponentially, over a background stratospheric sulphate
+// layer about 20 km (docs/research/20261026-aerosol-profile.md). Unit at sea level,
+// its peak.
 public float mie_density(float h, float turbidity)
 {
-    float density;
-    if (h > 11500.0)
-        density = 0.0918 * exp(-1.0e-6 * (h - 11500.0) * (h - 11500.0));
-    else if (h > 2400.0)
-        density = 0.3 * exp(-2.5e-9 * (h + 2500.0) * (h + 2500.0)) - 0.092;
-    else if (h > 1300.0)
-        density = 0.65 * exp(-5.0e-6 * (h - 1300.0) * (h - 1300.0)) + 0.18899;
-    else
-        density = 1.0 - h / 8136.646;
-    return density * turbidity;
+    float stratosphere = (h - 20000.0) / 4000.0;
+    return turbidity * (0.85603 * exp(-h / 729.1) + 0.14397 * exp(-h / 3650.0) + 0.003818 * exp(-stratosphere * stratosphere));
 }
 
 // Ozone number density (m^-3) at `h` >= 0, linear between the profile's

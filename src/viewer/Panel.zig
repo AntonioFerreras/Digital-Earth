@@ -11,7 +11,7 @@ const View = @import("../render/View.zig");
 const scene = @import("../render/scene.zig");
 const Post = @import("../render/Post.zig");
 const Config = @import("Config.zig");
-const NetworkList = @import("NetworkList.zig");
+const InputList = @import("InputList.zig");
 const PresetList = @import("PresetList.zig");
 
 const Panel = @This();
@@ -32,7 +32,7 @@ pub const ranges = struct {
     /// The original slider stopped at tan(half angle) = pi/2, about 115 degrees.
     pub const vertical_fov_degrees: Range = .{ .min = View.vertical_fov_degrees_min, .max = 115 };
     pub const aspect_scale: Range = .{ .min = 0.75, .max = 1.25 };
-    pub const exposure: Range = .{ .min = -1, .max = 10 };
+    pub const exposure: Range = .{ .min = -1, .max = 11 };
     pub const bounce_limit: Range = .{ .min = 1, .max = scene.atmosphere.bounce_count_max };
     pub const wind_speed: Range = .{ .min = 0, .max = 25 };
     pub const texture_strength: Range = .{ .min = 0, .max = 2 };
@@ -53,6 +53,8 @@ pub const ranges = struct {
     /// The walks' sums take over a kilobyte per probe.
     pub const bench_probe_budget: Range = .{ .min = 1 << 12, .max = 1 << 19 };
     pub const bench_probe_depth_ratio: Range = .{ .min = 0.5, .max = 8 };
+    /// From the march's shortest step to past a majorant cell, where the cap is off.
+    pub const bench_view_step_max_voxels: Range = .{ .min = 0.5, .max = 64 };
     /// Greyscale up to a strong chroma boost; 1 keeps OpenDRT's look.
     pub const saturation: Range = .{ .min = 0, .max = 3.6 };
     /// Keeps every preset's contrast power at or above the shader's floor of 0.25.
@@ -68,6 +70,7 @@ pub const Actions = struct {
     load_preset: bool = false,
     screenshot: bool = false,
     rescan_networks: bool = false,
+    rescan_clouds: bool = false,
     /// The cloud bench's probes, for their present settings.
     reset_probes: bool = false,
 };
@@ -108,8 +111,9 @@ pub fn deinit(panel: *Panel, gpa: std.mem.Allocator) void {
 }
 
 /// `config.camera_response` must name a loaded camera response; `gpa` owns it. The
-/// network picker edits `networks.selected`, the preset picker and save field `presets`.
-pub fn draw(panel: Panel, gpa: std.mem.Allocator, config: *Config, networks: *NetworkList, presets: *PresetList, renderer: *const Renderer) Actions {
+/// network and cloud pickers edit their lists' `selected`, the preset picker and save
+/// field `presets`.
+pub fn draw(panel: Panel, gpa: std.mem.Allocator, config: *Config, networks: *InputList, clouds: *InputList, presets: *PresetList, renderer: *const Renderer) Actions {
     var actions: Actions = .{};
     c.ImGui_SetNextWindowPos(.{ .x = 24, .y = 24 }, c.ImGuiCond_FirstUseEver);
     defer c.ImGui_End();
@@ -126,9 +130,9 @@ pub fn draw(panel: Panel, gpa: std.mem.Allocator, config: *Config, networks: *Ne
     }
     // The cloud bench has a world of its own, which uses none of the Earth's settings.
     if (config.mode == .cloud_bench) {
-        actions.reset_probes = drawCloudBench(config, renderer, &text);
+        drawCloudBench(config, clouds, renderer, &text, &actions);
     } else {
-        actions.rescan_networks = drawEarth(config, networks, renderer, &text);
+        drawEarth(config, networks, renderer, &text, &actions);
     }
     // Only the ray marcher models the clouds' multiple scattering.
     if (config.mode == .raymarch and c.ImGui_CollapsingHeader("cloud scattering", 0)) {
@@ -154,6 +158,7 @@ pub fn draw(panel: Panel, gpa: std.mem.Allocator, config: *Config, networks: *Ne
             std.mem.printSentinel(&text, "elevation {d:.2} km", .{altitude_m / 1e3}, 0) catch unreachable);
         slider("vertical fov", &config.camera.vertical_fov_degrees, ranges.vertical_fov_degrees);
         slider("aspect scale", &config.camera.aspect_scale, ranges.aspect_scale);
+        _ = c.ImGui_Checkbox("vsync", &config.vsync);
         _ = c.ImGui_Checkbox("auto exposure", &config.auto_exposure);
         slider("exposure", &config.exposure, ranges.exposure);
         slider("saturation", &config.saturation, ranges.saturation);
@@ -186,16 +191,12 @@ pub fn draw(panel: Panel, gpa: std.mem.Allocator, config: *Config, networks: *Ne
     return actions;
 }
 
-/// The Earth's settings; returns whether the network list should be rescanned.
-fn drawEarth(config: *Config, networks: *NetworkList, renderer: *const Renderer, text: *[96]u8) bool {
-    var rescan = false;
+/// The Earth's settings.
+fn drawEarth(config: *Config, networks: *InputList, renderer: *const Renderer, text: *[96]u8, actions: *Actions) void {
     if (c.ImGui_CollapsingHeader("scene", c.ImGuiTreeNodeFlags_DefaultOpen)) {
         enumCombo(scene.Preset, "scene preset", &config.preset);
         enumCombo(EarthMaps.Quality, "texture quality", &config.texture_quality);
-        var selected: c_int = @intCast(networks.selected);
-        if (networks.files.len > 0 and c.ImGui_Combo("network", &selected, networks.labels)) networks.selected = @intCast(selected);
-        c.ImGui_SameLine();
-        rescan = c.ImGui_Button("rescan");
+        actions.rescan_networks = inputCombo("network", networks);
         // The ray marcher takes at most its own few bounces under the limit.
         if (config.mode == .path_tracer or config.mode == .raymarch) {
             const bounce_limit_min: u32 = @intFromFloat(ranges.bounce_limit.min);
@@ -243,7 +244,14 @@ fn drawEarth(config: *Config, networks: *NetworkList, renderer: *const Renderer,
         slider("texture strength", &config.water.texture_strength, ranges.texture_strength);
         slider("texture size", &config.water.texture_size, ranges.texture_size);
     }
-    return rescan;
+}
+
+/// A picker over `list` with a rescan button; returns whether that was pressed.
+fn inputCombo(label: [*:0]const u8, list: *InputList) bool {
+    var selected: c_int = @intCast(list.selected);
+    if (list.files.len > 0 and c.ImGui_Combo(label, &selected, list.labels)) list.selected = @intCast(selected);
+    c.ImGui_SameLine();
+    return c.ImGui_Button("rescan");
 }
 
 /// Over everything, panel or not, while the cloud bench's probes bake.
@@ -265,10 +273,10 @@ pub fn drawBakeProgress(renderer: *const Renderer) void {
     c.ImDrawList_AddTextImFontPtr(draw_list, c.ImGui_GetFont(), font_size, origin, 0xffffffff, label.ptr);
 }
 
-/// Returns whether the probes' cache was asked deleted.
-fn drawCloudBench(config: *Config, renderer: *const Renderer, text: *[96]u8) bool {
-    if (!c.ImGui_CollapsingHeader("cloud bench", c.ImGuiTreeNodeFlags_DefaultOpen)) return false;
+fn drawCloudBench(config: *Config, clouds: *InputList, renderer: *const Renderer, text: *[96]u8, actions: *Actions) void {
+    if (!c.ImGui_CollapsingHeader("cloud bench", c.ImGuiTreeNodeFlags_DefaultOpen)) return;
     const bench = &config.cloud_bench;
+    actions.rescan_clouds = inputCombo("cloud", clouds);
     switch (renderer.mode) {
         .cloud_bench => |*mode| {
             const counts = mode.sampleCounts();
@@ -279,9 +287,8 @@ fn drawCloudBench(config: *Config, renderer: *const Renderer, text: *[96]u8) boo
         else => {},
     }
     enumCombo(scene.CloudBench.View, "view", &bench.view);
+    _ = c.ImGui_Checkbox("sun", &bench.sun);
     _ = c.ImGui_Checkbox("sky", &bench.sky);
-    enumCombo(scene.CloudBench.MarchCells, "view march cells", &bench.view_march_cells);
-    enumCombo(scene.CloudBench.MarchCells, "sun march cells", &bench.sun_march_cells);
     slider("sun cos zenith", &config.bench_sun.cos_zenith, ranges.bench_sun_cos_zenith);
     slider("sun azimuth", &config.bench_sun.azimuth_degrees, ranges.bench_sun_azimuth_degrees);
     var extinction_index: c_int = @intCast(closestIndex(&bench_extinctions, bench.extinction));
@@ -298,6 +305,7 @@ fn drawCloudBench(config: *Config, renderer: *const Renderer, text: *[96]u8) boo
     const probe_walks_min: u32 = @intFromFloat(ranges.bench_probe_walks.min);
     const probe_walks_max: u32 = @intFromFloat(ranges.bench_probe_walks.max);
     _ = c.ImGui_SliderScalarEx("probe walks", c.ImGuiDataType_U32, &bench.probe_walks, &probe_walks_min, &probe_walks_max, "%u", c.ImGuiSliderFlags_AlwaysClamp | c.ImGuiSliderFlags_Logarithmic);
+    logSlider("view step max voxels", &bench.view_step_max_voxels, ranges.bench_view_step_max_voxels);
     enumCombo(scene.CloudBench.ProbeLayout, "probe layout", &bench.probe_layout);
     if (bench.probe_layout == .adaptive) {
         const probe_budget_min: u32 = @intFromFloat(ranges.bench_probe_budget.min);
@@ -311,11 +319,12 @@ fn drawCloudBench(config: *Config, renderer: *const Renderer, text: *[96]u8) boo
         .photons => enumCombo(scene.CloudBench.PhotonDeposit, "photon deposit", &bench.photon_deposit),
     }
     enumCombo(scene.CloudBench.SunOrder, "probe sun order", &bench.probe_sun_order);
+    enumCombo(scene.CloudBench.SunFit, "probe sun fit", &bench.probe_sun_fit);
+    enumCombo(scene.CloudBench.SkyOrder, "probe sky order", &bench.probe_sky_order);
     enumCombo(scene.CloudBench.FirstScatter, "first scatter", &bench.first_scatter);
     enumCombo(scene.CloudBench.Closure, "probe closure", &bench.probe_closure);
-    const reset_probes = c.ImGui_Button("delete probe cache and rebake");
+    actions.reset_probes = c.ImGui_Button("delete probe cache and rebake");
     if (c.ImGui_Button("reset cloud bench")) bench.* = .{};
-    return reset_probes;
 }
 
 /// Per metre. Each extinction bakes probes of its own, so the slider keeps to a few that
@@ -386,6 +395,7 @@ test "defaults lie inside the slider ranges, and the ranges inside what View acc
         .bench_probe_walks = @as(f64, @floatFromInt(defaults.cloud_bench.probe_walks)),
         .bench_probe_budget = @as(f64, @floatFromInt(defaults.cloud_bench.probe_budget)),
         .bench_probe_depth_ratio = defaults.cloud_bench.probe_depth_ratio,
+        .bench_view_step_max_voxels = defaults.cloud_bench.view_step_max_voxels,
         .saturation = defaults.saturation,
         .contrast = defaults.contrast,
         .gamma = defaults.gamma,

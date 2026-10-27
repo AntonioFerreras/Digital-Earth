@@ -10,6 +10,7 @@ module bench_volume;
 import atmosphere.phase;
 import common.constants;
 import common.rng;
+import common.sampling;
 import shared.bindings;
 import shared.uniforms;
 
@@ -79,6 +80,22 @@ public struct BenchVolume
         return extinction * bench_density.SampleLevel(linear_clamp, uvw(pos), 0.0);
     }
 
+    // The tricubic B-spline's eight filtered fetches. Its support reaches two voxels,
+    // so it may exceed the majorant slightly, which only paces a march.
+    public float extinction_cubic(float3 pos)
+    {
+        float3 size = float3(bench.grid_size.xyz);
+        CubicTaps<3> taps = CubicTaps<3>(uvw(pos) * size - 0.5, size);
+        float density = 0.0;
+        for (uint lobe = 0; lobe < 8; lobe++)
+        {
+            bool3 up = bool3((lobe & 1) != 0, (lobe & 2) != 0, (lobe & 4) != 0);
+            float3 weight = select(up, taps.g1, taps.g0);
+            density += weight.x * weight.y * weight.z * bench_density.SampleLevel(linear_clamp, select(up, taps.upper, taps.lower), 0.0);
+        }
+        return extinction * density;
+    }
+
     // Where the ray enters and leaves the grid's box; entry >= exit for a miss.
     public float2 box_range(float3 pos, float3 dir)
     {
@@ -94,7 +111,7 @@ public struct BenchVolume
 // The sky's table (modes/cloud_bench_sky.slang): radiance by direction about +Y, the
 // vertical at the cloud, in Hillaire's latitude mapping, which spends texels near the
 // horizon.
-public static const uint2 BENCH_SKY_SIZE = uint2(512, 256);
+public static const uint2 BENCH_SKY_SIZE = uint2(256, 128);
 
 public float2 sky_uv(float3 dir)
 {
@@ -150,15 +167,15 @@ public struct MajorantWalk
         return start < end;
     }
 
-    // Steps of at least `step` through the current cell, `count` of `length` each,
-    // longer where its majorant optical depth per step stays below STEP_MAJORANT_DEPTH
-    // times 1 + `depth`, the optical depth already marched, and `scale` times as many.
-    // Thin cloud takes few, and so does a march deep into cloud, whose light falls as
-    // exp(-depth) so that an error in it counts the less.
-    public void steps(float step, float depth, float scale, out uint count, out float length)
+    // Steps of at least `step` and at most `step_max` through the current cell, `count`
+    // of `length` each, longer where its majorant optical depth per step stays below
+    // STEP_MAJORANT_DEPTH times 1 + `depth`, the optical depth already marched, and
+    // `scale` times as many. Thin cloud takes few, and so does a march deep into
+    // cloud, whose light falls as exp(-depth) so that an error in it counts the less.
+    public void steps(float step, float step_max, float depth, float scale, out uint count, out float length)
     {
         float span = stop - start;
-        count = uint(ceil(scale * span / max(step, STEP_MAJORANT_DEPTH * (1.0 + depth) / majorant)));
+        count = uint(ceil(scale * span / clamp(STEP_MAJORANT_DEPTH * (1.0 + depth) / majorant, step, step_max)));
         length = span / float(count);
     }
 
@@ -273,7 +290,7 @@ public float optical_depth(BenchVolume volume, float3 pos, float3 dir, float ste
             continue;
         uint count;
         float dt;
-        walk.steps(step, depth, 1.0, count, dt);
+        walk.steps(step, FLOAT_MAX, depth, 1.0, count, dt);
         for (uint i = 0; i < count; i++)
             depth += volume.extinction_at(pos + (walk.start + (float(i) + 0.5) * dt) * dir) * dt;
     }

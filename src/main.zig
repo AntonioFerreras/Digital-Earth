@@ -38,8 +38,8 @@ const usage =
     \\                                 `datagen --sampling grid` (default: <data>/
 ++ assets.Lut4d.default_path ++ ", if present)\n" ++
     \\  --cloud-volume <file.ecld>     volume of the cloud_bench mode, from python/clouds/convert_vdb.py
-    \\                                 (default: <data>/
-++ assets.CloudVolume.default_path ++ ", if present)\n" ++
+    \\                                 (default: the config's cloud_volume in <data>/
+++ assets.CloudVolume.directory_path ++ ", if present)\n" ++
     \\  --texture-quality q1|q2        Earth map set to render or bake (default: the config's)
     \\  --help                         this text
     \\
@@ -397,7 +397,7 @@ fn view(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
         .earth_map_cache = if (cache_dir) |dir| .{ .io = io, .dir = dir } else null,
         .network = modeInput(io, data_root, arguments.weights_path, assets.Network.default_path),
         .lut4d = modeInput(io, data_root, arguments.lut_path, assets.Lut4d.default_path),
-        .cloud_volume = modeInput(io, data_root, arguments.cloud_volume_path, assets.CloudVolume.default_path),
+        .cloud_volume = if (arguments.cloud_volume_path) |path| .{ .io = io, .dir = .cwd(), .path = path } else null,
         .tile_files = if (tile_files) |*files| files else null,
     });
     defer earth_viewer.deinit();
@@ -451,8 +451,8 @@ fn renderImage(gpa: std.mem.Allocator, io: Io, arguments: Arguments) !void {
         } else try config.clone(gpa);
         defer job_config.deinit(gpa);
         applyRenderOverrides(&job_config, options, job.bench_view);
-        if (job_config.mode != config.mode or job_config.preset != config.preset) {
-            log.err("{s}: every job renders the command's mode and preset", .{job.out});
+        if (job_config.mode != config.mode or job_config.preset != config.preset or !std.mem.eql(u8, job_config.cloud_volume, config.cloud_volume)) {
+            log.err("{s}: every job renders the command's mode, preset and cloud volume", .{job.out});
             return error.InvalidArguments;
         }
         renderer.cloud_bench = job_config.cloud_bench;
@@ -593,6 +593,7 @@ fn initOfflineRenderer(
     const scene_flags: render.uniforms.SceneFlags = @bitCast(config.preset.sceneUniforms().config[0]);
     var cache_dir: ?Io.Dir = if (scene_flags.earth_maps) try openCacheDir(io, data_root) else null;
     defer if (cache_dir) |*dir| dir.close(io);
+    var cloud_volume_buffer: assets.CloudVolume.PathBuffer = undefined;
     return render.Renderer.init(gpa, device, &luts, .{
         .size = size,
         .mode = config.mode,
@@ -608,7 +609,7 @@ fn initOfflineRenderer(
         .earth_map_cache = if (cache_dir) |dir| .{ .io = io, .dir = dir } else null,
         .network = modeInput(io, data_root, arguments.weights_path, assets.Network.default_path),
         .lut4d = modeInput(io, data_root, arguments.lut_path, assets.Lut4d.default_path),
-        .cloud_volume = modeInput(io, data_root, arguments.cloud_volume_path, assets.CloudVolume.default_path),
+        .cloud_volume = modeInput(io, data_root, arguments.cloud_volume_path, assets.CloudVolume.filePath(&cloud_volume_buffer, config.cloud_volume)),
         .probe_field = probe_field,
         .tile_files = tile_files,
         .tiles = config.tiles,

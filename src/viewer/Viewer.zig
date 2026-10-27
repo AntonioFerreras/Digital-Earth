@@ -7,6 +7,8 @@ const Io = std.Io;
 const c = @import("c");
 const gpu = @import("../gpu.zig");
 const DataRoot = @import("../assets/DataRoot.zig");
+const CloudVolume = @import("../assets/CloudVolume.zig");
+const Network = @import("../assets/Network.zig");
 const Image = @import("../assets/Image.zig");
 const Luts = @import("../assets/Luts.zig");
 const GpuEarthMaps = @import("../render/GpuEarthMaps.zig");
@@ -19,7 +21,7 @@ const Config = @import("Config.zig");
 const Camera = @import("Camera.zig");
 const Controls = @import("Controls.zig");
 const Panel = @import("Panel.zig");
-const NetworkList = @import("NetworkList.zig");
+const InputList = @import("InputList.zig");
 const PresetList = @import("PresetList.zig");
 
 const Viewer = @This();
@@ -29,10 +31,13 @@ gpa: std.mem.Allocator,
 window: Window,
 device: gpu.Device,
 surface: gpu.Surface,
+/// What the surface was last configured with, so that the config's change takes.
+vsync: bool,
 renderer: Renderer,
 panel: Panel,
 config: Config,
-networks: NetworkList,
+networks: InputList,
+clouds: InputList,
 presets: PresetList,
 controls: Controls,
 /// The sun as rendered, easing towards the config's: its direction, and its elevation
@@ -70,7 +75,8 @@ pub const Options = struct {
     network: ?Renderer.InputFile,
     /// The bruneton mode's table; the path is copied.
     lut4d: ?Renderer.InputFile,
-    /// The cloud bench's volume; the path is copied.
+    /// The cloud bench's volume from the command line, which outranks the config's; the
+    /// path is copied.
     cloud_volume: ?Renderer.InputFile,
     /// Must outlive the viewer.
     tile_files: ?*const TilePool.Files,
@@ -80,8 +86,6 @@ pub const Error = Window.Error || gpu.Error || Luts.LoadError || Renderer.InitEr
     error{UnknownCameraResponse};
 
 const window_size_default = [2]u32{ 1920, 1080 };
-/// Progressive accumulation wants every frame the GPU can produce.
-const vsync = false;
 /// The cloud bench's cloud spans a few kilometres, seen from about as high.
 const cloud_bench_speed_scale = 0.16;
 /// The eased sun moves its elevation and azimuth at the camera apart: each speeds up at
@@ -98,6 +102,8 @@ const azimuth_acceleration = 9 * sun_acceleration;
 const low_sun_slowdown = 2.0;
 const low_sun_cos_zenith = 0.1;
 const sun_drag_range_px = 600.0;
+/// The azimuth's whole turn takes twice the travel of the elevation's quarter turn.
+const sun_drag_azimuth_px = 2 * sun_drag_range_px;
 /// Travel before a sun drag locks to the axis it went further along.
 const sun_drag_lock_px = 6.0;
 const azimuth_lead_max = 0.9 * std.math.pi;
@@ -127,7 +133,7 @@ pub fn init(gpa: std.mem.Allocator, io: Io, options: Options) Error!Viewer {
 
     const surface: gpu.Surface = try .init(device, try window.nativeHandle());
     errdefer surface.deinit();
-    try surface.configure(window.pixelSize(), vsync);
+    try surface.configure(window.pixelSize(), options.config.vsync);
     try gpu.check(c.en_ui_init(device.handle, surface.handle, window.sdl_window), "en_ui_init");
     errdefer c.en_ui_shutdown();
 
@@ -140,8 +146,19 @@ pub fn init(gpa: std.mem.Allocator, io: Io, options: Options) Error!Viewer {
     defer luts.deinit(gpa);
     var panel: Panel = .{ .camera_response_names = try Panel.joinLabels(gpa, luts.crf_names) };
     errdefer panel.deinit(gpa);
-    var networks: NetworkList = try .init(gpa, io, options.data_root, options.network);
+    var networks: InputList = try .init(gpa, io, options.data_root, Network.directory_path, Network.file_extension, options.network);
     errdefer networks.deinit(gpa);
+    var clouds: InputList = try .init(gpa, io, options.data_root, CloudVolume.directory_path, CloudVolume.file_extension, options.cloud_volume);
+    errdefer clouds.deinit(gpa);
+    // The command line's volume outranks the config's, which then names it.
+    const cloud_volume: ?Renderer.InputFile = if (options.cloud_volume != null or clouds.select(config.cloud_volume)) volume: {
+        clouds.active = clouds.selected;
+        try config.setCloudVolume(gpa, clouds.label(clouds.active));
+        break :volume clouds.files[clouds.active];
+    } else none: {
+        log.err("no cloud volume {s} in {s}", .{ config.cloud_volume, CloudVolume.directory_path });
+        break :none null;
+    };
     var presets: PresetList = try .init(gpa, io, options.data_root);
     errdefer presets.deinit(gpa);
     var renderer_options: Renderer.Options = .{
@@ -161,7 +178,7 @@ pub fn init(gpa: std.mem.Allocator, io: Io, options: Options) Error!Viewer {
         .earth_map_cache = options.earth_map_cache,
         .network = options.network,
         .lut4d = options.lut4d,
-        .cloud_volume = options.cloud_volume,
+        .cloud_volume = cloud_volume,
     };
     // A mode whose input is missing or broken must not keep the viewer from starting.
     var renderer: Renderer = Renderer.init(gpa, device, &luts, renderer_options) catch |err| fallback: {
@@ -180,10 +197,12 @@ pub fn init(gpa: std.mem.Allocator, io: Io, options: Options) Error!Viewer {
         .window = window,
         .device = device,
         .surface = surface,
+        .vsync = options.config.vsync,
         .renderer = renderer,
         .panel = panel,
         .config = config,
         .networks = networks,
+        .clouds = clouds,
         .presets = presets,
         .controls = .{},
         .sun_shown = config.sunDirection(),
@@ -203,6 +222,7 @@ pub fn init(gpa: std.mem.Allocator, io: Io, options: Options) Error!Viewer {
 pub fn deinit(viewer: *Viewer) void {
     viewer.device.waitIdle() catch {};
     viewer.presets.deinit(viewer.gpa);
+    viewer.clouds.deinit(viewer.gpa);
     viewer.networks.deinit(viewer.gpa);
     viewer.panel.deinit(viewer.gpa);
     viewer.config.deinit(viewer.gpa);
@@ -225,7 +245,10 @@ pub fn run(viewer: *Viewer) Post.RecordError!void {
             c.SDL_Delay(16);
             continue;
         }
-        if (input.resized) try viewer.surface.configure(size, vsync);
+        if (input.resized or viewer.config.vsync != viewer.vsync) {
+            try viewer.surface.configure(size, viewer.config.vsync);
+            viewer.vsync = viewer.config.vsync;
+        }
         try viewer.renderer.resize(size);
 
         const now = Io.Timestamp.now(viewer.io, .awake);
@@ -244,7 +267,7 @@ pub fn run(viewer: *Viewer) Post.RecordError!void {
         // A hidden panel still needs ImGui frames, or its input capture flags go stale.
         c.en_ui_new_frame();
         const actions: Panel.Actions = if (viewer.config.gui_visible)
-            viewer.panel.draw(viewer.gpa, &viewer.config, &viewer.networks, &viewer.presets, &viewer.renderer)
+            viewer.panel.draw(viewer.gpa, &viewer.config, &viewer.networks, &viewer.clouds, &viewer.presets, &viewer.renderer)
         else
             .{};
         Panel.drawBakeProgress(&viewer.renderer);
@@ -252,7 +275,8 @@ pub fn run(viewer: *Viewer) Post.RecordError!void {
         if (intent.load_config) viewer.loadConfig(DataRoot.config_path);
         if (actions.save_preset) viewer.savePreset();
         if (actions.load_preset) viewer.loadPreset();
-        if (actions.rescan_networks) viewer.rescanNetworks();
+        if (actions.rescan_networks) viewer.rescan(&viewer.networks, Network.directory_path, Network.file_extension, viewer.renderer.shared.network);
+        if (actions.rescan_clouds) viewer.rescan(&viewer.clouds, CloudVolume.directory_path, CloudVolume.file_extension, viewer.renderer.shared.cloud_volume);
         viewer.applySelections();
         if (actions.restart) viewer.renderer.restart();
         if (actions.reset_probes) switch (viewer.renderer.mode) {
@@ -264,7 +288,7 @@ pub fn run(viewer: *Viewer) Post.RecordError!void {
         if (viewer.config.auto_exposure) viewer.config.exposure = Post.autoExposure(viewer.config.camera.cosZenith(viewer.sun_shown));
         if (intent.screenshot or actions.screenshot) viewer.saveScreenshot();
         viewer.surface.present(viewer.device, viewer.renderer.image) catch |err| switch (err) {
-            error.SurfaceOutOfDate => try viewer.surface.configure(size, vsync),
+            error.SurfaceOutOfDate => try viewer.surface.configure(size, viewer.vsync),
             else => return err,
         };
     }
@@ -288,9 +312,9 @@ fn easeMotion(viewer: *Viewer, motion: *Camera.Motion, dt_s: f64) void {
     }
 }
 
-/// Sideways turns the azimuth, up raises the sun, each through its slider's range per
-/// `sun_drag_range_px`, as a slider about that wide moves it; one or the other, by the
-/// axis the drag set out along.
+/// Sideways turns the azimuth through its slider's range per `sun_drag_azimuth_px`, up
+/// raises the sun through its per `sun_drag_range_px`, as a slider about that wide
+/// moves it; one or the other, by the axis the drag set out along.
 fn dragSun(viewer: *Viewer, drag_px: [2]f64, held: bool) void {
     if (!held) {
         viewer.sun_drag_axis = null;
@@ -309,7 +333,7 @@ fn dragSun(viewer: *Viewer, drag_px: [2]f64, held: bool) void {
     switch (viewer.sun_drag_axis.?) {
         0 => {
             const azimuth = Panel.ranges.bench_sun_azimuth_degrees;
-            const turned = sun.azimuth_degrees - travel[0] / sun_drag_range_px * (azimuth.max - azimuth.min);
+            const turned = sun.azimuth_degrees - travel[0] / sun_drag_azimuth_px * (azimuth.max - azimuth.min);
             sun.azimuth_degrees = turned - 360 * @round(turned / 360);
         },
         1 => {
@@ -353,17 +377,13 @@ fn approach(value: f64, target: f64, velocity: *f64, max_speed: f64, acceleratio
     return value + step;
 }
 
-/// A mode or network that fails to load or build (e.g. a broken file or a shader
+/// A mode or input that fails to load or build (e.g. a broken file or a shader
 /// compile error, already logged) leaves the previous one running and selected.
 fn applySelections(viewer: *Viewer) void {
-    const networks = &viewer.networks;
-    if (networks.selected != networks.active) {
-        if (viewer.renderer.setNetwork(networks.files[networks.selected])) {
-            networks.active = networks.selected;
-        } else |err| {
-            log.err("switching to the network {s} failed: {t}", .{ networks.label(networks.selected), err });
-            networks.selected = networks.active;
-        }
+    _ = viewer.applyInput(&viewer.networks, "network", Renderer.setNetwork);
+    if (viewer.applyInput(&viewer.clouds, "cloud volume", Renderer.setCloudVolume)) {
+        const stem = viewer.clouds.label(viewer.clouds.active);
+        viewer.config.setCloudVolume(viewer.gpa, stem) catch log.err("out of memory naming the cloud volume {s}", .{stem});
     }
     viewer.renderer.setMode(viewer.config.mode) catch |err| {
         log.err("switching to {t} failed: {t}", .{ viewer.config.mode, err });
@@ -387,14 +407,27 @@ fn applySelections(viewer: *Viewer) void {
     };
 }
 
-/// Lists <data>/cache/neural afresh, after the renderer's network.
-fn rescanNetworks(viewer: *Viewer) void {
-    const networks = NetworkList.init(viewer.gpa, viewer.io, viewer.data_root, viewer.renderer.shared.network) catch {
-        log.err("out of memory listing the networks", .{});
+/// Hands `list`'s selection to the renderer through `set`; returns whether it changed.
+fn applyInput(viewer: *Viewer, list: *InputList, what: []const u8, comptime set: anytype) bool {
+    if (list.selected == list.active) return false;
+    if (set(&viewer.renderer, list.files[list.selected])) {
+        list.active = list.selected;
+        return true;
+    } else |err| {
+        log.err("switching to the {s} {s} failed: {t}", .{ what, list.label(list.selected), err });
+        list.selected = list.active;
+        return false;
+    }
+}
+
+/// Lists `directory_path` afresh, after the renderer's `active` file.
+fn rescan(viewer: *Viewer, list: *InputList, directory_path: []const u8, file_extension: []const u8, active: ?Renderer.InputFile) void {
+    const fresh = InputList.init(viewer.gpa, viewer.io, viewer.data_root, directory_path, file_extension, active) catch {
+        log.err("out of memory listing {s}", .{directory_path});
         return;
     };
-    viewer.networks.deinit(viewer.gpa);
-    viewer.networks = networks;
+    list.deinit(viewer.gpa);
+    list.* = fresh;
 }
 
 /// A failed save, load, or screenshot leaves the session running; the cause is logged.
@@ -442,6 +475,12 @@ fn loadConfig(viewer: *Viewer, path: []const u8) void {
     viewer.config.deinit(viewer.gpa);
     viewer.config = config;
     log.info("loaded {s}", .{path});
+    // An unlisted cloud leaves the active one, which the config then names.
+    if (!viewer.clouds.select(config.cloud_volume)) {
+        log.err("no cloud volume {s} in {s}", .{ config.cloud_volume, CloudVolume.directory_path });
+        const stem = viewer.clouds.label(viewer.clouds.active);
+        viewer.config.setCloudVolume(viewer.gpa, stem) catch log.err("out of memory naming the cloud volume {s}", .{stem});
+    }
 }
 
 /// Writes the display image, as presented, to `screenshots/<UTC time>.png`. Reading it

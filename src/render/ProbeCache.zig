@@ -37,7 +37,7 @@ pub const Key = extern struct {
 /// leave one per value it passed.
 pub const walks_min = 64;
 
-const format_version = 3;
+const format_version = 5;
 /// SUN_BIN_COUNT in shaders/modes/cloud_bench_probes.slang, of four floats each.
 const sun_bin_count = 64;
 const SunBin = [4 * @sizeOf(f32)]u8;

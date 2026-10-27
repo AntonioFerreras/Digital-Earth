@@ -11,6 +11,7 @@ import atmosphere.phase;
 import clouds.bench_volume;
 import common.constants;
 import common.rng;
+import common.sampling;
 import common.spherical_harmonics;
 import shared.bindings;
 import shared.uniforms;
@@ -20,14 +21,18 @@ RWTexture2D<float4> bench_reference;
 // rgb: radiance; a: the cloud's opacity along the view.
 [format("rgba32f")]
 RWTexture2D<float4> bench_approximation;
-// modes/cloud_bench_sky.slang's.
+// modes/cloud_bench_sky.slang's: the sky by direction, for the light, and through the
+// camera, for the background.
 Texture2D<float4> bench_sky;
+Texture2D<float4> bench_sky_view;
 Texture2D<float4> bench_sun;
 // src/render/ProbeLayout.zig's leaf per finest cell, x fastest: its slot in the low
 // LEAF_SLOT_BITS, its level above them, or NO_LEAF.
 StructuredBuffer<uint> bench_probe_cells;
 // modes/cloud_bench_probes.slang's atlas of the probes' light at each leaf's corners.
 Texture3D<float4> bench_probe_light;
+// src/render/BlueNoise.zig's tile.
+Texture2D<float4> blue_noise;
 
 static const uint LEAF_SLOT_BITS = 27;
 static const uint NO_LEAF = 0xffffffff;
@@ -36,10 +41,55 @@ static const uint NO_LEAF = 0xffffffff;
 // varies within one.
 static const float MARCH_STEP_VOXELS = 0.5;
 static const float MARCH_TRANSMITTANCE_MIN = 1e-4;
+// Half-width of the probe reads' tent offset, in finest spacings; a full spacing is a
+// tricubic B-spline of the lattice, narrower keeps more of its detail.
+static const float PROBE_JITTER_SPACINGS = 0.5;
+
+// The approximation's jitters, in [0, 1): with CLOUD_BENCH_BLUE_NOISE the blue noise
+// tile at the pixel, shifted per accumulated sample by the R4 sequence (Roberts 2018)
+// and per draw along the ray by another, so that every draw of a sample stays blue
+// across the screen while a pixel's samples and a ray's draws stratify; the shifts
+// wrap in 32-bit fixed point, which no sample count degrades. Without it, the hash.
+struct Jitter
+{
+    uint4 fixed;
+    Rng rng;
+    bool blue;
+
+    __init(uint2 pixel, uint sample, Rng rng)
+    {
+        this.rng = rng;
+        blue = (bench.options.z & CLOUD_BENCH_BLUE_NOISE) != 0;
+        uint2 size;
+        blue_noise.GetDimensions(size.x, size.y);
+        float4 texel = blue_noise.Load(int3(pixel % size, 0));
+        fixed = uint4(texel * 4294967295.0) + sample * JITTER_SAMPLE_SHIFT;
+    }
+
+    [mutating]
+    float4 next4()
+    {
+        if (!blue)
+            return rng.next4();
+        float4 value = float4(fixed >> 8u) * (1.0 / 16777216.0);
+        fixed += JITTER_DRAW_SHIFT;
+        return value;
+    }
+};
+// 2^32 times the R4 sequence's steps, and the golden ratio's and R2's for the draws.
+static const uint4 JITTER_SAMPLE_SHIFT = uint4(3518318545u, 2882110344u, 2360940464u, 1933992832u);
+static const uint4 JITTER_DRAW_SHIFT = uint4(2654435769u, 3242174889u, 2447445413u, 3037000500u);
+
+// A tent over (-1, 1) from a uniform draw, by its inverse distribution, which keeps a
+// blue draw blue where the sum of two would not.
+float3 tent(float3 u)
+{
+    return select(u < 0.5, sqrt(2.0 * u) - 1.0, 1.0 - sqrt(2.0 - 2.0 * u));
+}
 // Optical depth towards the sun past which its beam, exp(-depth), adds nothing visible.
 static const float BEAM_DEPTH_MAX = 12.0;
 
-// The light: the sun's irradiance, and the sky's radiance unless the sky is off.
+// The light: the sun's irradiance and the sky's radiance, each unless it is off.
 struct Light
 {
     float3 sun;
@@ -47,13 +97,33 @@ struct Light
 
     __init()
     {
-        sun = bench_sun.Load(int3(0, 0, 0)).rgb;
+        sun = (bench.options.z & CLOUD_BENCH_SUN) != 0 ? bench_sun.Load(int3(0, 0, 0)).rgb : float3(0.0);
         sky = (bench.options.z & CLOUD_BENCH_SKY) != 0;
     }
 
     float3 sky_radiance(float3 dir)
     {
         return sky ? bench_sky.SampleLevel(linear_repeat_u, sky_uv(dir), 0.0).rgb : float3(0.0);
+    }
+
+    // The sky behind `pixel`, from the view's texels, a stride of pixels apart, by the
+    // bicubic B-spline's four filtered fetches: bilinear creases over such a stride.
+    float3 sky_background(uint2 pixel)
+    {
+        if (!sky)
+            return float3(0.0);
+        uint2 texels;
+        bench_sky_view.GetDimensions(texels.x, texels.y);
+        float2 size = float2(texels);
+        CubicTaps<2> taps = CubicTaps<2>((float2(pixel) + 0.5) / float2(frame.frame.yz) * size - 0.5, size);
+        float3 radiance = 0.0;
+        for (uint lobe = 0; lobe < 4; lobe++)
+        {
+            bool2 up = bool2((lobe & 1) != 0, (lobe & 2) != 0);
+            float2 weight = select(up, taps.g1, taps.g0);
+            radiance += weight.x * weight.y * bench_sky_view.SampleLevel(linear_clamp, select(up, taps.upper, taps.lower), 0.0).rgb;
+        }
+        return radiance;
     }
 };
 
@@ -87,9 +157,11 @@ static const float KAPPA_ISOTROPIC = 1e-4;
 // which alone sees their flux: by `closure_radiance`, or with CLOUD_BENCH_P1_CLOSURE by
 // P1, (phi + 3 g F . -dir) / 4 pi, which falls below zero where the light is strongly
 // directional.
-float3 probe_radiance(float3 pos, float3 dir, float g)
+float3 probe_radiance(float3 pos, float3 dir, float g, float3 u)
 {
     uint3 cells = bench.probe_cells.xyz;
+    if ((bench.options.z & CLOUD_BENCH_PROBE_JITTER) != 0)
+        pos += tent(u) * PROBE_JITTER_SPACINGS * bench.probe_spacing.xyz;
     // Clamped to the outermost probes.
     float3 lattice = clamp((pos - bench.probe_origin.xyz) / bench.probe_spacing.xyz, 0.0, float3(cells));
     uint3 cell = min(uint3(lattice), cells - 1);
@@ -116,19 +188,21 @@ float3 probe_radiance(float3 pos, float3 dir, float g)
     return radiance;
 }
 
-// The camera ray of the pixel, in the cloud frame.
+// The camera ray of the pixel, in the cloud frame: through a point drawn within the
+// pixel, which antialiases the reference, or through the pixel's centre, which spares
+// the approximation the wisps' sub-pixel noise.
 struct CameraRay
 {
     PixelSample s;
     float3 pos;
     float3 dir;
 
-    __init(uint2 thread, uint sample_index)
+    __init(uint2 thread, uint sample_index, bool pixel_jitter)
     {
         s = PixelSample(thread);
         // Each accumulation keys its own samples, as either restarts alone.
         s.rng = Rng(thread, sample_index + frame.frame.w);
-        dir = s.camera_ray_direction();
+        dir = camera_direction(float2(thread) + (pixel_jitter ? s.rng.next4().xy : float2(0.5)));
         pos = BenchVolume().to_cloud(frame.camera_position.xyz);
     }
 };
@@ -137,7 +211,7 @@ struct CameraRay
 [numthreads(MODE_GROUP_SIZE, MODE_GROUP_SIZE, 1)]
 void reference_main(uint3 thread: SV_DispatchThreadID)
 {
-    CameraRay ray = CameraRay(thread.xy, bench.samples.x);
+    CameraRay ray = CameraRay(thread.xy, bench.samples.x, true);
     if (!ray.s.valid)
         return;
     BenchVolume volume = BenchVolume();
@@ -151,7 +225,7 @@ void reference_main(uint3 thread: SV_DispatchThreadID)
         float t = sample_collision(volume, pos, dir, FLOAT_MAX, ray.s.rng);
         if (t < 0.0)
         {
-            radiance += light.sky_radiance(dir);
+            radiance += bounce == 0 ? light.sky_background(ray.s.pixel) : light.sky_radiance(dir);
             break;
         }
         pos += t * dir;
@@ -179,7 +253,7 @@ float3 gathered_radiance(BenchVolume volume, Light light, float3 pos, float3 dir
         return light.sky_radiance(towards);
     float3 collision = pos + t * towards;
     float3 sun = frame.sun_direction.xyz;
-    float3 radiance = probe_radiance(collision, towards, cloud_phase_mean_cosine(true));
+    float3 radiance = probe_radiance(collision, towards, cloud_phase_mean_cosine(true), rng.next4().xyz);
     if (any(light.sun > 0.0))
     {
         float sun_depth = optical_depth(volume, collision, sun, volume.voxel, BEAM_DEPTH_MAX, uint(bench.march.z));
@@ -192,7 +266,7 @@ float3 gathered_radiance(BenchVolume volume, Light light, float3 pos, float3 dir
 [numthreads(MODE_GROUP_SIZE, MODE_GROUP_SIZE, 1)]
 void approximation_main(uint3 thread: SV_DispatchThreadID)
 {
-    CameraRay ray = CameraRay(thread.xy, bench.samples.y);
+    CameraRay ray = CameraRay(thread.xy, bench.samples.y, false);
     if (!ray.s.valid)
         return;
     BenchVolume volume = BenchVolume();
@@ -201,7 +275,8 @@ void approximation_main(uint3 thread: SV_DispatchThreadID)
     bool sun_shines = any(light.sun > 0.0);
     float3 pos = ray.pos;
     float3 dir = ray.dir;
-    float jitter = ray.s.rng.next4().x;
+    Jitter jitter = Jitter(ray.s.pixel, bench.samples.y + frame.frame.w, ray.s.rng);
+    float phase = jitter.next4().x;
     float cos_sun = dot(dir, sun);
     float single_phase = cloud_phase(cos_sun, false);
     float g = cloud_phase_mean_cosine(false);
@@ -232,11 +307,11 @@ void approximation_main(uint3 thread: SV_DispatchThreadID)
                 continue;
             uint count;
             float dt;
-            walk.steps(step, -log(transmittance), bench.march.x, count, dt);
+            walk.steps(step, bench.march.w * volume.voxel, -log(transmittance), bench.march.x, count, dt);
             for (uint i = 0; i < count; i++)
             {
-                float3 position = pos + (walk.start + (float(i) + jitter) * dt) * dir;
-                float extinction = volume.extinction_at(position);
+                float3 position = pos + (walk.start + (float(i) + phase) * dt) * dir;
+                float extinction = volume.extinction_cubic(position);
                 if (!(extinction > 0.0))
                     continue;
                 float sun_depth = sun_shines ? optical_depth(volume, position, sun, volume.voxel, BEAM_DEPTH_MAX, uint(bench.march.z)) : FLOAT_MAX;
@@ -252,7 +327,7 @@ void approximation_main(uint3 thread: SV_DispatchThreadID)
                             gather_position = position;
                     }
                     else
-                        scattered = (1.0 - peak) * probe_radiance(position, dir, broad_g);
+                        scattered = (1.0 - peak) * probe_radiance(position, dir, broad_g, jitter.next4().xyz);
                 }
                 float3 in_scattering = extinction * (light.sun * sun_light + scattered);
                 float step_depth = (1.0 - peak) * extinction * dt;
@@ -263,7 +338,7 @@ void approximation_main(uint3 thread: SV_DispatchThreadID)
     }
     if (gather_weight > 0.0)
         radiance += gather_weight * (1.0 - peak) * gathered_radiance(volume, light, gather_position, dir, forward_peak, ray.s.rng);
-    radiance += transmittance * light.sky_radiance(dir);
+    radiance += transmittance * light.sky_background(ray.s.pixel);
     float4 sum = bench.samples.y == 0 ? float4(0.0) : bench_approximation[ray.s.pixel];
     bench_approximation[ray.s.pixel] = sum + float4(radiance, 1.0 - transmittance);
 }

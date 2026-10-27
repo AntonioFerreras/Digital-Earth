@@ -62,16 +62,16 @@ pub fn autoExposure(cos_zenith: f64) f64 {
 
 /// (cos zenith, stops), cos zenith rising, from python/validation/auto_exposure.py: the
 /// sky shows as bright as under a sun 0.3 high at 3 stops all the way down to sunset,
-/// then dims smoothly to 10 stops at the lowest sun the viewer and validation allow.
+/// then dims smoothly to 11 stops at the lowest sun the viewer and validation allow.
 pub const auto_exposure_table = [_][2]f64{
-    .{ -0.07, 10.0000 },
-    .{ -0.06, 9.0336 },
-    .{ -0.05, 8.2263 },
-    .{ -0.04, 7.4908 },
-    .{ -0.03, 6.8790 },
-    .{ -0.02, 6.3434 },
-    .{ -0.01, 5.8588 },
-    .{ 0, 5.4114 },
+    .{ -0.07, 11.0000 },
+    .{ -0.06, 9.9811 },
+    .{ -0.05, 9.0376 },
+    .{ -0.04, 8.1147 },
+    .{ -0.03, 7.2960 },
+    .{ -0.02, 6.5664 },
+    .{ -0.01, 5.9329 },
+    .{ 0, 5.4137 },
     .{ 0.02, 4.6601 },
     .{ 0.04, 4.1727 },
     .{ 0.06, 3.8436 },

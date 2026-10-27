@@ -28,7 +28,7 @@ from clouds.score import read_pfm  # noqa: E402
 # (cos zenith, stops): the anchors the curve was set by.
 PLATEAU = (0.3, 3.0)
 SUNSET = 0.002
-TWILIGHT = (-0.07, 10.0)
+TWILIGHT = (-0.07, 11.0)
 COS_ZENITHS = sorted(set(np.round(np.concatenate([
     np.linspace(TWILIGHT[0], 0.0, 8), np.linspace(0.0, 0.3, 16), np.linspace(0.3, 1.0, 15)]), 4)))
 AZIMUTHS = (0.0, 90.0, 180.0, 270.0)

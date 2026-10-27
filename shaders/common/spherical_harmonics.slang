@@ -1,44 +1,48 @@
-// Real spherical harmonics through order 2, and through order 3 (Sloan 2008, "Stupid
-// Spherical Harmonics Tricks", appendix A2), orthonormal over the sphere.
+// Real spherical harmonics, orthonormal over the sphere, at index l (l + 1) + m, by
+// recurrence through order 5.
 
 module spherical_harmonics;
 
-public static const uint SH_COUNT = 9;
-// Through order 3.
+public static const uint SH2_COUNT = 9;
 public static const uint SH3_COUNT = 16;
+public static const uint SH5_COUNT = 36;
 
-public float[SH_COUNT] sh_basis(float3 dir)
-{
-    float x = dir.x;
-    float y = dir.y;
-    float z = dir.z;
-    return {
-        0.2820948,
-        0.4886025 * y,
-        0.4886025 * z,
-        0.4886025 * x,
-        1.0925484 * x * y,
-        1.0925484 * y * z,
-        0.3153916 * (3.0 * z * z - 1.0),
-        1.0925484 * x * z,
-        0.5462742 * (x * x - y * y),
-    };
-}
+// sqrt((2 l + 1) / 4 pi (l - m)! / (l + m)!), and sqrt 2 more for m > 0, at index
+// l (l + 1) / 2 + m.
+static const float SH_SCALE[21] = {
+    0.2820948, 0.4886025, 0.4886025, 0.6307831, 0.3641828, 0.1820914, 0.7463527,
+    0.3046972, 0.0963537, 0.0393362, 0.8462844, 0.2676186, 0.0630783, 0.0168584,
+    0.0059603, 0.9356026, 0.2415715, 0.0456527, 0.0093188, 0.0021965, 0.0006946,
+};
 
-public float[SH3_COUNT] sh3_basis(float3 dir)
+// The associated Legendre polynomials' recurrence in l with sin^m theta divided out,
+// which the real and imaginary parts of (x + i y)^m supply with cos and sin of m phi,
+// so that no angle is ever taken.
+public float[(ORDER + 1) * (ORDER + 1)] sh_basis<let ORDER : uint>(float3 dir)
 {
-    float x = dir.x;
-    float y = dir.y;
+    float basis[(ORDER + 1) * (ORDER + 1)];
     float z = dir.z;
-    float order2[SH_COUNT] = sh_basis(dir);
-    return {
-        order2[0], order2[1], order2[2], order2[3], order2[4], order2[5], order2[6], order2[7], order2[8],
-        0.5900436 * y * (3.0 * x * x - y * y),
-        2.8906114 * x * y * z,
-        0.4570458 * y * (5.0 * z * z - 1.0),
-        0.3731763 * z * (5.0 * z * z - 3.0),
-        0.4570458 * x * (5.0 * z * z - 1.0),
-        1.4453057 * z * (x * x - y * y),
-        0.5900436 * x * (x * x - 3.0 * y * y),
-    };
+    float re = 1.0;
+    float im = 0.0;
+    float diagonal = 1.0;
+    for (uint m = 0; m <= ORDER; m++)
+    {
+        float previous = 0.0;
+        float current = 0.0;
+        for (uint l = m; l <= ORDER; l++)
+        {
+            float p = l == m ? diagonal : (float(2 * l - 1) * z * current - float(l + m - 1) * previous) / float(l - m);
+            previous = current;
+            current = p;
+            float value = SH_SCALE[l * (l + 1) / 2 + m] * p;
+            basis[l * (l + 1) + m] = value * re;
+            if (m > 0)
+                basis[l * (l + 1) - m] = value * im;
+        }
+        float rotated = re * dir.x - im * dir.y;
+        im = re * dir.y + im * dir.x;
+        re = rotated;
+        diagonal *= float(2 * m + 1);
+    }
+    return basis;
 }

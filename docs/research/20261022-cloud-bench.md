@@ -70,7 +70,7 @@ reference, overall and per third of the reference's cloud pixels by luminance.
 The bench now lights the cloud as the earth does. The sky is the ray marcher's
 atmosphere, baked at the cloud's centre as Hillaire's sky-view table, over a black
 planet with no ground. The sun is the solar spectrum through the atmosphere. The
-cloud's base sits about 1 km up, and it scatters by the droplet phase.
+cloud's base sat about 1 km up then, and it scatters by the droplet phase.
 `presets/wdas-cloud.zon` keeps the Mitsuba camera and sun. Scored at 333 x 180,
 512 spp:
 
@@ -84,8 +84,9 @@ once is a faint backscatter in this view.
 
 ## Approximation, real cumulus
 
-Since then the cloud is 10 m per volume unit: 2.8 km tall, 4 x 5 km across, with its
-base 1 km up. Its extinction is set per metre, 0.1 /m at unit density by default,
+Since then the cloud is 10 m per volume unit: 2.8 km tall, 4 x 5 km across. Every
+grid's base lies where the WDAS half cloud's centre would be 1.8 km up (since
+2026-10-26; 1 km base before), with the presets' cameras 1.6 km up. Its extinction is set per metre, 0.1 /m at unit density by default,
 about a real cumulus's, and it uses the half-resolution grid. The approximation's
 steps span at most a quarter of a cell's majorant optical depth, scaled by one
 plus the optical depth already marched. Its light falls as exp(-depth), so deep
@@ -1053,6 +1054,635 @@ through empty space alone could gain, at most about a tenth.
 **Together.** 2048 rounds of view 00 now take 11.4 s against 15.25 s before the
 persistent threads, with a sun sigma of 0.039 against 0.075 and a sky sigma of 0.0059
 against 0.0082: the sun 5.0 times as efficient, the sky 2.6 times.
+
+**After the bin-major bins.** View 00, 512 rounds, 32 per dispatch: 2.90 s. Without
+the corners' deposits 1.38 s, without the single scattering sky's 2.64 s, with no
+deposits at all 1.16 s: the tracing is 40 % of the bake, the corners' deposits still
+half.
+
+- **Their atomics** take 0.78 s: with the flushes' additions skipped, 2.12 s. Adding
+  only phi, one float of four, 2.41 s.
+- **Not registers.** The trace kernel holds 120 to 128 registers (its CUDA build, a
+  proxy for the driver's), a third of the SM's threads. With the corners' sums in
+  groupshared memory it holds 88, and the bake takes the same 2.90 s.
+- **Not the flux's floats.** Adding phi to all eight corners and the flux vector to one
+  drawn by its weight, unbiased, takes 3.17 s: a corner's cache line, once touched,
+  takes its four floats at little more cost, and the draw and its branch cost more.
+
+What the corners cost is a scattered line in L2 per corner each time a photon changes
+leaf, which in the finest leaves is at nearly every point.
+
+**Photons per sun bin by the bins' noise.** At 2048 rounds of view 00 the bins'
+median relative sigma lies between 0.039 and 0.061. Photons per bin in proportion to
+it would lower the sun's variance by 1 % (8 % by the mean); the sky's best allocation
+depends on the sky, which the bake does not know, and costs the sun 18 %.
+
+## Denoising the probe field by its own noise
+
+An offline prototype averaged each probe with the probes it shares a leaf with,
+weighted by how far apart their 64 bins lie in units of their noise: a Poisson
+variance per bin, its scale per probe from the two halves' disagreement. The sky's
+harmonics and the flux took the same weights. View 00, 2048 rounds, against the
+20000-round field; h is the weight's width in units of the expected distance:
+
+| h, passes     | sun error | p90    | sky error | flux error | sun ratio by decile |
+| ------------- | --------- | ------ | --------- | ---------- | ------------------- |
+| none          | 0.0280    | 0.1012 | 0.0042    | 0.0047     | 0.997 to 1.004      |
+| 1, 1          | 0.0244    | 0.0839 | 0.0036    | 0.0044     | 0.997 to 1.001      |
+| 2, 1          | 0.0244    | 0.0796 | 0.0037    | 0.0059     | 0.997 to 1.005      |
+| 4, 1          | 0.0272    | 0.0884 | 0.0043    | 0.0087     | 0.992 to 1.017      |
+| plain mean, 1 | 0.0336    | 0.1180 | 0.0048    | 0.0161     | 0.960 to 1.072      |
+| 2, 3          | 0.0318    | 0.0999 | 0.0053    | 0.0092     | 0.993 to 1.008      |
+
+- **Neighbours differ by more than the noise.** A plain mean over the leaves' corners
+  is worse than none: at 2048 rounds the field already varies between neighbouring
+  probes more than its noise, so there is little left to average.
+- **The renders show bias first.** wdas-cloud-0 against the converged 8192-walk
+  render, |log2| error p90 (after a 15-pixel blur, which bias survives): none 0.0383
+  (0.0219), h 1 0.0373 (0.0217), h 2 0.0394 (0.0270). The setting best on the field
+  shifts areas' brightness; the mild one gains 3 %.
+- No code was kept.
+
+## Where the picture's error comes from
+
+The bake's noise against the approximation's own error, on wdas-cloud-0 (extinction
+0.2) at 512 x 512: the approximation at 64 spp from fields of 256 to 8192 rounds,
+against the path-traced reference at 2048 spp and against the 8192-round field's
+render. |log2| error over the pixels the reference lights, raw and after a 15-pixel
+blur, which bake noise and render noise survive less than bias:
+
+| rounds | vs reference, raw p90 | blurred p90 | vs 8192 rounds, raw p90 | blurred p90 |
+| ------ | --------------------- | ----------- | ----------------------- | ----------- |
+| 256    | 0.383                 | 0.291       | 0.127                   | 0.094       |
+| 512    | 0.368                 | 0.279       | 0.080                   | 0.056       |
+| 1024   | 0.360                 | 0.270       | 0.051                   | 0.030       |
+| 2048   | 0.359                 | 0.271       | 0.038                   | 0.022       |
+| 8192   | 0.357                 | 0.269       |                         |             |
+
+Over the cloud's pixels alone (where the field's noise moves the picture, 127k of
+262k), the 8192-round render is off the reference by a median of 0.159 (0.100
+blurred) and a p90 of 0.521 (0.413): the sunlit face too dark (brightest quintile
+-0.137 blurred), the shadowed body too bright (+0.07), the rim both ways; the mean
+over the cloud 2.8 % dark. **The bake's noise at 1024 rounds is a tenth of the
+approximation's error, at 2048 a twentieth.** Rounds past 1024 change nothing the
+reference would show; the approximation's error is in its model, not its photons.
+
+**The sun's fit loses the bins' accuracy.** The order-3 log-SH fit of the converged
+field's 64 bins, against those bins at each probe's brightest bin: |error| median
+0.109, p90 0.273, signed p10 -0.233 to p90 +0.168. Its noise at 2048 rounds is as
+large as the single brightest bin's (0.025 against 0.026), where a fit over 64 bins
+could have half: the dim bins' large log noise spreads through the kernel. A fit
+weighted by each bin's photon count (relative weight of the bin's phi, floor 0.01),
+exact real harmonics, same converged bins:
+
+| fit               | brightest bin, median | p90   | signed p10 / p90 | bins >= 0.1 of brightest | noise at 2048 rounds |
+| ----------------- | --------------------- | ----- | ---------------- | ------------------------ | -------------------- |
+| order 3 plain     | 0.109                 | 0.273 | -0.233 / +0.168  | 0.105                    | 0.025                |
+| order 3 weighted  | 0.044                 | 0.115 | -0.107 / +0.058  | 0.061                    | 0.015                |
+| order 4 plain     | 0.070                 | 0.205 | -0.174 / +0.113  | 0.074                    |                      |
+| order 4 weighted  | 0.028                 | 0.068 | -0.059 / +0.038  | 0.039                    |                      |
+| order 5 plain     | 0.081                 | 0.256 | -0.103 / +0.249  | 0.068                    |                      |
+| order 5 weighted  | 0.018                 | 0.055 | -0.035 / +0.045  | 0.027                    |                      |
+
+The plain fits are the shader's quadrature of log phi over the 64 bin centres, which
+aliases past order 4; the weighted ones solve the normal equations per probe. The
+weighted order-3 fit keeps the 16 floats the renderer reads, matches the bright
+directions 2.5 times as well, and has 2.7 times less noise variance from the same
+bake, at the cost of the dim directions, which it fits worse. 
+**Built as a `probe_sun_weighted` option, then removed: it renders worse.** wdas-cloud-0
+from the same 2048-round field, blurred |log2| error against the reference over the
+cloud's pixels: plain fit median 0.101, p90 0.416; weighted 0.144, 0.469. By the
+reference's brightness quintile, dark to bright, plain -0.037 +0.009 +0.070 +0.078
+-0.131, weighted +0.095 +0.094 +0.143 +0.059 -0.219: the weighted fit brightens the
+shadowed body and darkens the sunlit face further. Offline on that field at the bench's
+sun direction, the plain fit sits at 1.00 of the sun's bin for the brightest fifth of
+the probes and at 0.73 for the dimmest; the weighted fit at 0.97 and 1.15. So the fit
+is not what darkens the sunlit face, and in the shadow the plain fit's under-estimate
+had been cancelling an over-estimate from elsewhere in the approximation: the closure,
+the forward peak, the probes' interpolation, or the sky's harmonics. A fit truer to the
+bins exposes that error rather than fixing it. Attributing it needs renders of the
+approximation's variants (closure, first scatter, sun only) against references of
+their own. The option was taken out again (a weighted least squares solve per probe
+in `fit_probes`, a flag through the config and panel); this record stays.
+
+## Reciprocal photon paths
+
+A photon's path, reversed, is a path of light entering where the photon left, with the
+same probability density but for the ratio of the box's projected areas at the two
+directions, which the weight absorbs: the reversed path's sample weight comes out
+equal to the forward one's. So each path can add its deposits twice, half to the bin
+of its entry direction as it goes and half to the bin of its exit direction once it has
+left, with its flux turned around; the segment before its first collision is scattered
+light in reverse, the segment after its last the sky's. The exit direction is unknown
+until the end, so each thread kept records of its leaves' corner sums (slot, collisions
+before the leaf's first point, eight float4s) in a buffer of its own, and replayed
+them at the path's end; the leaf of the last collision holds light from both sides of
+it, whose later side is walked again from the state saved at the collision and moved to
+the sky. A path with more leaves than the records hold, or that ran out of bounces,
+adds its forward deposits again instead, which is unbiased as reversal keeps a path's
+length. It was unbiased: sun ratio by decile 0.997 to 1.004, sky total 1.0000.
+
+View 00, 2048 rounds, against the kept bake's 11.37 s, sun sigma 0.039, sky 0.0059:
+
+| records per thread | time    | sun sigma | sky sigma | efficiency sun | sky  |
+| ------------------ | ------- | --------- | --------- | -------------- | ---- |
+| 32                 | 18.70 s | 0.037     | 0.0055    | 0.68           | 0.70 |
+| 128                | 21.92 s | 0.031     | 0.0053    | 0.82           | 0.64 |
+
+- **The light is in long paths.** 32 records reverse a tenth of it, 128 three quarters:
+  the photons that deposit most diffuse through the fine shell changing leaf at nearly
+  every point. Full coverage would need thousands of records per thread.
+- **The reverse costs what the deposits cost.** Its replay repeats every atomic of the
+  forward pass, and the deposits are over half the bake; the tracing it would share is
+  the smaller part. Even with every path reversed for free, halving the variance for
+  1.55 times the time gains 1.3.
+- The first version replayed overflowing records inside the hot loop and indexed the
+  corner sums by the drawn corner, which put them on the stack: 3.2 times slower. Keeping
+  the sums in registers and all replays at the path's end left 1.63 times.
+- Reverted; the patch is kept outside the repository.
+
+**The sky alone** could keep the cheap part: the last segment reversed feeds the sky's
+transfer from the exit direction, and only the first and last segments' leaves need
+records. That halves the sky's single scattering noise, a third of its total, for a few
+records per path; a direct estimate of that transfer removes it instead.
+
+## The sky's single scattering transfer, estimated directly
+
+The photons' light before its first collision fed the sky's transfer through one drawn
+corner per point, 36 atomic adds each, and was a third of the sky's noise. `bake_sky_transfer`
+now estimates that transfer per probe: each round, the transmittance from the probe along
+one direction by ratio tracking, 4 pi times its harmonics into the sums, with no
+atomics as a probe owns its sums. The directions are a Fibonacci set of 1024 in a
+scrambled order, rotated at random per probe and set, so that consecutive rounds
+stratify the sphere while any count of them is unbiased. The photons add nothing
+before their first collision.
+
+View 00, 2048 rounds: 10.56 s against 11.37 s, sun sigma 0.039 as before, sky sigma
+0.0048 against 0.0059, so the sky 1.6 times as efficient and the sun 1.07. The sky's
+error against the 20000-round photon field rose from 0.0042 to 0.0093 with the total
+at 1.0033: the photons' deposits estimate the fluence averaged over the probe's
+trilinear kernel, the transmittance is the value at the probe. Against the path-traced
+reference of wdas-cloud-0 the render is slightly closer (blurred |log2| p90 over the
+cloud's pixels 0.391 against 0.416), so the point value is at least as good a thing to
+interpolate, and it is kept.
+
+## What the approximation's error is made of
+
+wdas-cloud-0 at extinction 0.2, the approximation at 64 spp from a 2048-round field
+against path-traced references at 2048 spp, |log2| error over the cloud's pixels after
+a 15-pixel blur, and its sign by the reference's brightness quintile, darkest first.
+
+**The sun's light carries the error.** Sun only, against a sun-only reference: median
+0.381, p90 1.116, quintiles +0.33 +0.29 +0.17 +0.22 -0.13; the shadowed body is a
+quarter too bright, the sunlit bulge a tenth too dark. Sky only, with the sun set,
+against its own reference: p90 0.150, the total 13 % bright. With both, the sky's light
+dilutes the sun's error to the 0.39 p90 of the earlier section.
+
+| sun only, variant                                   | blurred median | p90   | quintiles                     |
+| --------------------------------------------------- | -------------- | ----- | ----------------------------- |
+| as kept                                             | 0.381          | 1.116 | +0.33 +0.29 +0.17 +0.22 -0.13 |
+| probe depth ratio 1                                 | 0.383          | 1.122 | +0.35 +0.30 +0.18 +0.22 -0.14 |
+| probe budget 1M                                     | 0.372          | 1.120 | +0.35 +0.26 +0.12 +0.17 -0.10 |
+| view steps 0.1                                      | 0.384          | 1.118 | +0.33 +0.30 +0.18 +0.23 -0.13 |
+| HG lobe closure                                     | 0.399          | 1.130 | +0.30 +0.27 +0.17 +0.24 -0.08 |
+| photons from the exact sun direction, read straight | 0.175          | 0.324 | +0.11 +0.18 +0.20 +0.18 -0.12 |
+| the same with the HG lobe                           | 0.187          | 0.339 | +0.05 +0.17 +0.20 +0.19 -0.06 |
+
+With the sky, the variants of the first-scatter mode: probes 0.426, forward peak 0.391,
+gather 0.375, forward peak and gather 0.347; P1 against the von Mises-Fisher closure
+0.389 against 0.391; sun fit order 2 against 3: 0.595 against 0.391, its sunlit quintile
+-0.38 against -0.13.
+
+- **The sun transfer's angular resolution is most of it.** A bin averages the sun over
+  about 14 degrees and the order-3 fit sees only those averages; photons sent from the
+  exact sun direction into one bin, read without the fit, take the p90 from 1.12 to
+  0.32 and the shadow's excess from +0.33 to +0.11. The step from order 2 to 3 had cut
+  the sunlit face's deficit from -0.38 to -0.13, the same lever.
+- **The closure's tails are the sunlit face's remaining deficit.** A von Mises-Fisher
+  lobe with HG(0.6)'s mean cosine has a quarter of its backscatter; an HG-shaped lobe of
+  the same mean cosine halves the deficit, -0.13 to -0.08, and with the exact direction
+  -0.12 to -0.06, and leaves the rest as it was. P1 clamps that light to zero and is
+  worse there.
+- **Not the probes' resolution nor the march.** Finer or more probes and finer view steps
+  move the quintiles by 0.05 at most.
+- A residual of +0.1 to +0.2 in the half-lit quintiles survives the exact direction and
+  the HG lobe: a single lobe about the flux for light that is partly a beam from the lit
+  side and partly diffuse, or the forward peak's treatment, which the gather modes ease.
+
+### Finer bins, bins read directly, the lobe's shape and the gather
+
+The same measure, on the levers the attribution pointed at. Finer bins were a build with
+16 x 16 bins (a 1.09 GB field for the 262144-probe budget, the bake 3 % slower per
+round); the direct reads interpolate the four bins around the sun direction in
+`light_probes` instead of evaluating the fit; the exact-direction fields send every
+photon, or every walk's next-event estimate, from the sun's direction.
+
+| sun only, variant                                       | blurred median | p90   | quintiles                     |
+| ------------------------------------------------------- | -------------- | ----- | ----------------------------- |
+| as kept, 8 x 8 bins, order-3 fit                        | 0.381          | 1.116 | +0.33 +0.29 +0.17 +0.22 -0.13 |
+| 16 x 16 bins, 2048 rounds                               | 0.344          | 1.365 | -0.55 -0.02 +0.05 +0.16 -0.14 |
+| 16 x 16 bins, 8192 rounds                               | 0.332          | 1.074 | +0.06 +0.12 +0.08 +0.17 -0.19 |
+| 8 x 8 bins read bilinearly, linear                      | 0.419          | 2.021 | +1.02 +0.59 +0.43 +0.38 -0.21 |
+| 8 x 8 bins read bilinearly, in the log                  | 0.311          | 0.990 | +0.52 +0.44 +0.29 +0.17 -0.29 |
+| photons from the exact direction                        | 0.174          | 0.322 | +0.10 +0.18 +0.20 +0.18 -0.12 |
+| the same, gather                                        | 0.154          | 0.299 | +0.08 +0.16 +0.18 +0.16 -0.08 |
+| the same, forward peak and gather                       | 0.139          | 0.256 | +0.09 +0.14 +0.16 +0.14 -0.10 |
+| the same, forward peak and gather, HG lobe              | 0.142          | 0.269 | +0.07 +0.14 +0.17 +0.14 -0.07 |
+| walks with next-event estimates to the exact direction  | 0.158          | 0.399 | +0.08 +0.11 +0.13 +0.13 -0.08 |
+
+With the sky: 16 x 16 bins at 8192 rounds 0.393 against 0.391; the HG lobe 0.395, and
+0.350 with the forward peak and gather against 0.347; the log read of the bins 0.345,
+but its sunlit quintile -0.27 against -0.13.
+
+- **Finer bins trade the shadow for the lit face.** At equal rounds a bin holds 8
+  photons, the fit's floor catches the empty ones and the shadow goes dark by half; at
+  four times the rounds the shadow's excess falls from +0.33 to +0.06, but the order-3
+  fit undershoots the sharper peak and the lit face loses another 6 %. The whole picture
+  does not move, for four times the memory and the rounds.
+- **The bins read directly are worse than the fit.** A shadowed probe's bin averages
+  lit directions in with the sun's, which a linear read passes on whole (+1.0 in the
+  shadow); in the log the read is sharper than the fit but 32 photons' log is biased low
+  on the lit face (-0.29) and the picture darkens by 11 %.
+- **The HG lobe moves the lit face only**, -0.13 to -0.10 with the sky, and the picture
+  as a whole not at all.
+- **The gather is worth 0.05 to 0.07 of p90 wherever it is applied**, with the bins
+  (0.39 to 0.35) and without them (0.32 to 0.26): it reads the light one scatter further
+  on, where the closure's and the interpolation's errors are smaller, and is not what
+  stands in for the bins' angular resolution.
+- **The splat is a third of the residual.** Walks, which estimate the probe's own point
+  without the deposits' trilinear kernel, leave +0.08 to +0.13 in the half-lit quintiles
+  against the photons' +0.10 to +0.20; the rest is the closure and the march's
+  interpolation.
+- A bake aware of the sun, which the exact-direction rows measure, would also spend no
+  photons on the 63 bins the sun is not in: its sun field at 32 rounds is as converged as
+  the kept one at 2048.
+
+## The sun fit past order 3
+
+The fit projects the bins' log fluence onto the harmonics by their quadrature, so any
+order evaluates at the sun direction as the bins' log fluence weighted by the truncated
+reproducing kernel, sum over l of (2l + 1) / 4 pi P_l(cos) to the order, with no basis
+functions and no stored coefficients. A variant of `light_probes` did that on the kept
+field; order 3 reproduced the kept picture exactly. Sun only and with the sky, blurred
+|log2| error and the sun-only quintiles:
+
+| order, 8 x 8 bins, 2048 rounds | sun median | sun p90 | quintiles                     | with sky p90 |
+| ------------------------------ | ---------- | ------- | ----------------------------- | ------------ |
+| 3 (kept)                       | 0.381      | 1.116   | +0.33 +0.29 +0.17 +0.22 -0.13 | 0.391        |
+| 4                              | 0.349      | 1.037   | +0.13 +0.25 +0.18 +0.17 -0.28 | 0.390        |
+| 5                              | 0.264      | 1.004   | +0.09 +0.14 +0.17 +0.24 -0.12 | 0.328        |
+| 6                              | 0.249      | 1.087   | +0.21 +0.15 +0.20 +0.27 -0.07 | 0.311        |
+| 7                              | 0.396      | 1.427   | +0.77 +0.60 +0.49 +0.40 -0.13 | 0.433        |
+| 3, 512 rounds                  | 0.383      | 1.153   | +0.23 +0.28 +0.16 +0.21 -0.12 | 0.398        |
+| 5, 512 rounds                  | 0.277      | 1.046   | +0.09 +0.14 +0.16 +0.24 -0.12 | 0.337        |
+| 6, 512 rounds                  | 0.263      | 1.148   | +0.27 +0.17 +0.20 +0.28 -0.07 | 0.326        |
+| 16 x 16 bins, 8192 rounds, 3   | 0.332      | 1.074   | +0.06 +0.12 +0.08 +0.17 -0.19 | 0.393        |
+| 16 x 16 bins, 8192 rounds, 6   | 0.259      | 0.928   | +0.29 +0.28 +0.26 +0.24 -0.05 | 0.290        |
+| 16 x 16 bins, 8192 rounds, 10  | 0.259      | 0.813   | +0.27 +0.28 +0.27 +0.28 -0.15 | 0.286        |
+
+- **Order 5 is the step.** It takes the shadow's excess from +0.33 to +0.09 and the
+  picture's p90 from 0.39 to 0.33, past the gather's 0.35, and holds at 512 rounds,
+  where it still beats order 3 at 2048. Order 6 gains the lit face and loses the
+  shadow to the bins' noise; order 7 is 64 coefficients from 64 bins and falls apart.
+  Even orders overshoot the lit face (Gibbs on the log).
+- 16 x 16 bins carry order 10 and the best sky picture, 0.29, but no better shadow
+  than 8 x 8 at order 5, for four times the memory and the rounds.
+- The kernel form needs neither a basis nor the fit's storage: `light_probes` can take
+  the order from the bins directly, once per lighting change.
+
+Applied: `fit_probes` fits order 5 and stores it in 52 bytes a probe, the constant
+harmonic a float and the 35 others, with the flux ratio's 12, a byte each over the
+field's range of that coefficient (`range_probes`, a wave reduction and two atomics per
+coefficient per wave, before the fit; the next section measures the quantisation as
+lossless). The pictures match the float variant to the third digit; a 2048-round bake,
+which refits as it goes, takes the same time as before within its noise, and the render
+reads the atlas as before. The order setting offers 3 and 5, a refit from the same
+bins, in the same bytes.
+
+## Bases other than harmonics for the sun transfer
+
+What the sun transfer needs is one function on the sphere per probe, the log fluence
+against the sun's direction, with a terminator, evaluated at one direction per lighting
+change and stored lighting-agnostic. The recent literature on directional bases was
+read against that need, and the candidates that fit it were measured on the field: each
+probe's 64 bins fitted offline, scored at the sun's direction against the exact-direction
+field (fluence-weighted RMS of the log error, 2048 rounds; 512 in brackets), and the
+promising ones rendered.
+
+| encoding of the sun's log fluence                 | bytes | wRMS          | p90           |
+| ------------------------------------------------- | ----- | ------------- | ------------- |
+| SH order 3, as kept                               | 64    | 0.228 (0.276) | 0.554 (0.685) |
+| SH order 5                                        | 144   | 0.144 (0.205) | 0.381 (0.584) |
+| SH order 5, coefficients at 8 bits, DC a float    | 40    | 0.144 (0.205) | 0.380 (0.584) |
+| SH order 5 at 6 bits                              | 31    | 0.149 (0.210) | 0.385 (0.588) |
+| SH order 5 at 4 bits                              | 22    | 0.211 (0.279) | 0.462 (0.662) |
+| SH 3 + zonal l = 4..6 on the gradient axis (ZH3)  | 76    | 0.230 (0.284) | 0.530 (0.679) |
+| PCA of the order-5 coefficients, 16 per probe     | 64    | 0.154 (0.217) | 0.434 (0.606) |
+| clustered PCA of the bins, 32 clusters, 12        | 52    | 0.145 (0.196) | 0.412 (0.535) |
+| the 64 log bins at 8 bits, read bilinearly        | 64    | 0.106 (0.128) | 0.374 (0.506) |
+
+Rendered, sun only, blurred p90 and quintiles (with the sky, p90): order 5 1.004,
++0.09 +0.14 +0.17 +0.24 -0.12 (0.328); PCA 16 of order 5 1.034, +0.05 -0.00 +0.05
++0.18 -0.10 (0.406, a heavier tail than the kept 0.391); the bins read bilinearly with
+the fitted flux 1.183, +0.63 +0.43 +0.28 +0.22 -0.26 (0.347).
+
+- **Order 5 at 8 bits is the answer to "we cannot afford the order".** The quantisation
+  costs nothing measurable at 8 bits and 2 % at 6, and 40 bytes is less than the kept
+  16 floats. The ranges come from the field's own coefficients, stored once per field.
+- **ZH3's zonal extension does nothing here**: the transfer is not zonal about its
+  gradient, so the extra coefficients along that axis carry no energy.
+- **A learned basis works offline and in the sun's picture but not in the whole picture.**
+  16 PCA coefficients of the order-5 fit reach order 5's RMS, and the sun-only
+  quintiles, but a global basis misses a few probes' shapes and the picture's p90 tail
+  grows past the kept fit. Clustered bases might mend that; untested in the render.
+- **The bins read directly are the best per byte and the worst on the faces.** Per probe
+  they beat every fit, but a bin averages the sun over 22 degrees, which the fits
+  extrapolate through and a read cannot: +0.6 in the shadow and -0.26 on the lit face.
+  The offline fluence-weighted score, dominated by interior probes, does not see the
+  surface probes that make the picture, so it misranks this; the render decides.
+- Lobe families (spherical Gaussians and their anisotropic, Beta, Gabor and Voronoi
+  variants, Beyond Spherical Harmonics, arXiv 2606.09794; Spherical Voronoi, arXiv
+  2512.14180) are built for peaks, fitted by gradient descent, and overfit sparse data;
+  the transfer is a terminator in the log, not a peak, and the fit would run per probe
+  per bake. Not measured.
+- Maximum-entropy moment encodings (arXiv 2608.20429) and ZH3 (I3D 2024) target
+  positive irradiance from l <= 2 moments; their counterpart here is the closure, not
+  the sun transfer.
+- Neural volumes (Neural Irradiance Volume, arXiv 2602.12949; Neural Radiance Transfer
+  Fields, 2022) beat SH2 probes tenfold per byte, but decode in 0.2 to 1.4 ms per frame
+  of queries, bake in minutes, and lose capacity to every lighting parameter they take as
+  input; the sun's direction would be one.
+- Not a basis but a domain: on Earth the sun of a day moves along one arc, so bins along
+  that arc, 64 of them over 180 degrees, would be 2.8 degrees wide at the memory of the
+  8 x 8 sphere. That gives up the agnostic sphere for the agnostic day.
+
+### The sky's order and its storage
+
+The sky's light is linear in its harmonics, so the single scattering sums and the bins'
+read contract into one SH_COUNT x 4 matrix per probe at fit time, and the bins leave the
+runtime. Stored as the sun's fit is, the fluence's constant term in float and every
+other entry as a byte, the matrix needs no field ranges: the transfer is a positive
+kernel with |F| <= phi, so an entry over the constant term lies within
+sqrt(2l + 1). Measured at 2048 rounds as variants of `light_probes` (order 3 through a
+build with 16 sky harmonics in `bake_sun`, `bake_sky_transfer` and the sums):
+
+| sky | storage | sky only p90 | brightest quintile | sun + sky p90 |
+| --- | --- | --- | --- | --- |
+| order 2 | float, 144 B + bins | 0.150 | +0.108 | 0.328 |
+| order 2 | 8 bit, 40 B | 0.149 | +0.107 | 0.328 |
+| order 3 | float, 256 B + bins | 0.116 | +0.089 | 0.324 |
+| order 3 | 8 bit, 68 B | 0.116 | +0.089 | 0.324 |
+
+The bytes cost nothing at either order. Order 3 takes the sky-only error from 0.150 to
+0.116 and the overshoot of the brightest pixels from 11% to 9%: at the sunset of the
+test, the horizon's warm band lights the cloud's underside, which order 2 smears into
+the sky's mean and order 3 resolves (the picture shows the underside's colour). The
+bake time is unchanged (13.2 s both), and the sun+sky picture moves little since the
+sun's error dominates it.
+
+Applied: the sky's radiance, its transfer bake and the sums carry 16 harmonics
+(`sh_basis<3>`, one recurrence for both orders), and `fit_probes` contracts the sums
+and bins into a `SkyTransfer` of 68 bytes beside the sun's 52, so that `light_probes`
+reads 120 bytes a probe and the bins and sums only at the fit. The cache's format is
+4. The pictures match the variant to the third digit.
+
+The march scatters the probes' light (phi, F) towards the camera through the phase's
+broad part by a von Mises-Fisher lobe about F whose mean cosine is g |F| / phi: the
+light is taken as a vMF lobe, and its convolution with the phase as another. Both halves
+were tested apart, on the exact-direction field so that the bins' smear does not hide
+them, sun only, blurred |log2| error against the path-traced reference and its sign by
+brightness quintile. The exact convolution of a lobe with the phase is the Funk-Hecke
+product of their Legendre coefficients; the phase's were tabulated to order 48, the
+lobe's are ratios of modified Bessel functions by Gauss's continued fraction, and the
+series matched brute-force quadrature to 0.03 %.
+
+| closure, exact-direction field, sun only                   | median | p90   | quintiles                     |
+| ---------------------------------------------------------- | ------ | ----- | ----------------------------- |
+| vMF lobe of mean cosine g a (kept)                         | 0.174  | 0.322 | +0.10 +0.18 +0.20 +0.18 -0.12 |
+| HG lobe of mean cosine g a                                 | 0.187  | 0.337 | +0.04 +0.16 +0.20 +0.18 -0.06 |
+| vMF light convolved exactly with the broad lobe            | 0.205  | 0.357 | +0.19 +0.23 +0.23 +0.21 -0.09 |
+| HG light convolved exactly                                 | 0.209  | 0.385 | +0.18 +0.24 +0.25 +0.23 -0.03 |
+| delta + isotropic light convolved exactly                  | 0.253  | 0.743 | +0.06 +0.22 +0.25 +0.27 +0.39 |
+| the sun's single scattering split off, beam lobe for it    | 0.174  | 0.324 | +0.10 +0.18 +0.20 +0.18 -0.11 |
+| second moment about the beam, isotropic + HG fit           | 0.211  | 0.389 | +0.19 +0.24 +0.25 +0.23 +0.03 |
+| second-moment tensor, P1 to HG to isotropic + HG about F   | 0.179  | 0.333 | +0.16 +0.19 +0.20 +0.17 -0.06 |
+| quadratic harmonics from the tensor, clamped at zero       | 0.133  | 0.284 | +0.12 +0.13 +0.14 +0.14 -0.07 |
+| the same with the HG tail where sharper than P1            | 0.122  | 0.272 | +0.08 +0.10 +0.13 +0.13 -0.05 |
+| for comparison: forward peak and gather, vMF               | 0.139  | 0.256 | +0.09 +0.14 +0.16 +0.14 -0.10 |
+| for comparison: 1M probes, vMF                             | 0.130  | 0.244 | +0.06 +0.13 +0.15 +0.13 -0.06 |
+| 1M probes, quadratic harmonics, clamped                    | 0.083  | 0.189 | +0.07 +0.08 +0.09 +0.08 -0.02 |
+| 1M probes, quadratic harmonics and the HG tail             | 0.077  | 0.179 | +0.04 +0.06 +0.07 +0.07 -0.00 |
+
+Log-space interpolation of the atlas (log phi and F / phi in the texels) changed nothing:
+0.315 against 0.322. The 1M probes' gain is the splat's kernel shrinking with the cells.
+
+- **The kept lobe is wrong in shape, in both directions at once.** Against the exact
+  convolution a vMF of mean cosine 0.9 is 22 % low forward, twice too high sideways and
+  five times too low backward; yet the exact convolution renders worse, +0.19 in the
+  shadow, because the light itself is not a vMF lobe. Every single-moment lobe that
+  brightens the lit face (HG, HG convolved, delta + isotropic) brightens the shadow with
+  it: no one shape serves both.
+- **The sun's single scattering is not the mixed light.** Splitting it off and giving it
+  the phase's own lobe about the beam changes nothing: deep inside, where the probes
+  matter, the light has scattered many times.
+- **The field says what the light is.** With the second-moment tensor baked (the
+  deposits' dir dir^T), the second moment about F weighted by fluence is 0.335 at the
+  median, P1's 1/3: 69 % of the light sits in probes of mean cosine below 0.2, the
+  mid-range probes are P1-like or flatter (46 % of those between 0.2 and 0.4 are
+  oblate), and only the lit shell above 0.6, 4 % of the light, is HG-like. A lobe fit
+  cannot express the oblate light, and the axial moment about the beam misses the
+  flux's axis.
+- **The quadratic harmonics do.** The traceless tensor's part, scattered by the lobe's
+  second coefficient (Draine's is 0.57, large), is exact to that order and not axial;
+  clamped at zero, and with the HG lobe's tail past order 2 where the light is sharper
+  than P1, it takes the lit face from -0.12 to -0.05 and the dark quintiles from +0.10
+  to +0.20 down to +0.08 to +0.13, as good as the gather without sampling. What remains
+  is the field's: with 1M probes the same closure leaves every quintile within 7 % and
+  the lit face exact, p90 0.18 against the kept 0.32.
+- **The forward peak stays as it is.** The delta-M split keeps the peak's light on the
+  view, where the march's own radiance is exact; the peak's Legendre coefficients fall
+  as 0.98^l and no closure of a few moments can hold it, while the broad lobe's fall
+  below 1e-6 by order 24. Scattering the probes' light by the whole phase through one
+  lobe (`first_scatter = probes`) was 0.426 against 0.391 with the sky.
+
+The price of the tensor: six more floats per deposit, 2.5 times the deposits' atomics,
+which are over half the bake, and 2.5 times the bins' memory, 670 MB at the 262144
+budget; the sun's fit would carry the tensor's ratios beside the flux's, and the atlas
+three slices per channel. With a sun-aware bake the bins go and the tensor costs the
+same as the sky's transfer does now.
+
+## Clouds besides the WDAS cloud
+
+Candidates for the bench at the WDAS half resolution (994 x 676 x 1225 voxels of
+0.42 m, 1.6 GB as f16), found 2026-10-26:
+
+- **Intel Volumetric Cloud Library** (dpel.aswf.io/intel-cloud-library, ASWF Asset
+  License): 5 cumulus shapes, each dense and sparse, at three tiers of 4x: small
+  (2 m voxels, ~160 across), medium (0.5 m, ~640 x 370 x 540, 100 to 125 MB each),
+  large (0.125 m by the tiers' ratio, ~2600 across, ~3.4 GB each, 33.8 GB the
+  package). The clouds are 320 x 190 x 270 m, two thirds of the WDAS cloud's. The
+  medium tier converts and renders in the bench as it is (three of the five carry
+  rounding noise of -7e-9 that `convert_vdb.py` rejects; clamped at zero for the
+  previews); the large tier resampled by 2 would match the WDAS half's resolution.
+  Rendered previews: proper cumulus with lobes, less fine detail than WDAS at the
+  medium tier.
+- **CGHEVEN hero cumulus and congestus VDBs** (cgheven.com/assets/vdbs, CC0, about
+  twenty clouds): single `density` float grids in a 0.02 unit frame, 4 to 11 M
+  active voxels; cumulus 01 is 597 x 165 x 361 (the widest found), cumulus 20
+  414 x 136 x 251, congestus 21 326 x 291 x 313. Rendered in the bench at 0.65 units
+  a voxel, they are rounded cumulus with lobes and a flat base, with density like
+  the Intel clouds'. Downloads are RAR5 archives on cdn.cgheven.com under
+  `VFX/VDBS/Clouds/{cumulus_clouds,Congestus_Cloud}/Hero_Clouds/<range>/v<n>/`, which
+  `unar` opens (7z does not); the archives for cumulus 32 and 43 and congestus 50
+  hold the files of 20 and 21 again, so those three are unavailable.
+- **JangaFX free cloud pack** (jangafx.com, CC0): 10 EmberGen clouds of ~300 x 500
+  x 170 voxels at 1 unit, 4 to 6 M active, z up in the file (swapped to y for the
+  bench). Rendered at 0.75 units a voxel they are plausible but soft cumulus with
+  about half the Intel clouds' density and a third of their voxels: the lowest
+  detail of the three sources.
+- **VFX Assets free high-altitude clouds**: cirrus, non-commercial; a different look.
+
+The bench places a volume by its own x and z and its minimum y at the base
+altitude, so a cloud whose grid starts at positive x and z sits off the frame's axis;
+`convert_vdb.py` gained `--centre`, `--voxel`, `--z-up` and `--density` for this.
+The bench scales every cloud's density by one extinction, so a file's values set its
+optical depth; by the median vertical column over the cloud's footprint, in density
+times units, the sources differ by an order of magnitude:
+
+| cloud | max density | median active density | median column | p90 column |
+| --- | --- | --- | --- | --- |
+| WDAS half | 1.00 | 0.50 | 52 | 112 |
+| CGHEVEN cumulus 01 at 1.2 | 1.00 | 0.42 | 30 | 55 |
+| Intel dense 1 | 0.50 | 0.19 | 13 | 29 |
+| JangaFX cloud 02 at 1.0 | 0.73 | 0.09 | 5 | 13 |
+
+They were kept for a while, each with the density factor that brings its median
+column to the WDAS cloud's (`intel_dense_1` at its own 0.5 voxels, `--density 4`;
+`cgheven_cumulus_01` at `--voxel 1.2 --centre --density 1.75`; `jangafx_cloud_02` at
+`--voxel 1.0 --centre --z-up --density 11`), rendering as the WDAS cloud does with
+bright tops over a dark base, and replaced on 2026-10-27 by the four below.
+
+The viewer's cloud bench panel lists the volumes of `cache/clouds` and the config
+names the active one as `cloud_volume`, which the presets `wdas-cloud*` set;
+`--cloud-volume` outranks it. Switching rebuilds the bench mode around the new
+volume, and the probe cache tells volumes apart by their grid alone, so a volume
+converted again onto the same grid must have its probe cache deleted.
+
+### Resolution by resampling and erosion
+
+A "4 Free Clouds" VDB pack (Altocumulus 787 x 177 x 783 voxels, Cumulus Cloud 1
+542 x 86 x 495, Cumulus Congestus 378 x 282 x 273, Stratocumulus 1 471 x 26 x 462,
+single `density` grids peaking at 4 to 33) brought two layer clouds and a tower,
+at a quarter of the WDAS half's resolution per axis. `convert_vdb.py` gained
+`--resample`, a cubic resampling by a factor per axis, and `--erode`, the game
+clouds' detail erosion (Schneider 2015): a tiled inverted Worley noise of three
+octaves, its largest feature `--erode-period` voxels (32), carves the resampled
+density by (d - s n) / (1 - s n) with d over the 99th percentile of the active
+voxels, so that the core keeps its shape and the thin edges break into wisps and
+holes at the new voxels' scale. `--match-column` then scales the density to a given
+median column, the WDAS cloud's 52, in place of a guessed factor. The converter now
+works a slab at a time, as the altocumulus at 2x is 873 M voxels.
+
+Rendered at strengths 0, 0.25 and 0.5 on the stratocumulus and the congestus: 0
+is the resampled blob, smooth and featureless; 0.25 gives both cauliflower
+surfaces; 0.5 breaks the thin layer into fragments while the congestus only gains
+texture. All four were converted at 2x, erosion 0.35 and the WDAS half's 0.4167
+units a voxel (`--voxel 0.4167 --centre --resample 2 --erode 0.35 --match-column
+52`), viewed, and rejected: the erosion is invented surface detail that reads as
+such, not the simulated structure the WDAS cloud has, and on the layers it shapes
+the cloud rather than decorating it. The options stay in the converter.
+
+### Altocumulus fields
+
+Nine altocumulus VDBs (`Altocumulus.vdb` and `Altocumulus 2` to `9`, single
+`density` grids peaking near 1 with voxels of 5.96, 9.23, 11.7 and 16.9 m, so
+satellite-derived fields rather than modelled clouds) are kept at their native
+resolution as `altocumulus_1` to `altocumulus_9`, converted with `--voxel` at a
+tenth of the file's metres, the bench's units, and `--centre`. They span 7 to 38 km
+and 85 to 206 voxels in height; the ninth is 2277 x 206 x 2198 voxels, 2.3 GB as
+f16, past the loader's old 2 GB limit, now 4 GB, and the others 120 to 340 M
+voxels. Their peaks match the WDAS cloud's but their cloudlets are made of lighter
+stuff, a median active voxel of 0.13 to 0.27 against 0.50, and are small, so a
+median column through the layer carries a hundredth of the WDAS cloud's 52 and the
+thickest tenth a twentieth. Kept at the WDAS cloud's material: `--match-density
+0.5` scales each so that its median active voxel is 0.5, which `convert_vdb.py`
+gained beside `--match-column`; a layer's column then stays its own, an optical
+depth of a few through a typical cloudlet, which is what an altocumulus is.
+
+### Simulated hero clouds
+
+An "HD clouds" VDB pack of five simulated cumuli (`cloud1` to `cloud5`, density and
+temperature grids of 0.015 or 0.02 units, 716 to 918 voxels wide, 287 to 384 tall,
+30 to 76 M active, densities peaking at 60 to 200) is kept as `hd_cloud_1` to
+`hd_cloud_5` at native resolution, the WDAS half's 0.4167 units a voxel so that
+they stand 1.2 to 1.6 km, centred and at `--match-density 0.5`: their median
+columns then come to 16 to 40 against the WDAS cloud's 52. Per axis they are 0.7 to
+0.9 of the WDAS half, the nearest to it of any pack found, and 200 to 640 MB each.
+
+### A cumulonimbus field
+
+`Cumulonimbus_Field_8` (an `f216` archive of full, half, quarter and eighth tiers,
+13.3 m voxels at full, 3503 x 829 x 4720 of them, 925 M active, a field 47 x 63 km
+and 11 km tall, satellite-derived like the altocumulus) is far past what a 3D
+texture holds at full, 13.7 G voxels dense, and twice the WDAS half at half, 1.72 G.
+The converter now reads the VDB a slab at a time through `copyToArray` on sub-boxes
+and resamples by any factor, so the half tier downsampled by 0.782 lands at the
+WDAS half's count, 822 M voxels of 34 m, kept as `cumulonimbus_field_8` with
+`--resample 0.782 --voxel 3.4066 --centre --match-density 0.5`. Its material is
+light, a median active voxel of 0.04 before the match, and the quarter tier halved
+reproduces the eighth tier's grid to within a voxel.
+
+Cumulonimbus and anvils: nothing free at useful resolution was found. The free
+CGHEVEN congestus clouds are the largest towering ones (congestus 20 is 333 x 258 x
+329 voxels, a dense tall blob with little surface detail), and their CDN serves the
+file of congestus 20 for 25, 27 and 28 too. Paid options: screenglow's "VDB Clouds
+Volume 3 – Cumulonimbus" (ArtStation/Cubebrush, USD 29, 0.01 unit voxels plus
+coarser tiers; the pages block fetching, so the voxel counts are unknown), The Pixel
+Lab's "Static Anvil" (75 clouds in three tiers, 6.9 GB in all, USD 69, so a hero
+tier of tens of MB each), and Akna 3D's "VDB Cumulonimbus Cloud Field" series on
+CGTrader and TurboSquid (USD 10 each, ~6300 x 6200 x 1040 at full resolution with
+half, quarter and eighth tiers, derived from Landsat imagery, so fields that are
+wide and flat rather than single towers; a free eighth-resolution sample pack of
+all 13 needs a CGTrader account).
+
+## The density's filter
+
+The bench reads the density grid through the hardware's trilinear sampler, whose
+slope breaks at every voxel face. Tried on 2026-10-26 and dropped: warping the voxel
+fraction by a cubic smoothstep before the filtered fetch (Quilez's smooth
+filtering), slope-continuous and still a convex blend of the same eight voxels so
+the majorants hold. It cost 20% per reference sample and 9% per approximation
+sample on the WDAS half at a 5 degree field and did not read as less blocky, so
+`extinction_at` is the plain trilinear fetch again. The probe cache format had gone
+to 5 for it and stays there.
+
+Kept instead, for the approximation's view march alone: `extinction_cubic`, the
+tricubic B-spline, which is smooth in slope across voxel faces, as the eight
+trilinear fetches Sigg and Hadwiger split it into. A jittered point read in place
+of the trilinear fetch was tried first and dropped, the same filter with noise; then
+one of the eight lobes drawn by its weight, the B-spline in expectation, which on
+the WDAS preset at 512 x 512 took the approximation's 16 spp relative RMS over the
+cloud from 0.22% to 0.25% at 4% more per sample, and gave way to the eight fetches
+on 2026-10-26 to leave the march no random draw but its phase. The B-spline's and
+trilinear's 256 spp means agree to 0.01%, and their difference lies along the voxel
+grid's lines, the trilinear creases. The B-spline's support reaches two voxels, so it can exceed the majorant, which the
+march only paces by; the reference, the sun beams and the probes' walks keep the
+trilinear read that the majorant bounds. Catmull-Rom would keep the smoothness
+without the B-spline's half-voxel softening, but its negative lobes would need a
+signed draw and a floor at zero.
+
+## The view march's steps at the cloud's edge
+
+The march sizes its steps by the cell's majorant optical depth, so a thin shell cell
+gets one jittered sample where the wisps vary by the voxel. Since 2026-10-26 the
+view march's step is also capped at `view_step_max_voxels` (panel slider; 64, the
+default, is none), for judgement by eye: the user found two voxels no help. By the numbers, on the WDAS preset at 512 x 512,
+caps of two and one voxel move the converged picture by over 1% in 12% of the
+pixels, leave the 16 spp noise over the shell at 0.44% against 0.43% and the error
+against a 1024 spp reference at 9.5% of the shell's mean and 8.0% of the core's,
+and cost 50% and 120% more per sample. The shell's noise is half the sub-pixel
+jitter of the camera ray, 0.21% with rays pinned to pixel centres, over wisps finer
+than a pixel, and half the march's random phase and lobe draws.
 
 ## The probe layout on the GPU
 

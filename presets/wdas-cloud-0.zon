@@ -1,14 +1,14 @@
 .{
     .camera = .{
         .position = .{
-            7237.39,
-            6371495.86,
-            -640.24,
+            7239.434620889051,
+            6373295.858829669,
+            -640.4208729497797,
         },
         .forward = .{
-            -0.9735514698212695,
-            0.2245629019099397,
-            0.042059941686035336,
+            -0.9990631094701756,
+            -0.0029832310327233447,
+            0.04317410831029617,
         },
         .up = .{
             0.0011359004585901969,
@@ -21,6 +21,7 @@
     .sun = .{ .angle_degrees = 31.875, .path_rotation_degrees = -48.125 },
     .bench_sun = .{ .cos_zenith = 0.632318, .azimuth_degrees = -42.9715 },
     .mode = .cloud_bench,
+    .cloud_volume = "wdas_cloud_half",
     .preset = .symmetric,
     .texture_quality = .q2,
     .exposure = 3,
@@ -68,7 +69,6 @@
         .probe_sun_estimate = .march,
         .probe_bake = .photons,
         .photon_deposit = .points,
-        .probe_sun_order = .@"3",
         .probe_walks = 2048,
         .probe_rounds_per_frame = 8,
         .probe_layout = .adaptive,

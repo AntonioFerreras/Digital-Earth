@@ -33,10 +33,15 @@ distance: []const f16,
 /// Owned: the whole file.
 file: []align(@alignOf(f16)) const u8,
 
-/// Where `earth` looks without `--cloud-volume`, relative to the data root.
-pub const default_path = "cache/clouds/wdas_cloud_half.ecld";
-/// The half-resolution cloud is 1.6 GB; the full one does not fit in a 3D texture.
-const file_size_max = 1 << 31;
+/// Where the volumes lie under the data root, named by the config's `cloud_volume`.
+pub const directory_path = "cache/clouds";
+pub const file_extension = ".ecld";
+/// The Walt Disney Animation Studios cloud at half resolution.
+pub const default_stem = "wdas_cloud_half";
+pub const PathBuffer = [directory_path.len + 1 + Io.Dir.max_name_bytes]u8;
+/// The half-resolution WDAS cloud is 1.6 GB and the widest altocumulus field 2.3 GB;
+/// the full WDAS cloud, 8 GB, does not fit in a 3D texture.
+const file_size_max = 1 << 32;
 const magic = "ECLOUD02";
 /// DISTANCE_DOWNSAMPLE in python/clouds/convert_vdb.py.
 pub const distance_downsample = 2;
@@ -53,6 +58,12 @@ const Header = extern struct {
 
 comptime {
     assert(@sizeOf(Header) == 64);
+}
+
+/// The file of the volume `stem`, relative to the data root.
+pub fn filePath(buffer: *PathBuffer, stem: []const u8) []const u8 {
+    assert(stem.len + file_extension.len <= Io.Dir.max_name_bytes);
+    return std.fmt.bufPrint(buffer, "{s}/{s}{s}", .{ directory_path, stem, file_extension }) catch unreachable;
 }
 
 pub const ParseError = error{InvalidCloudVolume};

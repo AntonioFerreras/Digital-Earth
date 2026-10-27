@@ -474,6 +474,13 @@ def ozone_extinction_reference(wavelengths):
     return 1e-4 * (table[i] * (1.0 - t) + table[i + 1] * t)
 
 
+def mie_density_reference(heights):
+    """shaders/atmosphere/media.slang mie_density at unit turbidity, altitude clamped at sea level."""
+    h = np.maximum(heights.astype(np.float64), 0.0)
+    stratosphere = (h - 20000.0) / 4000.0
+    return 0.85603 * np.exp(-h / 729.1) + 0.14397 * np.exp(-h / 3650.0) + 0.003818 * np.exp(-stratosphere * stratosphere)
+
+
 def atmosphere_sets():
     sets = []
     heights = np.array([-100.0, 0.0, 1.0, 1299.0, 1300.0, 1301.0, 2399.0, 2400.0, 2401.0, 8000.0,
@@ -488,6 +495,7 @@ def atmosphere_sets():
             return module.get_density(x[0])
 
         outputs = evaluate(density, rows, 3)
+        outputs[:, 1] = turbidity * mie_density_reference(heights)
         outputs[:, 2] = ozone_density_reference(heights)
         blocks.append((rows, outputs))
     sets.append(golden_set(
@@ -496,8 +504,9 @@ def atmosphere_sets():
         lut=OZONE_PROFILE_LUT,
         source="lib/volume_rendering_models.py get_density (data_prep: turbidity 1.03, "
                "Rayleigh 1.220554684; main: 1.06, 1.225)",
-        note="Inputs: altitude m, turbidity, Rayleigh sea-level density. Rayleigh and Mie are "
-             "Taichi's; ozone is the number density (m^-3) of the measured profile "
+        note="Inputs: altitude m, turbidity, Rayleigh sea-level density. Rayleigh is Taichi's; "
+             "Mie is the fit to Elterman's profile (mie_density_reference) in place of the "
+             "original's plateau; ozone is the number density (m^-3) of the measured profile "
              "(ozone_density_reference) in place of the original's analytic shape.",
     ))
 

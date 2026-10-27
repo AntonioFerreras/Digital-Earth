@@ -122,7 +122,8 @@ pub const CloudBench = struct {
     /// Per metre at unit density; the default is a real cumulus's, whose droplets
     /// leave a mean free path of about ten metres.
     extinction: f64 = 0.1,
-    /// Off leaves the sun as the only light.
+    /// Each off leaves the other as the only light.
+    sun: bool = true,
     sky: bool = true,
     /// Scattering in the dense core goes on for thousands of bounces.
     bounce_limit: u32 = 4096,
@@ -132,13 +133,26 @@ pub const CloudBench = struct {
     /// scatters: P1, which goes negative where the light is strongly directional, or a
     /// von Mises-Fisher lobe with the same moments.
     probe_closure: Closure = .von_mises_fisher,
+    /// Reads the probes at a point jittered by a tent of half a finest spacing per
+    /// axis: a trilinear read whose mean is a smoother reconstruction, at some noise.
+    probe_jitter: bool = true,
+    /// Draws the step phase and the probe read jitters from a blue noise tile over the
+    /// screen, so that a frame's noise carries no low frequencies, instead of the hash.
+    blue_noise: bool = true,
     /// How the probes' walks estimate the sun's transmittance at each collision.
     probe_sun_estimate: SunEstimate = .march,
     probe_bake: ProbeBake = .photons,
     /// How the photons add their paths to the probes.
     photon_deposit: PhotonDeposit = .points,
-    /// The spherical harmonic order of the probes' fit of the sun's log fluence.
-    probe_sun_order: SunOrder = .@"3",
+    /// The spherical harmonic order of the probes' fit of the sun's log fluence, which
+    /// the baked bins carry whichever is chosen.
+    probe_sun_order: SunOrder = .@"5",
+    /// Whether the fit is of the fluence's log, which spans the shadow's orders of
+    /// magnitude, or of the fluence itself, which rings below zero there.
+    probe_sun_fit: SunFit = .log,
+    /// The spherical harmonic order of the sky's radiance the probes are lit by, of the
+    /// 3 their transfer holds.
+    probe_sky_order: SkyOrder = .@"3",
     /// The probes' bake stops after this many walks per probe.
     probe_walks: u32 = 2048,
     /// Walks per probe, or rounds of photons, each frame while the probes bake.
@@ -153,6 +167,10 @@ pub const CloudBench = struct {
     /// take at MARCH_STEP_VOXELS (modes/cloud_bench.slang): fewer leave the converged
     /// image as it is, the march being jittered, and add a little noise.
     view_steps: f64 = 0.4,
+    /// The longest step of the approximation's march along the view, in voxels: the
+    /// majorant alone would let one step cross a thin cell, past the wisps in it. Past
+    /// a majorant cell's 8 the cap is off.
+    view_step_max_voxels: f64 = 64,
     /// The majorant cells that the approximation's march walks along the view and
     /// towards the sun, as multiples of the volume's per axis: larger cells take fewer
     /// steps between them and skip less empty space.
@@ -167,7 +185,9 @@ pub const CloudBench = struct {
     /// `points` adds a point every finest cell along the path, `leaf_lengths` the exact
     /// length of the path in each leaf.
     pub const PhotonDeposit = enum { points, leaf_lengths };
-    pub const SunOrder = enum { @"2", @"3" };
+    pub const SunOrder = enum { @"3", @"5" };
+    pub const SkyOrder = enum { @"2", @"3" };
+    pub const SunFit = enum { log, linear };
     /// `probes` reads them where the view scatters; `gather` follows one scatter there
     /// at full resolution and reads them only past it; `forward_peak` carries the
     /// phase's forward peak along the view at full resolution and reads the probes for
@@ -179,9 +199,13 @@ pub const CloudBench = struct {
     pub const MarchCells = enum(u32) { @"1", @"2", @"4" };
 
     /// Metres per volume unit, so that the data set's cloud is a cumulus a few
-    /// kilometres across, and the altitude of the grid's base.
+    /// kilometres across.
     const metres_per_unit = 10;
-    const base_altitude_m = 1000;
+    /// Every grid's base lies where it puts the WDAS half cloud's centre, which is
+    /// `wdas_height_m` up its grid, at `centre_altitude_m`.
+    const centre_altitude_m = 2500;
+    const wdas_height_m = 2820;
+    const base_altitude_m = centre_altitude_m - wdas_height_m / 2;
     /// PLANET_RADIUS in common/constants.slang.
     const planet_radius_m = 6371e3;
 
@@ -195,22 +219,27 @@ pub const CloudBench = struct {
     /// counts.
     pub fn benchUniforms(bench: CloudBench, single_scattering: bool) uniforms.CloudBenchUniforms {
         const flags: uniforms.CloudBenchFlags = .{
+            .sun = bench.sun,
             .sky = bench.sky,
             .probe_gather = bench.first_scatter == .gather or bench.first_scatter == .forward_peak_gather,
             .forward_peak = bench.first_scatter == .forward_peak or bench.first_scatter == .forward_peak_gather,
             .p1_closure = bench.probe_closure == .p1,
             .ratio_tracking = bench.probe_sun_estimate == .ratio_tracking,
-            .sun_order3 = bench.probe_sun_order == .@"3",
             .adaptive_probes = bench.probe_layout == .adaptive,
             .photons = bench.probe_bake == .photons,
             .leaf_lengths = bench.photon_deposit == .leaf_lengths,
+            .sun_order3 = bench.probe_sun_order == .@"3",
+            .sky_order2 = bench.probe_sky_order == .@"2",
+            .sun_linear = bench.probe_sun_fit == .linear,
+            .probe_jitter = bench.probe_jitter,
+            .blue_noise = bench.blue_noise,
         };
         return .{
             .origin = @splat(0),
             .grid_min = @splat(0),
             .grid_size = @splat(0),
             .medium = .{ @floatCast(bench.extinction), 0, 0, 0 },
-            .march = .{ @floatCast(bench.view_steps), @floatFromInt(@backingInt(bench.view_march_cells)), @floatFromInt(@backingInt(bench.sun_march_cells)), 0 },
+            .march = .{ @floatCast(bench.view_steps), @floatFromInt(@backingInt(bench.view_march_cells)), @floatFromInt(@backingInt(bench.sun_march_cells)), @floatCast(bench.view_step_max_voxels) },
             .options = .{ @backingInt(bench.view), if (single_scattering) 1 else bench.bounce_limit, @bitCast(flags), bench.probe_walks },
             .samples = @splat(0),
             .probe_origin = .{ 0, 0, 0, @floatCast(bench.probe_depth_ratio) },

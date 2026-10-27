@@ -18,9 +18,10 @@
 // transfer holds light scattered on its way only.
 //
 // `bake_probes` adds one backward random walk per probe per dispatch, `fit_probes`
-// fits the sun's transfer from the walks' direction bins, `light_probes` lights the
-// probes with the present sun and sky, and `fill_probe_atlas` copies their light to
-// their leaves' corners for the approximation (modes/cloud_bench.slang).
+// fits the sun's transfer from the walks' direction bins and contracts the sky's from
+// the sums and the bins, `light_probes` lights the probes with the present sun and sky
+// from the fits alone, and `fill_probe_atlas` copies their light to their leaves'
+// corners for the approximation (modes/cloud_bench.slang).
 
 import atmosphere.phase;
 import clouds.bench_volume;
@@ -33,7 +34,7 @@ import shared.bindings;
 import shared.uniforms;
 
 StructuredBuffer<float4> bench_probe_positions;
-// Element probe * SH_COUNT + j: the probe's sums over its walks of the sky's transfer
+// Element probe * SH3_COUNT + j: the probe's sums over its walks of the sky's transfer
 // for harmonic j, x: phi_j, yzw: F_j.
 RWStructuredBuffer<float4> bench_probe_transfer;
 // Element b * probes + probe: the probe's sums over its walks of the sun's light from
@@ -41,10 +42,13 @@ RWStructuredBuffer<float4> bench_probe_transfer;
 // photon feeds one bin, so that its deposits at neighbouring probes share cache lines;
 // src/render/ProbeCache.zig stores them probe-major.
 RWStructuredBuffer<float4> bench_probe_sun_bins;
-// The two sums above as raw bytes, for the photons' atomic adds.
-RWByteAddressBuffer bench_probe_transfer_raw;
+// The bins as raw bytes, for the photons' atomic adds.
 RWByteAddressBuffer bench_probe_sun_bins_raw;
 RWStructuredBuffer<SunTransfer> bench_probe_sun;
+// Per quantised coefficient, its least value over the lit probes at 4 i and its greatest
+// at 4 (SUN_QUANTIZED + i), as `orderable` uints for the atomics.
+RWByteAddressBuffer bench_probe_sun_ranges;
+RWStructuredBuffer<SkyTransfer> bench_probe_sky;
 // Element probe * 3 + c: the probe's light in colour channel c, x: phi, yzw: F.
 RWStructuredBuffer<float4> bench_probe_light_values;
 // Element leaf * 8 + corner: the probe at the leaf's corner, x in bit 0 of the
@@ -73,36 +77,72 @@ RWTexture3D<float> bench_sun_least;
 [format("r16f")]
 RWTexture3D<float> bench_sun_reach;
 
-// Per unit irradiance from the sun's direction s: phi(s) = exp(sum_j log_fluence[j]
-// Y_j(s)) through order 2, or order 3 with CLOUD_BENCH_SUN_ORDER3, and
-// F(s) = phi(s) sum_k flux_ratio[k] Y_k(s) over the first four harmonics. Scalar arrays
-// only, so that the buffer packs it without padding.
+// Per unit irradiance from the sun's direction s: phi(s) = exp(sum_j c_j Y_j(s))
+// through order 5 and F(s) = phi(s) sum_k r_k Y_k(s) over the first four harmonics.
+// c_0 is a float; the other coefficients, c_1 on and then r, are bytes over the field's
+// range of each in `bench_probe_sun_ranges`, four to a uint.
+static const uint SUN_FLUX_HARMONICS = 4;
+// The log fluence's harmonics fitted; the rest stay zero.
+uint sun_harmonics()
+{
+    return (bench.options.z & CLOUD_BENCH_SUN_ORDER3) != 0 ? SH3_COUNT : SH5_COUNT;
+}
+static const uint SUN_QUANTIZED = SH5_COUNT - 1 + 3 * SUN_FLUX_HARMONICS;
+static const uint SUN_PACKED_WORDS = (SUN_QUANTIZED + 3) / 4;
 struct SunTransfer
 {
-    float log_fluence[SH3_COUNT];
-    float flux_ratio[3 * SUN_FLUX_HARMONICS];
+    float dc;
+    uint packed[SUN_PACKED_WORDS];
 
-    [mutating]
-    void add_flux_ratio(uint k, float3 value)
+    float coefficient(uint i)
     {
-        for (uint i = 0; i < 3; i++)
-            flux_ratio[3 * k + i] += value[i];
-    }
-
-    float3 flux_ratio_at(uint k)
-    {
-        return float3(flux_ratio[3 * k], flux_ratio[3 * k + 1], flux_ratio[3 * k + 2]);
+        return dequantise(packed_byte(packed, i), coefficient_range(i));
     }
 };
 
+// Per harmonic j of the sky's radiance through order 3, phi_j and F_j of its light at
+// the probe, single and high order: the walks' sums contracted with the bins. phi_0 is
+// a float; the other values, j-major, are bytes over +-sqrt(2 l + 1) phi_0, which
+// bounds each, as the transfer is a positive kernel with |F| <= phi and the harmonics
+// of degree l lie within sqrt((2 l + 1) / 4 pi).
+static const uint SKY_QUANTIZED = 4 * SH3_COUNT - 1;
+static const uint SKY_PACKED_WORDS = (SKY_QUANTIZED + 3) / 4;
+struct SkyTransfer
+{
+    float dc;
+    uint packed[SKY_PACKED_WORDS];
+
+    float2 range(uint i)
+    {
+        uint l = uint(sqrt(float((i + 1) / 4)));
+        float bound = sqrt(2.0 * float(l) + 1.0) * dc;
+        return float2(-bound, bound);
+    }
+
+    float4 light(uint j)
+    {
+        float4 light;
+        for (uint k = 0; k < 4; k++)
+        {
+            uint i = 4 * j + k;
+            light[k] = i == 0 ? dc : dequantise(packed_byte(packed, i - 1), range(i - 1));
+        }
+        return light;
+    }
+};
+
+uint packed_byte<let N : uint>(uint packed[N], uint i)
+{
+    return packed[i / 4] >> (8 * (i % 4)) & 255;
+}
+
+void pack_byte<let N : uint>(inout uint packed[N], uint i, uint byte)
+{
+    packed[i / 4] |= byte << (8 * (i % 4));
+}
+
 static const uint PROBE_GROUP_SIZE = 64;
 
-// The harmonics of the sun's log fluence.
-uint sun_harmonics()
-{
-    return (bench.options.z & CLOUD_BENCH_SUN_ORDER3) != 0 ? SH3_COUNT : SH_COUNT;
-}
-static const uint SUN_FLUX_HARMONICS = 4;
 static const uint SUN_BIN_SIDE = 8;
 static const uint SUN_BIN_COUNT = SUN_BIN_SIDE * SUN_BIN_SIDE;
 // The dimmest share of a probe's brightest direction that the log fit resolves: bins
@@ -183,8 +223,8 @@ void clear_probe_sums(uint3 thread: SV_DispatchThreadID)
         return;
     for (uint b = 0; b < SUN_BIN_COUNT; b++)
         bench_probe_sun_bins[b * bench.probe_counts.x + probe] = 0.0;
-    for (uint j = 0; j < SH_COUNT; j++)
-        bench_probe_transfer[probe * SH_COUNT + j] = 0.0;
+    for (uint j = 0; j < SH3_COUNT; j++)
+        bench_probe_transfer[probe * SH3_COUNT + j] = 0.0;
 }
 
 void add_sum(RWByteAddressBuffer sums, uint element, float4 value)
@@ -196,36 +236,28 @@ void add_sum(RWByteAddressBuffer sums, uint element, float4 value)
     }
 }
 
-// Light that has scattered feeds the sun's `bin`, light that has not the sky's transfer.
-void deposit(uint probe, float4 value, bool collided, uint bin, float basis[SH_COUNT])
-{
-    if (collided)
-        add_sum(bench_probe_sun_bins_raw, bin * bench.probe_counts.x + probe, value);
-    else
-    {
-        for (uint j = 0; j < SH_COUNT; j++)
-            add_sum(bench_probe_transfer_raw, probe * SH_COUNT + j, 4.0 * PI * basis[j] * value);
-    }
-}
-
 // The scattered light of this thread's photon in the leaf it last crossed, per corner,
 // not yet added to the probes.
 static uint splat_slot = NO_LEAF;
 static float4 splat[8] = { float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0), float4(0.0) };
 
-// Adds `weight` times the path from `pos` along `dir` up to `length` to the probes, at
+// Adds `weight` times the path from `pos` along `dir` up to `length` to `bin`, at
 // points a finest cell apart from `next` on, which carries over to the path's next
 // part: each point's cell length times its leaf's corners' trilinear weights, over each
-// probe's integral of its weight, a kernel estimate of the fluence. Scattered light goes
-// to all eight corners, summed in registers until the photon leaves the leaf, across
-// collisions, as the noise of drawing one corner would otherwise dominate the bins'.
-// Light that has not collided feeds nine harmonics per corner, too many for that, and
-// goes to one corner drawn by its weight.
-void deposit_points(float3 pos, float3 dir, float length, inout float next, float weight, bool collided, uint bin,
-                    float basis[SH_COUNT], inout Rng rng)
+// probe's integral of its weight, a kernel estimate of the fluence, summed in registers
+// until the photon leaves the leaf, across collisions, as the noise of drawing one
+// corner would otherwise dominate the bins'. Light that has not collided is the sky's
+// single scattering, which `bake_sky_transfer` estimates directly.
+void deposit_points(float3 pos, float3 dir, float length, inout float next, float weight, bool collided, uint bin)
 {
     uint3 cells = bench.probe_cells.xyz;
     float step = min(bench.probe_spacing.x, min(bench.probe_spacing.y, bench.probe_spacing.z));
+    if (!collided)
+    {
+        next -= length;
+        next -= floor(next / step) * step;
+        return;
+    }
     for (; next < length; next += step)
     {
         float3 lattice = (pos + next * dir - bench.probe_origin.xyz) / bench.probe_spacing.xyz;
@@ -238,20 +270,12 @@ void deposit_points(float3 pos, float3 dir, float length, inout float next, floa
         uint level = leaf >> LEAF_SLOT_BITS;
         uint slot = leaf & ((1u << LEAF_SLOT_BITS) - 1);
         float3 within = (lattice - float3((cell >> level) << level)) / float(1u << level);
-        if (collided)
-        {
-            if (slot != splat_slot)
-                flush_splat(bin);
-            splat_slot = slot;
-            float weights[8] = corner_weights(within);
-            for (uint corner = 0; corner < 8; corner++)
-                splat[corner] += weights[corner] * weight * step * float4(1.0, dir);
-            continue;
-        }
-        float4 pick = rng.next4();
-        uint corner = (pick.x < within.x ? 1u : 0u) | (pick.y < within.y ? 2u : 0u) | (pick.z < within.z ? 4u : 0u);
-        uint probe = bench_probe_corners[slot * 8 + corner];
-        deposit(probe, weight * step / bench_probe_volumes[probe] * float4(1.0, dir), collided, bin, basis);
+        if (slot != splat_slot)
+            flush_splat(bin);
+        splat_slot = slot;
+        float weights[8] = corner_weights(within);
+        for (uint corner = 0; corner < 8; corner++)
+            splat[corner] += weights[corner] * weight * step * float4(1.0, dir);
     }
     next -= length;
 }
@@ -286,9 +310,10 @@ float[8] corner_weights(float3 within)
 // leaf's corners, drawn in proportion to the corner's trilinear weight integrated
 // along the chord, which Simpson's rule gives exactly as the weight is cubic along a
 // line.
-void deposit_path(float3 pos, float3 dir, float length, float weight, bool collided, uint bin, float basis[SH_COUNT],
-                  inout Rng rng)
+void deposit_path(float3 pos, float3 dir, float length, float weight, bool collided, uint bin, inout Rng rng)
 {
+    if (!collided)
+        return;
     uint3 cells = bench.probe_cells.xyz;
     float3 start = (pos - bench.probe_origin.xyz) / bench.probe_spacing.xyz;
     float3 lattice_dir = dir / bench.probe_spacing.xyz;
@@ -333,7 +358,7 @@ void deposit_path(float3 pos, float3 dir, float length, float weight, bool colli
             }
             uint slot = leaf & ((1u << LEAF_SLOT_BITS) - 1);
             uint probe = bench_probe_corners[slot * 8 + corner];
-            deposit(probe, weight * chord / bench_probe_volumes[probe] * float4(1.0, dir), collided, bin, basis);
+            add_sum(bench_probe_sun_bins_raw, bin * bench.probe_counts.x + probe, weight * chord / bench_probe_volumes[probe] * float4(1.0, dir));
         }
         t = next;
     }
@@ -341,10 +366,10 @@ void deposit_path(float3 pos, float3 dir, float length, float weight, bool colli
 
 // The adjoint of `bake_probes`: light enters the grid's box from a uniform direction,
 // at a uniform point of the box's area seen from there, and `deposit_path`, with
-// CLOUD_BENCH_LEAF_LENGTHS, or `deposit_points` adds its path to the probes. Light past
-// its first collision feeds the sun's bin of its entry direction, and before it the
-// sky's transfer; `light_probes` takes the sky's scattered light from the bins. A
-// round adds as much as one walk per probe.
+// CLOUD_BENCH_LEAF_LENGTHS, or `deposit_points` adds its path past its first collision
+// to the sun's bin of its entry direction; `light_probes` takes the sky's scattered light
+// from the bins, and `bake_sky_transfer` its single scattering. A round adds as much as
+// one walk per probe.
 void trace_photon(uint photon, uint round)
 {
     uint photon_count = bench.probe_counts.x;
@@ -360,7 +385,6 @@ void trace_photon(uint photon, uint round)
     float3 pos = volume.grid_min + u.yzw * extent;
     pos[axis] = volume.grid_min[axis] + (dir[axis] > 0.0 ? 0.0 : extent[axis]);
     uint bin = sun_bin(from);
-    float basis[SH_COUNT] = sh_basis(from);
     float weight = area / float(photon_count);
     bool leaf_lengths = (bench.options.z & CLOUD_BENCH_LEAF_LENGTHS) != 0;
     float next = rng.next4().x * min(bench.probe_spacing.x, min(bench.probe_spacing.y, bench.probe_spacing.z));
@@ -369,9 +393,9 @@ void trace_photon(uint photon, uint round)
     {
         float t = sample_collision(volume, pos, dir, FLOAT_MAX, rng);
         if (leaf_lengths)
-            deposit_path(pos, dir, t >= 0.0 ? t : FLOAT_MAX, weight, collided, bin, basis, rng);
+            deposit_path(pos, dir, t >= 0.0 ? t : FLOAT_MAX, weight, collided, bin, rng);
         else
-            deposit_points(pos, dir, t >= 0.0 ? t : grid_span(volume, pos, dir, FLOAT_MAX).y, next, weight, collided, bin, basis, rng);
+            deposit_points(pos, dir, t >= 0.0 ? t : grid_span(volume, pos, dir, FLOAT_MAX).y, next, weight, collided, bin);
         if (t < 0.0)
             break;
         pos += t * dir;
@@ -406,6 +430,50 @@ void trace_photons(uint3 thread: SV_DispatchThreadID)
 void reset_photon_counter()
 {
     bench_photon_counter.Store(0, 0);
+}
+
+// The sky's single scattering transfer, estimated directly: per round, the
+// transmittance from the probe along one direction, which is what the sky's radiance
+// there reaches the probe by, into the transfer's harmonics, 4 pi times for the
+// sphere. The directions are a Fibonacci set of SKY_RAY_SET, taken in a scrambled
+// order and rotated at random per probe and set, so that the rounds stratify the
+// sphere while any number of them stays unbiased.
+static const uint SKY_RAY_SET = 1024;
+static const uint SKY_RAY_STRIDE = 571;
+
+[shader("compute")]
+[numthreads(PROBE_GROUP_SIZE, 1, 1)]
+void bake_sky_transfer(uint3 thread: SV_DispatchThreadID)
+{
+    uint probe = thread.x;
+    if (probe >= bench.probe_counts.x)
+        return;
+    BenchVolume volume = BenchVolume();
+    float3 pos = bench_probe_positions[probe].xyz;
+    float4 sums[SH3_COUNT];
+    for (uint j = 0; j < SH3_COUNT; j++)
+        sums[j] = bench_probe_transfer[probe * SH3_COUNT + j];
+    for (uint round = bench.samples.z; round < bench.samples.z + bench.samples.w; round++)
+    {
+        Rng rng = Rng(uint2(probe, 2), round);
+        // A uniform rotation (Shoemake) of the set.
+        Rng set_rng = Rng(uint2(probe, 3), round / SKY_RAY_SET);
+        float4 u = set_rng.next4();
+        float4 q = float4(sqrt(1.0 - u.x) * sin(2.0 * PI * u.y), sqrt(1.0 - u.x) * cos(2.0 * PI * u.y),
+                          sqrt(u.x) * sin(2.0 * PI * u.z), sqrt(u.x) * cos(2.0 * PI * u.z));
+        uint i = (round % SKY_RAY_SET) * SKY_RAY_STRIDE % SKY_RAY_SET;
+        float z = 1.0 - 2.0 * (float(i) + 0.5) / float(SKY_RAY_SET);
+        float radius = sqrt(max(1.0 - z * z, 0.0));
+        float angle = float(i) * PI * (3.0 - sqrt(5.0));
+        float3 point = float3(radius * cos(angle), z, radius * sin(angle));
+        float3 look = point + 2.0 * cross(q.xyz, cross(q.xyz, point) + q.w * point);
+        float seen = transmittance(volume, pos, look, rng);
+        float basis[SH3_COUNT] = sh_basis<3>(look);
+        for (uint j = 0; j < SH3_COUNT; j++)
+            sums[j] += 4.0 * PI * seen * basis[j] * float4(1.0, -look);
+    }
+    for (uint j = 0; j < SH3_COUNT; j++)
+        bench_probe_transfer[probe * SH3_COUNT + j] = sums[j];
 }
 
 // A walk starts at the probe looking along a uniform direction and follows the light
@@ -462,17 +530,130 @@ void bake_probes(uint3 thread: SV_DispatchThreadID)
         t = sample_collision(volume, pos, dir, FLOAT_MAX, rng);
     }
     float weight = t < 0.0 ? 4.0 * PI : 0.0;
-    float basis[SH_COUNT] = sh_basis(dir);
-    for (uint j = 0; j < SH_COUNT; j++)
+    float basis[SH3_COUNT] = sh_basis<3>(dir);
+    for (uint j = 0; j < SH3_COUNT; j++)
     {
-        uint element = probe * SH_COUNT + j;
+        uint element = probe * SH3_COUNT + j;
         float4 sum = bench.samples.z == 0 ? float4(0.0) : bench_probe_transfer[element];
         bench_probe_transfer[element] = sum + weight * basis[j] * arrival;
     }
 }
 
-// Projects the bins' log fluence and flux ratio onto the harmonics by the bins'
-// quadrature: they are of equal solid angle.
+// The harmonics of the sun's log fluence, or with CLOUD_BENCH_SUN_LINEAR the fluence,
+// and flux ratio of `probe`'s bins by the bins' quadrature: they are of equal solid
+// angle. Index 0 is the fluence's constant harmonic, then its others, then the flux
+// ratio's; false if no walk has carried sunlight to the probe.
+bool sun_coefficients(uint probe, out float coefficients[SUN_QUANTIZED + 1])
+{
+    uint probes = bench.probe_counts.x;
+    for (uint i = 0; i <= SUN_QUANTIZED; i++)
+        coefficients[i] = 0.0;
+    float brightest = 0.0;
+    for (uint b = 0; b < SUN_BIN_COUNT; b++)
+        brightest = max(brightest, bench_probe_sun_bins[b * probes + probe].x);
+    if (!(brightest > 0.0))
+        return false;
+    // Each walk's deposits in a bin estimate the bin's integral of phi / 4 pi.
+    float to_fluence = float(SUN_BIN_COUNT) / float(max(bench.samples.z, 1));
+    float bin_solid_angle = 4.0 * PI / float(SUN_BIN_COUNT);
+    bool linear = (bench.options.z & CLOUD_BENCH_SUN_LINEAR) != 0;
+    for (uint b = 0; b < SUN_BIN_COUNT; b++)
+    {
+        float4 sum = bench_probe_sun_bins[b * probes + probe];
+        float basis[SH5_COUNT] = sh_basis<5>(bin_direction(b, 0.5));
+        float fluence = max(sum.x, SUN_FLOOR * brightest) * to_fluence;
+        float fitted = (linear ? fluence : log(fluence)) * bin_solid_angle;
+        for (uint j = 0; j < sun_harmonics(); j++)
+            coefficients[j] += fitted * basis[j];
+        float3 flux_ratio = (sum.x > 0.0 ? sum.yzw / sum.x : float3(0.0)) * bin_solid_angle;
+        for (uint k = 0; k < SUN_FLUX_HARMONICS; k++)
+            for (uint c = 0; c < 3; c++)
+                coefficients[SH5_COUNT + 3 * k + c] += flux_ratio[c] * basis[k];
+    }
+    return true;
+}
+
+// Floats as uints that order alike, for the ranges' atomics.
+uint orderable(float value)
+{
+    uint bits = asuint(value);
+    return (bits & 0x80000000) != 0 ? ~bits : bits | 0x80000000;
+}
+
+float from_orderable(uint bits)
+{
+    return asfloat((bits & 0x80000000) != 0 ? bits & 0x7FFFFFFF : ~bits);
+}
+
+float2 coefficient_range(uint i)
+{
+    return float2(from_orderable(bench_probe_sun_ranges.Load(4 * i)), from_orderable(bench_probe_sun_ranges.Load(4 * (SUN_QUANTIZED + i))));
+}
+
+uint quantise(float value, float2 range)
+{
+    return range.y > range.x ? uint(round(saturate((value - range.x) / (range.y - range.x)) * 255.0)) : 0;
+}
+
+float dequantise(uint byte, float2 range)
+{
+    return lerp(range.x, range.y, float(byte) / 255.0);
+}
+
+// Per harmonic of the sky's radiance, the light at `probe` per walk: the sums, and with
+// photons the bins, as a bin's sum is the light from unit radiance over the bin and the
+// sky's radiance is smooth across a bin.
+void sky_light(uint probe, out float4 light[SH3_COUNT])
+{
+    uint probes = bench.probe_counts.x;
+    float walks = float(max(bench.samples.z, 1));
+    for (uint j = 0; j < SH3_COUNT; j++)
+        light[j] = bench_probe_transfer[probe * SH3_COUNT + j] / walks;
+    if ((bench.options.z & CLOUD_BENCH_PHOTONS) == 0)
+        return;
+    for (uint b = 0; b < SUN_BIN_COUNT; b++)
+    {
+        float basis[SH3_COUNT] = sh_basis<3>(bin_direction(b, 0.5));
+        float4 bin = 4.0 * PI / walks * bench_probe_sun_bins[b * probes + probe];
+        for (uint j = 0; j < SH3_COUNT; j++)
+            light[j] += basis[j] * bin;
+    }
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void reset_sun_ranges()
+{
+    for (uint i = 0; i < SUN_QUANTIZED; i++)
+    {
+        bench_probe_sun_ranges.Store(4 * i, 0xFFFFFFFF);
+        bench_probe_sun_ranges.Store(4 * (SUN_QUANTIZED + i), 0);
+    }
+}
+
+// The least and greatest of each quantised coefficient over the lit probes, reduced
+// over the wave before the atomics.
+[shader("compute")]
+[numthreads(PROBE_GROUP_SIZE, 1, 1)]
+void range_probes(uint3 thread: SV_DispatchThreadID)
+{
+    uint probe = thread.x;
+    float coefficients[SUN_QUANTIZED + 1];
+    if (probe >= bench.probe_counts.x || !sun_coefficients(probe, coefficients))
+        return;
+    for (uint i = 0; i < SUN_QUANTIZED; i++)
+    {
+        uint bits = orderable(coefficients[i + 1]);
+        uint least = WaveActiveMin(bits);
+        uint greatest = WaveActiveMax(bits);
+        if (WaveIsFirstLane())
+        {
+            bench_probe_sun_ranges.InterlockedMin(4 * i, least);
+            bench_probe_sun_ranges.InterlockedMax(4 * (SUN_QUANTIZED + i), greatest);
+        }
+    }
+}
+
 [shader("compute")]
 [numthreads(PROBE_GROUP_SIZE, 1, 1)]
 void fit_probes(uint3 thread: SV_DispatchThreadID)
@@ -480,35 +661,25 @@ void fit_probes(uint3 thread: SV_DispatchThreadID)
     uint probe = thread.x;
     if (probe >= bench.probe_counts.x)
         return;
-    uint probes = bench.probe_counts.x;
-    float brightest = 0.0;
-    for (uint b = 0; b < SUN_BIN_COUNT; b++)
-        brightest = max(brightest, bench_probe_sun_bins[b * probes + probe].x);
-    SunTransfer fit;
-    for (uint j = 0; j < SH3_COUNT; j++)
-        fit.log_fluence[j] = 0.0;
-    for (uint i = 0; i < 3 * SUN_FLUX_HARMONICS; i++)
-        fit.flux_ratio[i] = 0.0;
-    if (brightest > 0.0)
-    {
-        // Each walk's deposits in a bin estimate the bin's integral of phi / 4 pi.
-        float to_fluence = float(SUN_BIN_COUNT) / float(max(bench.samples.z, 1));
-        float bin_solid_angle = 4.0 * PI / float(SUN_BIN_COUNT);
-        for (uint b = 0; b < SUN_BIN_COUNT; b++)
-        {
-            float4 sum = bench_probe_sun_bins[b * probes + probe];
-            float basis[SH3_COUNT] = sh3_basis(bin_direction(b, 0.5));
-            float log_fluence = log(max(sum.x, SUN_FLOOR * brightest) * to_fluence);
-            for (uint j = 0; j < sun_harmonics(); j++)
-                fit.log_fluence[j] += log_fluence * basis[j] * bin_solid_angle;
-            float3 flux_ratio = sum.x > 0.0 ? sum.yzw / sum.x : float3(0.0);
-            for (uint k = 0; k < SUN_FLUX_HARMONICS; k++)
-                fit.add_flux_ratio(k, flux_ratio * basis[k] * bin_solid_angle);
-        }
-    }
-    else
-        fit.log_fluence[0] = SUN_DARK_LOG;
-    bench_probe_sun[probe] = fit;
+    float coefficients[SUN_QUANTIZED + 1];
+    bool lit = sun_coefficients(probe, coefficients);
+    SunTransfer sun;
+    sun.dc = lit ? coefficients[0] : SUN_DARK_LOG;
+    for (uint word = 0; word < SUN_PACKED_WORDS; word++)
+        sun.packed[word] = 0;
+    for (uint i = 0; i < SUN_QUANTIZED && lit; i++)
+        pack_byte(sun.packed, i, quantise(coefficients[i + 1], coefficient_range(i)));
+    bench_probe_sun[probe] = sun;
+
+    float4 light[SH3_COUNT];
+    sky_light(probe, light);
+    SkyTransfer sky;
+    sky.dc = light[0].x;
+    for (uint word = 0; word < SKY_PACKED_WORDS; word++)
+        sky.packed[word] = 0;
+    for (uint i = 0; i < SKY_QUANTIZED; i++)
+        pack_byte(sky.packed, i, quantise(light[(i + 1) / 4][(i + 1) % 4], sky.range(i)));
+    bench_probe_sky[probe] = sky;
 }
 
 [shader("compute")]
@@ -518,42 +689,36 @@ void light_probes(uint3 thread: SV_DispatchThreadID)
     uint probe = thread.x;
     if (probe >= bench.probe_counts.x)
         return;
-    float3 sun = bench_sun.Load(int3(0, 0, 0)).rgb;
-    bool sky = (bench.options.z & CLOUD_BENCH_SKY) != 0;
-    float walks = float(max(bench.samples.z, 1));
+    float3 sun = (bench.options.z & CLOUD_BENCH_SUN) != 0 ? bench_sun.Load(int3(0, 0, 0)).rgb : float3(0.0);
     float4 light[3] = { float4(0.0), float4(0.0), float4(0.0) };
-    for (uint j = 0; j < SH_COUNT; j++)
+    if ((bench.options.z & CLOUD_BENCH_SKY) != 0)
     {
-        float3 sky_radiance = sky ? bench_sun.Load(int3(1 + j, 0, 0)).rgb / walks : float3(0.0);
-        float4 transfer = bench_probe_transfer[probe * SH_COUNT + j];
-        for (uint c = 0; c < 3; c++)
-            light[c] += sky_radiance[c] * transfer;
-    }
-    // A bin's sum is the light from unit radiance over the bin, and the sky's radiance
-    // is smooth across a bin.
-    if (sky && (bench.options.z & CLOUD_BENCH_PHOTONS) != 0)
-    {
-        for (uint b = 0; b < SUN_BIN_COUNT; b++)
+        SkyTransfer sky = bench_probe_sky[probe];
+        uint harmonics = (bench.options.z & CLOUD_BENCH_SKY_ORDER2) != 0 ? SH2_COUNT : SH3_COUNT;
+        for (uint j = 0; j < harmonics; j++)
         {
-            float basis[SH_COUNT] = sh_basis(bin_direction(b, 0.5));
-            float3 radiance = 0.0;
-            for (uint j = 0; j < SH_COUNT; j++)
-                radiance += bench_sun.Load(int3(1 + j, 0, 0)).rgb * basis[j];
-            float4 bin = 4.0 * PI / walks * bench_probe_sun_bins[b * bench.probe_counts.x + probe];
+            float3 radiance = bench_sun.Load(int3(1 + j, 0, 0)).rgb;
+            float4 light_j = sky.light(j);
             for (uint c = 0; c < 3; c++)
-                light[c] += radiance[c] * bin;
+                light[c] += radiance[c] * light_j;
         }
     }
 
     SunTransfer transfer = bench_probe_sun[probe];
-    float sun_basis[SH3_COUNT] = sh3_basis(frame.sun_direction.xyz);
-    float log_fluence = 0.0;
-    for (uint j = 0; j < sun_harmonics(); j++)
-        log_fluence += transfer.log_fluence[j] * sun_basis[j];
-    float3 flux_ratio = 0.0;
-    for (uint k = 0; k < SUN_FLUX_HARMONICS; k++)
-        flux_ratio += transfer.flux_ratio_at(k) * sun_basis[k];
-    float4 sunlight = exp(log_fluence) * float4(1.0, flux_ratio);
+    float4 sunlight = 0.0;
+    if (transfer.dc > SUN_DARK_LOG && any(sun > 0.0))
+    {
+        float sun_basis[SH5_COUNT] = sh_basis<5>(frame.sun_direction.xyz);
+        float fitted = transfer.dc * sun_basis[0];
+        for (uint j = 1; j < SH5_COUNT; j++)
+            fitted += transfer.coefficient(j - 1) * sun_basis[j];
+        float3 flux_ratio = 0.0;
+        for (uint k = 0; k < SUN_FLUX_HARMONICS; k++)
+            for (uint c = 0; c < 3; c++)
+                flux_ratio[c] += transfer.coefficient(SH5_COUNT - 1 + 3 * k + c) * sun_basis[k];
+        bool linear = (bench.options.z & CLOUD_BENCH_SUN_LINEAR) != 0;
+        sunlight = (linear ? max(fitted, 0.0) : exp(fitted)) * float4(1.0, flux_ratio);
+    }
     for (uint c = 0; c < 3; c++)
         bench_probe_light_values[probe * 3 + c] = light[c] + sun[c] * sunlight;
 }

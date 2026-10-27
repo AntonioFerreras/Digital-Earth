@@ -1,9 +1,10 @@
-// The cloud bench's light for the sun of `frame`, taken at the cloud's centre: the
-// sky's radiance by direction, marched through the atmosphere by the ray marcher's
-// segment march (earth/segment_march.slang) as Hillaire's sky-view table, and the
-// sun's irradiance through the atmosphere. Below the horizon the march ends at a
-// black planet. Both are linear Rec.709, averaged over wavelength bundles that
-// stratify the CIE sampling.
+// The cloud bench's light for the sun of `frame`: the sky's radiance by direction
+// from the cloud's centre, marched through the atmosphere by the ray marcher's
+// segment march (earth/segment_march.slang) as Hillaire's sky-view table, for the
+// lighting; the sky through the camera's pixels from the camera, for the background;
+// and the sun's irradiance through the atmosphere at the cloud's centre. Below the
+// horizon the march ends at a black planet. All are linear Rec.709, averaged over
+// wavelength bundles that stratify the CIE sampling.
 
 import atmosphere.media;
 import atmosphere.scattering_luts;
@@ -22,6 +23,9 @@ import spectral.planck;
 
 [format("rgba16f")]
 RWTexture2D<float4> bench_sky_target;
+// The sky through the camera, a texel per SKY_VIEW_STRIDE pixels of the frame.
+[format("rgba16f")]
+RWTexture2D<float4> bench_sky_view_target;
 // Texel (0, 0): the sun's irradiance; texels (1 + j, 0): the sky's radiance projected
 // onto spherical harmonic j, for the approximation's sky light.
 [format("rgba32f")]
@@ -29,15 +33,11 @@ RWTexture2D<float4> bench_sun_target;
 
 static const uint SKY_BUNDLE_COUNT = 16;
 static const uint SKY_PROJECTION_DIRECTION_COUNT = 4096;
+static const uint SKY_VIEW_STRIDE = 4;
 
-[shader("compute")]
-[numthreads(MODE_GROUP_SIZE, MODE_GROUP_SIZE, 1)]
-void bake_sky(uint3 thread: SV_DispatchThreadID)
+// The sky's radiance along `dir` from `pos`.
+float3 sky_radiance(float3 pos, float3 dir)
 {
-    if (any(thread.xy >= BENCH_SKY_SIZE))
-        return;
-    float3 dir = sky_direction((float2(thread.xy) + 0.5) / float2(BENCH_SKY_SIZE));
-    float3 pos = BenchVolume().world_centre();
     float3 sun = frame.sun_direction.xyz;
     CloudMedium clouds = CloudMedium(scene);
     clouds.enabled = false;
@@ -59,7 +59,31 @@ void bake_sky(uint3 thread: SV_DispatchThreadID)
             radiance[j] *= solar_irradiance(w.wavelength[j]);
         rgb += xyz_to_rec709(mul(w.xyz_weight, radiance));
     }
-    bench_sky_target[thread.xy] = float4(rgb / float(SKY_BUNDLE_COUNT), 0.0);
+    return rgb / float(SKY_BUNDLE_COUNT);
+}
+
+[shader("compute")]
+[numthreads(MODE_GROUP_SIZE, MODE_GROUP_SIZE, 1)]
+void bake_sky(uint3 thread: SV_DispatchThreadID)
+{
+    if (any(thread.xy >= BENCH_SKY_SIZE))
+        return;
+    float3 dir = sky_direction((float2(thread.xy) + 0.5) / float2(BENCH_SKY_SIZE));
+    bench_sky_target[thread.xy] = float4(sky_radiance(BenchVolume().world_centre(), dir), 0.0);
+}
+
+// Texel centres at the frame's points the background's bilinear read maps them to, so
+// that the read interpolates the sky exactly between them.
+[shader("compute")]
+[numthreads(MODE_GROUP_SIZE, MODE_GROUP_SIZE, 1)]
+void bake_sky_view(uint3 thread: SV_DispatchThreadID)
+{
+    uint2 size;
+    bench_sky_view_target.GetDimensions(size.x, size.y);
+    if (any(thread.xy >= size))
+        return;
+    float2 point = (float2(thread.xy) + 0.5) * float2(frame.frame.yz) / float2(size);
+    bench_sky_view_target[thread.xy] = float4(sky_radiance(frame.camera_position.xyz, camera_direction(point)), 0.0);
 }
 
 // One thread, after `bake_sky`.
@@ -70,8 +94,8 @@ void bake_sun(uint3 thread: SV_DispatchThreadID)
     bench_sun_target[uint2(0, 0)] = float4(sun_irradiance(BenchVolume().world_centre(), frame.sun_direction.xyz), 0.0);
 
     // A Fibonacci sphere of directions, each reading its nearest texel.
-    float3 sky[SH_COUNT];
-    for (uint j = 0; j < SH_COUNT; j++)
+    float3 sky[SH3_COUNT];
+    for (uint j = 0; j < SH3_COUNT; j++)
         sky[j] = 0.0;
     for (uint i = 0; i < SKY_PROJECTION_DIRECTION_COUNT; i++)
     {
@@ -81,10 +105,10 @@ void bake_sun(uint3 thread: SV_DispatchThreadID)
         float3 dir = float3(ring * cos(phi), z, ring * sin(phi));
         uint2 texel = min(uint2(sky_uv(dir) * float2(BENCH_SKY_SIZE)), BENCH_SKY_SIZE - 1);
         float3 radiance = bench_sky_target[texel].rgb;
-        float basis[SH_COUNT] = sh_basis(dir);
-        for (uint j = 0; j < SH_COUNT; j++)
+        float basis[SH3_COUNT] = sh_basis<3>(dir);
+        for (uint j = 0; j < SH3_COUNT; j++)
             sky[j] += radiance * basis[j];
     }
-    for (uint j = 0; j < SH_COUNT; j++)
+    for (uint j = 0; j < SH3_COUNT; j++)
         bench_sun_target[uint2(1 + j, 0)] = float4(sky[j] * (4.0 * PI / float(SKY_PROJECTION_DIRECTION_COUNT)), 0.0);
 }

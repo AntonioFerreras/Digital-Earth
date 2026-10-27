@@ -44,14 +44,19 @@ pub const SceneUniforms = extern struct {
 pub const CloudBenchFlags = packed struct(u32) {
     sky: bool = false,
     ratio_tracking: bool = false,
-    sun_order3: bool = false,
     probe_gather: bool = false,
     forward_peak: bool = false,
     p1_closure: bool = false,
     adaptive_probes: bool = false,
     photons: bool = false,
     leaf_lengths: bool = false,
-    _: u23 = 0,
+    sun_order3: bool = false,
+    sun: bool = false,
+    sky_order2: bool = false,
+    probe_jitter: bool = false,
+    blue_noise: bool = false,
+    sun_linear: bool = false,
+    _: u18 = 0,
 };
 
 pub const CloudBenchUniforms = extern struct {

@@ -127,7 +127,8 @@ pub const Shared = struct {
     network: ?InputFile,
     /// For the `bruneton` mode, which reads it when it starts. The renderer owns the path.
     lut4d: ?InputFile,
-    /// For the `cloud_bench` mode, which reads it when it starts. The renderer owns the path.
+    /// For the `cloud_bench` mode, which reads it when it starts and on `setCloudVolume`.
+    /// The renderer owns the path.
     cloud_volume: ?InputFile,
     /// The `cloud_bench` mode's probes. The renderer owns the path.
     probe_field: ProbeField,
@@ -397,12 +398,38 @@ pub fn render(renderer: *Renderer, view: View, tone: Post.Tone) Post.RecordError
 pub fn setMode(renderer: *Renderer, kind: ModeKind) !void {
     if (renderer.mode == kind) return;
     var mode: Mode = try .init(kind, renderer.gpa, &renderer.shared, renderer.preset);
-    errdefer mode.deinit(renderer.gpa);
-    _ = try prepareEarthMaps(renderer.gpa, &renderer.shared, renderer.earth_map_cache, &mode, renderer.preset, renderer.texture_quality);
+    {
+        errdefer mode.deinit(renderer.gpa);
+        _ = try prepareEarthMaps(renderer.gpa, &renderer.shared, renderer.earth_map_cache, &mode, renderer.preset, renderer.texture_quality);
+    }
+    try renderer.replaceMode(mode);
+}
+
+/// Retires the active mode for `mode` once the GPU is idle.
+fn replaceMode(renderer: *Renderer, mode: Mode) gpu.Error!void {
+    var replacement = mode;
+    errdefer replacement.deinit(renderer.gpa);
     try renderer.shared.device.waitIdle();
     renderer.mode.deinit(renderer.gpa);
-    renderer.mode = mode;
+    renderer.mode = replacement;
     renderer.restart();
+}
+
+/// Makes `file` the `cloud_bench` mode's volume, reading it now if that mode is
+/// active; on failure the previous volume stays.
+pub fn setCloudVolume(renderer: *Renderer, file: InputFile) !void {
+    const copy = (try copyInputFile(renderer.gpa, file)).?;
+    const previous = renderer.shared.cloud_volume;
+    renderer.shared.cloud_volume = copy;
+    if (renderer.mode == .cloud_bench) {
+        const mode = Mode.init(.cloud_bench, renderer.gpa, &renderer.shared, renderer.preset) catch |err| {
+            renderer.shared.cloud_volume = previous;
+            freeInputFile(renderer.gpa, copy);
+            return err;
+        };
+        try renderer.replaceMode(mode);
+    }
+    freeInputFile(renderer.gpa, previous);
 }
 
 /// Makes `file` the `neural` mode's network, reading it now if that mode is active; on

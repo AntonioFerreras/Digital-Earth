@@ -83,27 +83,42 @@ public static const uint CLOUD_BENCH_SKY = 1u << 0;
 // The probes' walks estimate the sun's transmittance by ratio tracking, not a march
 // (modes/cloud_bench_probes.slang).
 public static const uint CLOUD_BENCH_RATIO_TRACKING = 1u << 1;
-// The probes fit the sun's log fluence through order 3 instead of 2.
-public static const uint CLOUD_BENCH_SUN_ORDER3 = 1u << 2;
 // The approximation follows one scatter of its view at full resolution and reads the
 // probes only past it (modes/cloud_bench.slang).
-public static const uint CLOUD_BENCH_PROBE_GATHER = 1u << 3;
+public static const uint CLOUD_BENCH_PROBE_GATHER = 1u << 2;
 // The approximation takes the forward peak of its view's scatter as straight on, its
 // light carried along the view at full resolution (modes/cloud_bench.slang).
-public static const uint CLOUD_BENCH_FORWARD_PEAK = 1u << 4;
+public static const uint CLOUD_BENCH_FORWARD_PEAK = 1u << 3;
 // The approximation scatters the probes' light by P1 instead of a von Mises-Fisher
 // closure (modes/cloud_bench.slang).
-public static const uint CLOUD_BENCH_P1_CLOSURE = 1u << 5;
+public static const uint CLOUD_BENCH_P1_CLOSURE = 1u << 4;
 // The probes lie in src/render/ProbeLayout.zig's adaptive layout, not its dense grid;
 // read by src/render/CloudBench.zig alone.
-public static const uint CLOUD_BENCH_ADAPTIVE_PROBES = 1u << 6;
+public static const uint CLOUD_BENCH_ADAPTIVE_PROBES = 1u << 5;
 // The probes bake from light traced forward into the cloud instead of walks from
 // them, whose sky transfer then holds only the sky's light before it scatters
 // (modes/cloud_bench_probes.slang).
-public static const uint CLOUD_BENCH_PHOTONS = 1u << 7;
+public static const uint CLOUD_BENCH_PHOTONS = 1u << 6;
 // The photons add exact path lengths per leaf instead of points along the path
 // (modes/cloud_bench_probes.slang).
-public static const uint CLOUD_BENCH_LEAF_LENGTHS = 1u << 8;
+public static const uint CLOUD_BENCH_LEAF_LENGTHS = 1u << 7;
+// The probes fit the sun's log fluence through order 3 instead of 5
+// (modes/cloud_bench_probes.slang).
+public static const uint CLOUD_BENCH_SUN_ORDER3 = 1u << 8;
+// The cloud bench's sun shines; without it only the sky lights the cloud.
+public static const uint CLOUD_BENCH_SUN = 1u << 9;
+// The probes take the sky's radiance through order 2 of its harmonics instead of 3
+// (modes/cloud_bench_probes.slang).
+public static const uint CLOUD_BENCH_SKY_ORDER2 = 1u << 10;
+// The approximation reads the probes at a point offset by a tent per axis, which
+// averages to a smoother reconstruction of the lattice (modes/cloud_bench.slang).
+public static const uint CLOUD_BENCH_PROBE_JITTER = 1u << 11;
+// The approximation's step phase and probe read jitters come from a blue noise tile
+// over the screen instead of the per-pixel hash (modes/cloud_bench.slang).
+public static const uint CLOUD_BENCH_BLUE_NOISE = 1u << 12;
+// The probes fit the sun's fluence itself instead of its log, clamped at zero where
+// the harmonics ring below it (modes/cloud_bench_probes.slang).
+public static const uint CLOUD_BENCH_SUN_LINEAR = 1u << 13;
 
 
 // The cloud bench (modes/cloud_bench.slang): one density grid in a frame of its own,
@@ -119,7 +134,8 @@ public struct CloudBenchUniforms {
     // x: extinction per metre at unit density; yzw: unused.
     public float4 medium;
     // x: the approximation's view steps, as a multiple of those at MARCH_STEP_VOXELS;
-    // y, z: the walk levels of its march along the view and towards the sun; w: unused.
+    // y, z: the walk levels of its march along the view and towards the sun; w: the
+    // longest step along the view, in voxels.
     public float4 march;
     // x: the view (CLOUD_BENCH_VIEW_*), y: bounces per path, z: CLOUD_BENCH_* flags,
     // w: the probes' walks at which their bake stops.

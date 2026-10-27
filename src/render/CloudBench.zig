@@ -6,7 +6,8 @@
 //! converging while the approximation's settings are tuned, and only what the view
 //! shows is rendered. The light, the sky's radiance and the sun's irradiance at the
 //! cloud (shaders/modes/cloud_bench_sky.slang), is rebaked whenever the sun or the
-//! atmosphere changes. The transfer probes (shaders/modes/cloud_bench_probes.slang)
+//! atmosphere changes, and the background, the sky through the camera at a quarter of
+//! the frame, whenever the reference restarts. The transfer probes (shaders/modes/cloud_bench_probes.slang)
 //! bake and fit a few rounds per frame while the approximation reads them, up to the bench's walk limit, restart only when the
 //! medium or their layout (ProbeLayout.zig) changes, and are relit when the light
 //! does. Their sums resume from ProbeCache's for the same settings, and are stored
@@ -24,6 +25,7 @@ const ModeKernel = @import("ModeKernel.zig");
 const MultipleScatteringLut = @import("MultipleScatteringLut.zig");
 const ProbeCache = @import("ProbeCache.zig");
 const ProbeLayout = @import("ProbeLayout.zig");
+const BlueNoise = @import("BlueNoise.zig");
 const Renderer = @import("Renderer.zig");
 
 const CloudBench = @This();
@@ -34,13 +36,19 @@ resolve_params: Params,
 reference: BenchKernel,
 approximation: BenchKernel,
 sky_bake: BenchKernel,
+sky_view_bake: BenchKernel,
 sun_bake: BenchKernel,
 probe_bake: BenchKernel,
 photon_clear: BenchKernel,
 photon_trace: BenchKernel,
 photon_counter_reset: BenchKernel,
+sky_transfer_bake: BenchKernel,
 /// The photons `trace_photons` has handed out in its dispatch.
 photon_counter: gpu.Buffer,
+sun_range_reset: BenchKernel,
+probe_range: BenchKernel,
+/// `range_probes`' least and greatest of each quantised coefficient.
+sun_ranges: gpu.Buffer,
 probe_fit: BenchKernel,
 probe_lighting: BenchKernel,
 probe_fill: BenchKernel,
@@ -57,6 +65,7 @@ sun: gpu.Texture,
 /// cell and then over each cell's neighbours, as of `sun_reach_extinction`.
 sun_least: gpu.Texture,
 sun_reach: gpu.Texture,
+blue_noise: gpu.Texture,
 sun_reach_extinction: ?f32,
 /// The volume's occupancy, from which ProbeLayout builds layouts.
 layout_depths: LayoutDepths,
@@ -112,6 +121,8 @@ const Global = enum {
     bench_approximation,
     bench_sky,
     bench_sky_target,
+    bench_sky_view,
+    bench_sky_view_target,
     bench_sun,
     bench_sun_target,
     bench_probe_positions,
@@ -119,14 +130,16 @@ const Global = enum {
     bench_probe_corners,
     bench_probe_transfer,
     bench_probe_sun_bins,
-    bench_probe_transfer_raw,
     bench_probe_sun_bins_raw,
     bench_photon_counter,
     bench_probe_volumes,
     bench_probe_sun,
+    bench_probe_sun_ranges,
+    bench_probe_sky,
     bench_probe_light_values,
     bench_probe_light,
     bench_probe_light_target,
+    blue_noise,
     bench_sun_least,
     bench_sun_reach,
     multiple_scattering_lut,
@@ -149,11 +162,14 @@ const Accumulations = struct {
     size: [2]u32,
     reference: gpu.Texture,
     approximation: gpu.Texture,
+    /// The background, a texel per SKY_VIEW_STRIDE pixels.
+    sky_view: gpu.Texture,
     /// Samples in each.
     reference_samples: u32 = 0,
     approximation_samples: u32 = 0,
 
     fn deinit(accumulations: Accumulations) void {
+        accumulations.sky_view.deinit();
         accumulations.reference.deinit();
         accumulations.approximation.deinit();
     }
@@ -162,7 +178,7 @@ const Accumulations = struct {
 const LightKey = struct { sun_direction: [4]f32, media: [4]f32 };
 /// What a layout is built for: zero budget and ratio for the dense grid.
 const LayoutKey = struct { adaptive: bool, budget: u32, depth_ratio: f32 };
-const ProbeFitKey = struct { probe: ProbeCache.Key, walks: u32, sun_order3: bool };
+const ProbeFitKey = struct { probe: ProbeCache.Key, walks: u32, sun_order3: bool, sun_linear: bool };
 const ProbeLightKey = struct { probe: ProbeCache.Key, walks: u32, light: LightKey, flags: u32 };
 
 /// What an accumulation's image depends on: the camera, the sun, the atmosphere, and
@@ -182,10 +198,10 @@ const Key = struct {
         flags.forward_peak = false;
         flags.p1_closure = false;
         flags.ratio_tracking = false;
-        flags.sun_order3 = false;
         flags.adaptive_probes = false;
         flags.photons = false;
         flags.leaf_lengths = false;
+        flags.sun_order3 = false;
         key.bench.options[2] = @bitCast(flags);
         key.bench.probe_origin = @splat(0);
         key.bench.probe_spacing = @splat(0);
@@ -196,9 +212,11 @@ const Key = struct {
 };
 
 /// BENCH_SKY_SIZE in shaders/clouds/bench_volume.slang.
-const sky_size = [2]u32{ 512, 256 };
-/// SH_COUNT in shaders/common/spherical_harmonics.slang.
-const sh_count = 9;
+const sky_size = [2]u32{ 256, 128 };
+/// SKY_VIEW_STRIDE in shaders/modes/cloud_bench_sky.slang.
+const sky_view_stride = 4;
+/// SH3_COUNT in shaders/common/spherical_harmonics.slang.
+const sh_count = 16;
 /// Probes per axis of the dense layout.
 const dense_resolution = 64;
 /// The colour channels, each a third of `Probes.atlas` along z.
@@ -213,9 +231,12 @@ const refit_frames = 4;
 const sun_depth_stride = 8;
 /// SUN_BIN_COUNT in shaders/modes/cloud_bench_probes.slang; each bin sums four floats.
 const sun_bin_count = 64;
-/// The floats of SunTransfer in shaders/modes/cloud_bench_probes.slang: room for the
-/// sun's log fluence through order 3, and its flux ratio.
-const sun_transfer_floats = 16 + 3 * 4;
+/// SunTransfer in shaders/modes/cloud_bench_probes.slang: a float, then SUN_QUANTIZED
+/// bytes of coefficients packed into uints.
+const sun_quantized = 35 + 3 * 4;
+const sun_transfer_bytes = @sizeOf(f32) + (sun_quantized + 3) / 4 * @sizeOf(u32);
+/// SkyTransfer there: a float, then the other 4 SH3_COUNT - 1 values as bytes.
+const sky_transfer_bytes = @sizeOf(f32) + (4 * sh_count - 1 + 3) / 4 * @sizeOf(u32);
 
 /// A layout's probes on the GPU: where they lie, how a point finds its leaf, and the
 /// walks' sums, fits, and light of each.
@@ -235,6 +256,7 @@ const Probes = struct {
     transfer: gpu.Buffer,
     sun_bins: gpu.Buffer,
     sun: gpu.Buffer,
+    sky: gpu.Buffer,
     light: gpu.Buffer,
     /// Each leaf's corners' light, for the approximation's filter.
     atlas: gpu.Texture,
@@ -276,13 +298,21 @@ const Probes = struct {
         }, null);
         errdefer sun_bins.deinit();
         const sun: gpu.Buffer = try .init(device, .{
-            .size = @as(u64, count) * sun_transfer_floats * @sizeOf(f32),
-            .element_size = sun_transfer_floats * @sizeOf(f32),
+            .size = @as(u64, count) * sun_transfer_bytes,
+            .element_size = sun_transfer_bytes,
             .usage = .{ .shader_resource = true, .unordered_access = true },
             .memory = .device,
             .label = "cloud bench probe sun transfer",
         }, null);
         errdefer sun.deinit();
+        const sky: gpu.Buffer = try .init(device, .{
+            .size = @as(u64, count) * sky_transfer_bytes,
+            .element_size = sky_transfer_bytes,
+            .usage = .{ .shader_resource = true, .unordered_access = true },
+            .memory = .device,
+            .label = "cloud bench probe sky transfer",
+        }, null);
+        errdefer sky.deinit();
         const light: gpu.Buffer = try .init(device, .{
             .size = @as(u64, count) * channel_count * 4 * @sizeOf(f32),
             .element_size = 4 * @sizeOf(f32),
@@ -315,6 +345,7 @@ const Probes = struct {
             .transfer = transfer,
             .sun_bins = sun_bins,
             .sun = sun,
+            .sky = sky,
             .light = light,
             .atlas = atlas,
         };
@@ -327,6 +358,7 @@ const Probes = struct {
     fn deinit(probes: Probes) void {
         probes.atlas.deinit();
         probes.light.deinit();
+        probes.sky.deinit();
         probes.sun.deinit();
         probes.sun_bins.deinit();
         probes.transfer.deinit();
@@ -343,8 +375,8 @@ const log = std.log.scoped(.cloud_bench);
 
 pub fn init(gpa: std.mem.Allocator, shared: *const Renderer.Shared) InitError!CloudBench {
     const file = shared.cloud_volume orelse {
-        log.err("the cloud bench needs a cloud volume: pass --cloud-volume <file.ecld> or convert one to " ++
-            CloudVolume.default_path ++ " with python/clouds/convert_vdb.py", .{});
+        log.err("the cloud bench needs a cloud volume: pass --cloud-volume <file.ecld>, or convert one into " ++
+            CloudVolume.directory_path ++ " with python/clouds/convert_vdb.py and name it in the config's cloud_volume", .{});
         return error.CloudVolumeMissing;
     };
     var volume = CloudVolume.load(gpa, file.io, file.dir, file.path) catch |err| {
@@ -362,6 +394,8 @@ pub fn init(gpa: std.mem.Allocator, shared: *const Renderer.Shared) InitError!Cl
     errdefer approximation.mode_kernel.deinit();
     const sky_bake: BenchKernel = try .init(device, "modes/cloud_bench_sky", "bake_sky");
     errdefer sky_bake.mode_kernel.deinit();
+    const sky_view_bake: BenchKernel = try .init(device, "modes/cloud_bench_sky", "bake_sky_view");
+    errdefer sky_view_bake.mode_kernel.deinit();
     const sun_bake: BenchKernel = try .init(device, "modes/cloud_bench_sky", "bake_sun");
     errdefer sun_bake.mode_kernel.deinit();
     const probe_bake: BenchKernel = try .init(device, "modes/cloud_bench_probes", "bake_probes");
@@ -372,6 +406,8 @@ pub fn init(gpa: std.mem.Allocator, shared: *const Renderer.Shared) InitError!Cl
     errdefer photon_trace.mode_kernel.deinit();
     const photon_counter_reset: BenchKernel = try .init(device, "modes/cloud_bench_probes", "reset_photon_counter");
     errdefer photon_counter_reset.mode_kernel.deinit();
+    const sky_transfer_bake: BenchKernel = try .init(device, "modes/cloud_bench_probes", "bake_sky_transfer");
+    errdefer sky_transfer_bake.mode_kernel.deinit();
     const photon_counter: gpu.Buffer = try .init(device, .{
         .size = @sizeOf(u32),
         .element_size = @sizeOf(u32),
@@ -380,6 +416,18 @@ pub fn init(gpa: std.mem.Allocator, shared: *const Renderer.Shared) InitError!Cl
         .label = "cloud bench photon counter",
     }, null);
     errdefer photon_counter.deinit();
+    const sun_range_reset: BenchKernel = try .init(device, "modes/cloud_bench_probes", "reset_sun_ranges");
+    errdefer sun_range_reset.mode_kernel.deinit();
+    const probe_range: BenchKernel = try .init(device, "modes/cloud_bench_probes", "range_probes");
+    errdefer probe_range.mode_kernel.deinit();
+    const sun_ranges: gpu.Buffer = try .init(device, .{
+        .size = 2 * sun_quantized * @sizeOf(u32),
+        .element_size = @sizeOf(u32),
+        .usage = .{ .shader_resource = true, .unordered_access = true },
+        .memory = .device,
+        .label = "cloud bench sun ranges",
+    }, null);
+    errdefer sun_ranges.deinit();
     const probe_fit: BenchKernel = try .init(device, "modes/cloud_bench_probes", "fit_probes");
     errdefer probe_fit.mode_kernel.deinit();
     const probe_lighting: BenchKernel = try .init(device, "modes/cloud_bench_probes", "light_probes");
@@ -443,6 +491,17 @@ pub fn init(gpa: std.mem.Allocator, shared: *const Renderer.Shared) InitError!Cl
         .label = "cloud bench sun reach",
     });
     errdefer sun_reach.deinit();
+    const blue_noise: gpu.Texture = try .init(device, .{
+        .kind = .@"2d",
+        .format = .rgba8_unorm,
+        .width = BlueNoise.size,
+        .height = BlueNoise.size,
+        .depth_or_layers = 1,
+        .usage = .{ .shader_resource = true, .copy_destination = true },
+        .label = "cloud bench blue noise",
+    });
+    errdefer blue_noise.deinit();
+    try blue_noise.upload(device, .{ .x = 0, .y = 0, .z = 0, .width = BlueNoise.size, .height = BlueNoise.size, .depth = 1 }, &BlueNoise.generate(1), BlueNoise.size * BlueNoise.channels);
     var layout_depths: LayoutDepths = try .init(device, &volume, density);
     errdefer layout_depths.deinit();
     const cloud_shadow_placeholder: gpu.Texture = try .init(device, .{
@@ -460,12 +519,17 @@ pub fn init(gpa: std.mem.Allocator, shared: *const Renderer.Shared) InitError!Cl
         .reference = reference,
         .approximation = approximation,
         .sky_bake = sky_bake,
+        .sky_view_bake = sky_view_bake,
         .sun_bake = sun_bake,
         .probe_bake = probe_bake,
         .photon_clear = photon_clear,
         .photon_trace = photon_trace,
         .photon_counter_reset = photon_counter_reset,
+        .sky_transfer_bake = sky_transfer_bake,
         .photon_counter = photon_counter,
+        .sun_range_reset = sun_range_reset,
+        .probe_range = probe_range,
+        .sun_ranges = sun_ranges,
         .probe_fit = probe_fit,
         .probe_lighting = probe_lighting,
         .probe_fill = probe_fill,
@@ -479,6 +543,7 @@ pub fn init(gpa: std.mem.Allocator, shared: *const Renderer.Shared) InitError!Cl
         .sun = sun,
         .sun_least = sun_least,
         .sun_reach = sun_reach,
+        .blue_noise = blue_noise,
         .sun_reach_extinction = null,
         .layout_depths = layout_depths,
         .probes = null,
@@ -510,7 +575,9 @@ pub fn deinit(mode: *CloudBench, gpa: std.mem.Allocator) void {
     if (mode.accumulations) |accumulations| accumulations.deinit();
     if (mode.probes) |probes| probes.deinit();
     mode.layout_depths.deinit();
+    mode.sun_ranges.deinit();
     mode.photon_counter.deinit();
+    mode.blue_noise.deinit();
     mode.sun_reach.deinit();
     mode.sun_least.deinit();
     mode.cloud_shadow_placeholder.deinit();
@@ -526,11 +593,15 @@ pub fn deinit(mode: *CloudBench, gpa: std.mem.Allocator) void {
     mode.probe_fill.mode_kernel.deinit();
     mode.probe_lighting.mode_kernel.deinit();
     mode.probe_fit.mode_kernel.deinit();
+    mode.probe_range.mode_kernel.deinit();
+    mode.sun_range_reset.mode_kernel.deinit();
     mode.probe_bake.mode_kernel.deinit();
+    mode.sky_transfer_bake.mode_kernel.deinit();
     mode.photon_counter_reset.mode_kernel.deinit();
     mode.photon_trace.mode_kernel.deinit();
     mode.photon_clear.mode_kernel.deinit();
     mode.sun_bake.mode_kernel.deinit();
+    mode.sky_view_bake.mode_kernel.deinit();
     mode.sky_bake.mode_kernel.deinit();
     mode.approximation.mode_kernel.deinit();
     mode.reference.mode_kernel.deinit();
@@ -634,17 +705,20 @@ pub fn record(
             if (mode.probe_walks == 0) try mode.dispatch(mode.photon_clear.mode_kernel, mode.photon_clear.params, command_list, shared, &bench_frame, probe_groups);
             try mode.dispatch(mode.photon_counter_reset.mode_kernel, mode.photon_counter_reset.params, command_list, shared, &bench_frame, .{ 1, 1, 1 });
             try mode.dispatch(mode.photon_trace.mode_kernel, mode.photon_trace.params, command_list, shared, &bench_frame, probe_groups);
+            try mode.dispatch(mode.sky_transfer_bake.mode_kernel, mode.sky_transfer_bake.params, command_list, shared, &bench_frame, probe_groups);
             mode.probe_walks += frame_walks;
         }
         bench_frame.cloud_bench.samples = .{ 0, 0, mode.probe_walks, 0 };
-        var probe_fit_key: ProbeFitKey = .{ .probe = probe_key, .walks = mode.probe_walks, .sun_order3 = flags.sun_order3 };
+        var probe_fit_key: ProbeFitKey = .{ .probe = probe_key, .walks = mode.probe_walks, .sun_order3 = flags.sun_order3, .sun_linear = flags.sun_linear };
         if (mode.probe_fit_key) |fitted| {
             const lagging = mode.probe_walks < walk_limit and mode.probe_walks > fitted.walks and
                 mode.probe_walks < fitted.walks + refit_frames * rounds_per_frame;
-            if (lagging and std.meta.eql(fitted.probe, probe_key) and fitted.sun_order3 == flags.sun_order3)
+            if (lagging and std.meta.eql(fitted.probe, probe_key) and fitted.sun_order3 == flags.sun_order3 and fitted.sun_linear == flags.sun_linear)
                 probe_fit_key.walks = fitted.walks;
         }
         if (mode.probe_fit_key == null or !std.meta.eql(mode.probe_fit_key.?, probe_fit_key)) {
+            try mode.dispatch(mode.sun_range_reset.mode_kernel, mode.sun_range_reset.params, command_list, shared, &bench_frame, .{ 1, 1, 1 });
+            try mode.dispatch(mode.probe_range.mode_kernel, mode.probe_range.params, command_list, shared, &bench_frame, probe_groups);
             try mode.dispatch(mode.probe_fit.mode_kernel, mode.probe_fit.params, command_list, shared, &bench_frame, probe_groups);
             mode.probe_fit_key = probe_fit_key;
         }
@@ -659,6 +733,8 @@ pub fn record(
 
     const key: Key = .init(&bench_frame);
     if (mode.reference_key == null or !std.meta.eql(mode.reference_key.?, key)) {
+        const view_groups = mode.sky_view_bake.mode_kernel.kernel.groupCount(.{ accumulations.sky_view.desc.width, accumulations.sky_view.desc.height, 1 });
+        try mode.dispatch(mode.sky_view_bake.mode_kernel, mode.sky_view_bake.params, command_list, shared, &bench_frame, view_groups);
         accumulations.reference_samples = 0;
         mode.reference_key = key;
     }
@@ -816,19 +892,23 @@ fn dispatch(
                 .bench_reference => .{ .texture = accumulations.reference },
                 .bench_approximation => .{ .texture = accumulations.approximation },
                 .bench_sky, .bench_sky_target => .{ .texture = mode.sky },
+                .bench_sky_view, .bench_sky_view_target => .{ .texture = accumulations.sky_view },
                 .bench_sun, .bench_sun_target => .{ .texture = mode.sun },
                 .bench_probe_positions => .{ .buffer = mode.probes.?.positions },
                 .bench_probe_cells => .{ .buffer = mode.probes.?.cell_leaves },
                 .bench_probe_corners => .{ .buffer = mode.probes.?.corners },
-                .bench_probe_transfer, .bench_probe_transfer_raw => .{ .buffer = mode.probes.?.transfer },
+                .bench_probe_transfer => .{ .buffer = mode.probes.?.transfer },
                 .bench_probe_sun_bins, .bench_probe_sun_bins_raw => .{ .buffer = mode.probes.?.sun_bins },
                 .bench_photon_counter => .{ .buffer = mode.photon_counter },
                 .bench_probe_volumes => .{ .buffer = mode.probes.?.volumes },
                 .bench_probe_sun => .{ .buffer = mode.probes.?.sun },
+                .bench_probe_sun_ranges => .{ .buffer = mode.sun_ranges },
+                .bench_probe_sky => .{ .buffer = mode.probes.?.sky },
                 .bench_probe_light_values => .{ .buffer = mode.probes.?.light },
                 .bench_probe_light, .bench_probe_light_target => .{ .texture = mode.probes.?.atlas },
                 .bench_sun_least => .{ .texture = mode.sun_least },
                 .bench_sun_reach => .{ .texture = mode.sun_reach },
+                .blue_noise => .{ .texture = mode.blue_noise },
                 .multiple_scattering_lut => .{ .texture = mode.atmosphere.texture },
                 .cloud_shadow_map => .{ .texture = mode.cloud_shadow_placeholder },
             };
@@ -912,7 +992,18 @@ test "coarserMajorants bounds the cells each covers, past the grid's end too" {
 fn initAccumulations(device: gpu.Device, size: [2]u32) gpu.Error!Accumulations {
     const reference = try initAccumulation(device, size, "cloud bench reference");
     errdefer reference.deinit();
-    return .{ .size = size, .reference = reference, .approximation = try initAccumulation(device, size, "cloud bench approximation") };
+    const approximation = try initAccumulation(device, size, "cloud bench approximation");
+    errdefer approximation.deinit();
+    const sky_view: gpu.Texture = try .init(device, .{
+        .kind = .@"2d",
+        .format = .rgba16_float,
+        .width = std.math.divCeil(u32, size[0], sky_view_stride) catch unreachable,
+        .height = std.math.divCeil(u32, size[1], sky_view_stride) catch unreachable,
+        .depth_or_layers = 1,
+        .usage = .{ .shader_resource = true, .unordered_access = true },
+        .label = "cloud bench sky view",
+    });
+    return .{ .size = size, .reference = reference, .approximation = approximation, .sky_view = sky_view };
 }
 
 fn initAccumulation(device: gpu.Device, size: [2]u32, label: [*:0]const u8) gpu.Error!gpu.Texture {

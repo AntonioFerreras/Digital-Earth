@@ -7,6 +7,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Camera = @import("Camera.zig");
+const CloudVolume = @import("../assets/CloudVolume.zig");
 const EarthMaps = @import("../assets/EarthMaps.zig");
 const Renderer = @import("../render/Renderer.zig");
 const View = @import("../render/View.zig");
@@ -36,6 +37,9 @@ gamma: f64 = 1,
 /// The camera response's .rf file stem in LUT/camera_response_functions; a name, not
 /// a position, because directory order differs between platforms.
 camera_response: []const u8 = "Neutral",
+/// The cloud bench's volume: a file stem in <data>/cache/clouds, where the viewer's
+/// picker lists them.
+cloud_volume: []const u8 = CloudVolume.default_stem,
 /// Off removes the cloud shell from presets that have one.
 clouds: bool = true,
 water: scene.Water = .{},
@@ -50,6 +54,9 @@ bounce_limit: u32 = scene.atmosphere.bounce_count_max,
 /// The surface from the cube-face tiles, when they are baked; off uses the Earth maps.
 tiles: bool = true,
 gui_visible: bool = true,
+/// Presents in step with the display, which caps the accumulation at its rate but
+/// spares a screen recording the tears of frames swapped mid-scan.
+vsync: bool = false,
 
 const log = std.log.scoped(.config);
 
@@ -69,10 +76,13 @@ pub fn tone(config: Config) Post.Tone {
 pub fn clone(config: Config, gpa: std.mem.Allocator) error{OutOfMemory}!Config {
     var copy = config;
     copy.camera_response = try gpa.dupe(u8, config.camera_response);
+    errdefer gpa.free(copy.camera_response);
+    copy.cloud_volume = try gpa.dupe(u8, config.cloud_volume);
     return copy;
 }
 
 pub fn deinit(config: *Config, gpa: std.mem.Allocator) void {
+    gpa.free(config.cloud_volume);
     gpa.free(config.camera_response);
     config.* = undefined;
 }
@@ -81,6 +91,12 @@ pub fn setCameraResponse(config: *Config, gpa: std.mem.Allocator, name: []const 
     const copy = try gpa.dupe(u8, name);
     gpa.free(config.camera_response);
     config.camera_response = copy;
+}
+
+pub fn setCloudVolume(config: *Config, gpa: std.mem.Allocator, stem: []const u8) error{OutOfMemory}!void {
+    const copy = try gpa.dupe(u8, stem);
+    gpa.free(config.cloud_volume);
+    config.cloud_volume = copy;
 }
 
 /// Far above any real config; guards against loading an unrelated file.
@@ -197,6 +213,7 @@ test "save then load round-trips every field" {
         .tonescale = .aces_2,
         .gamma = 2.2,
         .camera_response = "FP2900ZG",
+        .cloud_volume = "altocumulus_7",
         .gui_visible = false,
     };
     try saved.save(testing.allocator, testing.io, tmp.dir, "viewer.zon");
@@ -224,6 +241,7 @@ test "missing fields keep defaults, unknown fields are ignored, directions renor
     try testing.expectEqual(4, loaded.exposure);
     try testing.expectEqual(defaults.gamma, loaded.gamma);
     try testing.expectEqualStrings(defaults.camera_response, loaded.camera_response);
+    try testing.expectEqualStrings(defaults.cloud_volume, loaded.cloud_volume);
 }
 
 test "invalid files are rejected" {

@@ -18,11 +18,15 @@ SSIM_RADIUS = 5
 SSIM_C1 = 0.01**2
 SSIM_C2 = 0.03**2
 
-# ProbeCache.zig's file: magic, then Key at format 3.
+# ProbeCache.zig's file: magic, then Key at format 5.
 FIELD_MAGIC = b"EPROBE01"
 FIELD_KEY_BYTES = 60
-SH_COUNT = 9
+# SH3_COUNT in shaders/common/spherical_harmonics.slang.
+SH_COUNT = 16
+SKY_ORDER = 3
 SUN_BIN_COUNT = 64
+# The order of `fit_probes`' fit of the sun's log fluence.
+SUN_ORDER = 5
 # SUN_FLOOR in shaders/modes/cloud_bench_probes.slang.
 SUN_FLOOR = 1e-5
 SUN_DIRECTION_COUNT = 32
@@ -65,13 +69,13 @@ def image_metrics(test: Path, reference: Path) -> dict:
 
 
 class Field:
-    """A probe field's sums per walk: the sky's transfer (probes, 9, 4) and the sun's
+    """A probe field's sums per walk: the sky's transfer (probes, 16, 4) and the sun's
     bins (probes, 64, 4), x: phi, yzw: F."""
 
     def __init__(self, path: Path):
         raw = path.read_bytes()
-        if raw[:8] != FIELD_MAGIC or struct.unpack("<I", raw[8:12])[0] != 3:
-            raise SystemExit(f"{path}: not a probe field of format 3")
+        if raw[:8] != FIELD_MAGIC or struct.unpack("<I", raw[8:12])[0] != 4:
+            raise SystemExit(f"{path}: not a probe field of format 5")
         key = raw[8 : 8 + FIELD_KEY_BYTES]
         self.layout = key[4:52]
         self.photons = bool(struct.unpack("<I", key[56:60])[0] & 2)
@@ -90,31 +94,42 @@ class Field:
         return rest
 
     def sun_fluence(self, directions: np.ndarray) -> np.ndarray:
-        """phi(s) by `fit_probes`' fit: log-SH through order 3 of the bins."""
+        """phi(s) by `fit_probes`' fit before its quantisation: log-SH through order
+        SUN_ORDER of the bins."""
         phi = self.bins[..., 0] * SUN_BIN_COUNT
         brightest = phi.max(-1, keepdims=True)
         log_phi = np.log(np.maximum(phi, SUN_FLOOR * np.maximum(brightest, 1e-30)))
-        coefficients = log_phi @ sh3(BIN_CENTRES) * (4.0 * math.pi / SUN_BIN_COUNT)
-        return np.where(brightest > 0, np.exp(coefficients @ sh3(directions).T), 0.0)
+        coefficients = log_phi @ sh_basis(BIN_CENTRES, SUN_ORDER) * (4.0 * math.pi / SUN_BIN_COUNT)
+        return np.where(brightest > 0, np.exp(coefficients @ sh_basis(directions, SUN_ORDER).T), 0.0)
 
     def sky_fluence(self, sky: np.ndarray) -> np.ndarray:
-        """phi under a sky of harmonics `sky`, as `light_probes` lights it: photon
-        fields hold its scattered light in the bins."""
+        """phi under a sky of harmonics `sky`, as `fit_probes` contracts it before its
+        quantisation: photon fields hold its scattered light in the bins."""
         phi = self.sky[..., 0] @ sky
         if self.photons:
-            radiance = sh3(BIN_CENTRES)[:, :SH_COUNT] @ sky
+            radiance = sh_basis(BIN_CENTRES, SKY_ORDER) @ sky
             phi = phi + 4.0 * math.pi * self.bins[..., 0] @ radiance
         return phi
 
 
-def sh3(d: np.ndarray) -> np.ndarray:
-    """shaders/common/spherical_harmonics.slang's sh3_basis."""
+def sh_basis(d: np.ndarray, order: int) -> np.ndarray:
+    """shaders/common/spherical_harmonics.slang's real harmonics through `order`, at
+    index l (l + 1) + m, by the same recurrence as its `sh5_basis`."""
     x, y, z = d[..., 0], d[..., 1], d[..., 2]
-    return np.stack([0.2820948 + 0 * x, 0.4886025 * y, 0.4886025 * z, 0.4886025 * x, 1.0925484 * x * y,
-                     1.0925484 * y * z, 0.3153916 * (3 * z * z - 1), 1.0925484 * x * z, 0.5462742 * (x * x - y * y),
-                     0.5900436 * y * (3 * x * x - y * y), 2.8906114 * x * y * z, 0.4570458 * y * (5 * z * z - 1),
-                     0.3731763 * z * (5 * z * z - 3), 0.4570458 * x * (5 * z * z - 1),
-                     1.4453057 * z * (x * x - y * y), 0.5900436 * x * (x * x - 3 * y * y)], -1)
+    basis = [None] * (order + 1) ** 2
+    re, im, diagonal = np.ones_like(x), np.zeros_like(x), 1.0
+    for m in range(order + 1):
+        previous, current = np.zeros_like(x), np.zeros_like(x)
+        for l in range(m, order + 1):
+            p = diagonal * np.ones_like(x) if l == m else ((2 * l - 1) * z * current - (l + m - 1) * previous) / (l - m)
+            previous, current = current, p
+            scale = math.sqrt((2 * l + 1) / (4 * math.pi) * math.factorial(l - m) / math.factorial(l + m)) * (math.sqrt(2) if m else 1)
+            basis[l * (l + 1) + m] = scale * p * re
+            if m:
+                basis[l * (l + 1) - m] = scale * p * im
+        re, im = re * x - im * y, re * y + im * x
+        diagonal *= 2 * m + 1
+    return np.stack(basis, -1)
 
 
 def equal_area_square_to_sphere(u: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -142,7 +157,7 @@ def fibonacci_sphere(count: int) -> np.ndarray:
 
 SUN_DIRECTIONS = fibonacci_sphere(SUN_DIRECTION_COUNT)
 # A sky brighter overhead (+y), in harmonics through order 2.
-TEST_SKY = np.array([1.0, 0.5, 0, 0, 0, 0, 0, 0, 0])
+TEST_SKY = np.array([1.0, 0.5] + [0.0] * (SH_COUNT - 2))
 
 
 def relative_errors(test: np.ndarray, truth: np.ndarray) -> np.ndarray:

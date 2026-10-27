@@ -36,6 +36,18 @@ public SamplerState linear_repeat_u;
 
 // One sample of the pixel a mode thread owns: `valid` is false for the threads of
 // the last group row or column that fall outside the image.
+// Unit direction of the camera ray through `point` of the frame, in pixels. The image
+// plane at unit distance spans camera_forward.w vertically either side of the centre
+// and camera_right.w times that horizontally.
+public float3 camera_direction(float2 point)
+{
+    float2 plane = 2.0 * point / float2(frame.frame.yz) - 1.0;
+    float half_height = frame.camera_forward.w;
+    float half_width = half_height * frame.camera_right.w;
+    return normalize(frame.camera_forward.xyz + plane.x * half_width * frame.camera_right.xyz +
+                     plane.y * half_height * frame.camera_up.xyz);
+}
+
 public struct PixelSample
 {
     public uint2 pixel;
@@ -51,18 +63,11 @@ public struct PixelSample
         rng = Rng(thread, frame.frame.x + frame.frame.w);
     }
 
-    // Unit direction of the camera ray through the jittered pixel. The image
-    // plane at unit distance spans camera_forward.w vertically either side of
-    // the centre and camera_right.w times that horizontally.
+    // Unit direction of the camera ray through the jittered pixel.
     [mutating]
     public float3 camera_ray_direction()
     {
-        float2 jitter = rng.next4().xy;
-        float2 plane = 2.0 * (float2(pixel) + jitter) / float2(frame.frame.yz) - 1.0;
-        float half_height = frame.camera_forward.w;
-        float half_width = half_height * frame.camera_right.w;
-        return normalize(frame.camera_forward.xyz + plane.x * half_width * frame.camera_right.xyz +
-                         plane.y * half_height * frame.camera_up.xyz);
+        return camera_direction(float2(pixel) + rng.next4().xy);
     }
 
     // The angle one pixel spans at the image centre.
